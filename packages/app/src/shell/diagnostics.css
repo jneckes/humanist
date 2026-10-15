@@ -1,0 +1,237 @@
+/* The Diagnostics window's shell (section 10, Phase 0). Main places the deck view over #deck-slot: below the
+   48 px header and left of the 420 px panel (DIAG_HEADER and DIAG_PANEL in main/diagnostics.ts). */
+
+:root {
+  --header: 48px;
+  --panel: 420px;
+
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --text: #1c1d21;
+  --muted: #5f6470;
+  --line: #dfe2e8;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --pass: #1a7f37;
+  --pass-bg: #dafbe1;
+  --fail: #b42318;
+  --fail-bg: #fde8e7;
+  --pending: #5f6470;
+  --pending-bg: #eef0f3;
+
+  color-scheme: light dark;
+  font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f2024;
+    --surface: #26272c;
+    --text: #e8e9ec;
+    --muted: #a2a6b0;
+    --line: #3a3c43;
+    --accent: #5b8cff;
+    --accent-text: #0d0f14;
+    --pass: #7ee2a0;
+    --pass-bg: #173a24;
+    --fail: #ff8a80;
+    --fail-bg: #4b1f1c;
+    --pending: #a2a6b0;
+    --pending-bg: #2f3036;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  display: grid;
+  grid-template-rows: var(--header) minmax(0, 1fr);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 10px;
+  height: 26px;
+  cursor: default;
+  white-space: nowrap;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+button:disabled {
+  opacity: 0.45;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.title {
+  font-size: 14px;
+}
+
+.mode-chip {
+  border-radius: 999px;
+  padding: 2px 10px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 600;
+}
+
+.hint,
+.status {
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.content {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--panel);
+  min-height: 0;
+}
+
+.deck-slot {
+  background: #000000;
+}
+
+.panel {
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  overflow: auto;
+  padding: 8px 12px 24px;
+  user-select: text;
+}
+
+.section + .section {
+  margin-top: 16px;
+}
+
+.section-title {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 8px 0;
+}
+
+.note {
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.step {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+
+.step-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.step-title {
+  font-weight: 600;
+  flex: 1 1 auto;
+}
+
+.badge {
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  background: var(--pending-bg);
+  color: var(--pending);
+}
+
+.badge.pass {
+  background: var(--pass-bg);
+  color: var(--pass);
+}
+
+.badge.fail {
+  background: var(--fail-bg);
+  color: var(--fail);
+}
+
+.step-text {
+  color: var(--muted);
+  margin: 4px 0 0;
+}
+
+.step-detail {
+  margin: 4px 0 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.step-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.log li {
+  padding: 2px 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.log-time {
+  color: var(--muted);
+}

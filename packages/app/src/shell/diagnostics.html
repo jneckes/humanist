@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- 9.1 Shell view: main also sends this policy as a header with every app:// response. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blueline Diagnostics</title>
+<link rel="stylesheet" href="diagnostics.css">
+<script src="diagnostics.js" defer></script>
+</head>
+<body>
+<header class="header">
+  <strong class="title">Diagnostics</strong>
+  <span id="mode" class="mode-chip" aria-live="polite">Read</span>
+  <span id="chord-hint" class="hint"></span>
+  <div class="spacer"></div>
+  <span id="status" class="status" role="status" aria-live="polite"></span>
+  <button id="run-auto" type="button">Run automatic checks</button>
+  <button id="save" type="button">Save check.json</button>
+</header>
+<main class="content">
+  <div id="deck-slot" class="deck-slot" aria-label="Diagnostics deck"></div>
+  <aside class="panel" aria-label="Checks">
+    <section class="section">
+      <h2 class="section-title">Guided steps</h2>
+      <p class="note">Record what this window cannot see for itself. Each Pass or Fail also stores what the log saw since the previous one.</p>
+      <ol id="guided" class="steps"></ol>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Automatic checks</h2>
+      <ol id="automatic" class="steps"></ol>
+    </section>
+    <section class="section">
+      <h2 class="section-title">Log</h2>
+      <ol id="log" class="log"></ol>
+    </section>
+  </aside>
+</main>
+</body>
+</html>

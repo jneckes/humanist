@@ -1,0 +1,357 @@
+/* The shell (6.0 The window). Main owns the layout numbers and sends them in ShellState; shell.ts writes
+   them to the custom properties below, so the bars, the rail and the panel line up with the deck view,
+   which main places over #deck-slot. Each area has a fixed grid cell, so a hidden bar leaves its cell
+   empty (0 px) instead of shifting the others. */
+
+:root {
+  --toolbar: 44px;
+  --trust: 0px;
+  --banner: 0px;
+  --status: 26px;
+  --rail: 0px;
+  --panel: 0px;
+
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --text: #1c1d21;
+  --muted: #5f6470;
+  --line: #dfe2e8;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --pressed: #e7edfb;
+  --trust-bg: #fff4c2;
+  --trust-text: #4d3b00;
+  --trust-line: #e9d27a;
+  --banner-bg: #fde8e7;
+  --banner-text: #6b1a14;
+  --banner-line: #f1b7b2;
+  --warn: #8a5a00;
+  --error: #b42318;
+
+  color-scheme: light dark;
+  font: 13px/1.35 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f2024;
+    --surface: #26272c;
+    --text: #e8e9ec;
+    --muted: #a2a6b0;
+    --line: #3a3c43;
+    --accent: #5b8cff;
+    --accent-text: #0d0f14;
+    --pressed: #2f3a55;
+    --trust-bg: #4a3d0c;
+    --trust-text: #fbeaa6;
+    --trust-line: #6b5a1a;
+    --banner-bg: #4b1f1c;
+    --banner-text: #ffd6d2;
+    --banner-line: #6e2c27;
+    --warn: #f5c451;
+    --error: #ff8a80;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  display: grid;
+  grid-template-rows: var(--toolbar) var(--trust) var(--banner) minmax(0, 1fr) var(--status);
+  grid-template-columns: minmax(0, 1fr);
+  user-select: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 3px 10px;
+  height: 26px;
+  cursor: default;
+  white-space: nowrap;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+button:disabled {
+  opacity: 0.45;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button.icon {
+  width: 26px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.bar-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------------------------------- toolbar */
+
+.toolbar {
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.file-name {
+  border-color: transparent;
+  background: transparent;
+  font-weight: 600;
+  max-width: 34vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mode-switch {
+  display: inline-flex;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.mode-switch button {
+  border: 0;
+  border-radius: 0;
+  height: 26px;
+  padding: 3px 12px;
+}
+
+.mode-switch button + button {
+  border-left: 1px solid var(--line);
+}
+
+.mode-switch button[aria-pressed='true'] {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.agent-chip {
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------------------------------- bars */
+
+.trust-bar,
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.trust-bar[hidden],
+.banner[hidden] {
+  display: none;
+}
+
+.trust-bar {
+  grid-row: 2;
+  background: var(--trust-bg);
+  color: var(--trust-text);
+  border-bottom: 1px solid var(--trust-line);
+}
+
+.trust-icon {
+  font-size: 15px;
+}
+
+.banner {
+  grid-row: 3;
+  background: var(--banner-bg);
+  color: var(--banner-text);
+  border-bottom: 1px solid var(--banner-line);
+}
+
+/* ------------------------------------------------------------------------------------------- content */
+
+.content {
+  grid-row: 4;
+  display: grid;
+  grid-template-columns: var(--rail) minmax(0, 1fr) var(--panel);
+  min-height: 0;
+}
+
+.rail,
+.panel {
+  min-height: 0;
+  overflow: auto;
+  background: var(--surface);
+}
+
+.rail {
+  border-right: 1px solid var(--line);
+}
+
+.panel {
+  border-left: 1px solid var(--line);
+}
+
+.rail.collapsed,
+.panel.collapsed {
+  visibility: hidden;
+  border: 0;
+}
+
+.deck-slot {
+  background: var(--bg);
+}
+
+.pane-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 10px 12px 6px;
+}
+
+.slide-list,
+.note-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 12px;
+}
+
+.slide-list li {
+  display: flex;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.slide-list li[aria-current='true'] {
+  background: var(--pressed);
+}
+
+.slide-list .num {
+  color: var(--muted);
+  min-width: 2ch;
+  text-align: right;
+}
+
+.slide-list .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-list li {
+  padding: 8px 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.note-list .meta {
+  display: flex;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 3px;
+}
+
+.note-list .status {
+  text-transform: capitalize;
+}
+
+.note-list .text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.note-list .text.empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.empty-note {
+  color: var(--muted);
+  padding: 4px 6px;
+}
+
+/* ------------------------------------------------------------------------------------------- status */
+
+.status {
+  grid-row: 5;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.status-left,
+.status-right {
+  white-space: nowrap;
+}
+
+.toast {
+  flex: 1 1 auto;
+  text-align: center;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.toast.visible {
+  opacity: 1;
+}
+
+.toast.warn {
+  color: var(--warn);
+}
+
+.toast.error {
+  color: var(--error);
+}

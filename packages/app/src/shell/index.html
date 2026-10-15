@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- 9.1 Shell view: main also sends this policy as a header with every app:// response. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blueline</title>
+<link rel="stylesheet" href="shell.css">
+<script src="shell.js" defer></script>
+</head>
+<body>
+<header id="toolbar" class="toolbar">
+  <button id="file-name" class="file-name" type="button" aria-haspopup="menu"></button>
+  <div id="mode-switch" class="mode-switch" role="group" aria-label="Mode">
+    <button type="button" data-mode="read" aria-pressed="true">Read</button>
+    <button type="button" data-mode="review" aria-pressed="false">Review</button>
+    <button type="button" data-mode="edit" aria-pressed="false">Edit</button>
+  </div>
+  <div class="spacer"></div>
+  <button id="present" class="tool" type="button" disabled title="Present arrives in Phase 1">&#9654; Present</button>
+  <button id="share" class="tool" type="button" aria-haspopup="menu">Share &#9662;</button>
+  <span id="agent-chip" class="agent-chip" hidden></span>
+</header>
+<div id="trust-bar" class="trust-bar" role="region" aria-label="Protected view" hidden>
+  <span class="trust-icon" aria-hidden="true">&#9888;</span>
+  <span id="trust-text" class="bar-text"></span>
+  <div class="spacer"></div>
+  <button id="allow-network" type="button">Allow network</button>
+  <button id="enable-editing" type="button">Enable editing</button>
+  <button id="trust-more" class="icon" type="button" aria-label="More" aria-haspopup="menu" title="More">&#8943;</button>
+  <button id="trust-close" class="icon" type="button" aria-label="Hide this bar" title="Hide this bar">&#215;</button>
+</div>
+<div id="banner" class="banner" role="alert" hidden>
+  <span id="banner-text" class="bar-text"></span>
+  <div class="spacer"></div>
+  <button id="banner-open" type="button">Open in Browser</button>
+  <button id="banner-close" class="icon" type="button" aria-label="Hide this bar" title="Hide this bar">&#215;</button>
+</div>
+<main class="content">
+  <nav id="rail" class="rail" aria-label="Slides">
+    <div class="pane-title">Slides</div>
+    <ol id="slide-list" class="slide-list"></ol>
+  </nav>
+  <div id="deck-slot" class="deck-slot"></div>
+  <aside id="panel" class="panel" aria-label="Notes">
+    <div class="pane-title">Notes</div>
+    <ol id="note-list" class="note-list"></ol>
+  </aside>
+</main>
+<footer id="status" class="status">
+  <span id="status-left" class="status-left"></span>
+  <span id="toast" class="toast" role="status" aria-live="polite"></span>
+  <span id="status-right" class="status-right"></span>
+</footer>
+</body>
+</html>
