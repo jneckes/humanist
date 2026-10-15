@@ -42,6 +42,8 @@ export const MainToDeck = {
   notes: 'bl:deck:notes',
   /** Hide or show overlay chrome for screenshots (6.7). Payload: { hidden: boolean }. */
   chrome: 'bl:deck:chrome',
+  /** Added by preload: close the open card (6.4: a click on the toolbar or the notes panel). No payload. */
+  closeCard: 'bl:deck:close-card',
   renderRequest: 'bl:render:request',
 } as const;
 
@@ -72,6 +74,17 @@ export interface SlideState {
   current: number;
   titles: string[];
   navKind: SlideNavKind;
+  /** Added by preload: per slide, the `location.hash` that shows it, when navKind is 'hash' (SlideRef.nav.value, 9.4). */
+  hashes?: string[];
+  /** Added by preload: per slide, reveal.js `[h, v]`, when kind is 'reveal' (SlideRef.nav.value, 9.4). */
+  revealIndices?: [number, number][];
+  /** Added by preload: per slide, the slide element's id, or null (SlideRef.id). */
+  ids?: (string | null)[];
+  /**
+   * Added by preload (6.7 Index replay): the DOM `key` values the visible view saw move this deck forward and
+   * back (trusted keys only). Main stores them as `Session.deckNav`.
+   */
+  deckNav?: { forward?: string; back?: string };
 }
 
 /** Phase 0 note card operations. Main assigns ids, authors and timestamps; the deck never sets status freely. */
@@ -114,7 +127,10 @@ export type RenderCmd =
   | { type: 'collect' } // visible text nodes and blocks right now (section 10, Phase 0, step 4)
   | { type: 'find'; needle: string } // every text node containing needle, visible or not
   | { type: 'locate'; locator: NodeLocator } // the text node at a locator
-  | { type: 'scroll-blocks' }; // scrolling documents: the blocks to scrollIntoView
+  | { type: 'scroll-blocks' } // scrolling documents: the blocks to scrollIntoView
+  // Added by preload: 6.7 Index replay fallback, a synthetic keydown + keyup on the focused element (a deck that
+  // ignores untrusted keys does not move, and main reports navOk: false).
+  | { type: 'key'; key: 'ArrowRight' | 'ArrowLeft' | 'PageDown' | 'PageUp' | ' ' };
 
 export interface RenderRequest {
   reqId: number;
@@ -137,6 +153,98 @@ export interface DetectResult {
   /** reveal.js width/height, or the slide element's box, or 1600×900 (6.9). */
   designSize: { w: number; h: number };
   revealIndices?: [number, number][];
+  /** Added by preload: per slide, the hash that shows it (navKind 'hash'), as in SlideState.hashes. */
+  hashes?: string[];
+  /** Added by preload: per slide, the slide element's id, or null. */
+  ids?: (string | null)[];
+}
+
+// Added by preload: the results of the other RenderCmds (RenderReply.result).
+
+/** `current`: where the page is now. */
+export interface CurrentResult {
+  current: number;
+  count: number;
+  /** `location.hash` now. */
+  hash: string;
+  scrollY: number;
+  /** reveal.js `[h, v]` of the current slide, else null. */
+  reveal: [number, number] | null;
+}
+
+/**
+ * `goto`: navigated inside the page (reveal: `Reveal.slide(h, v)` in the main world; hash: `location.hash`;
+ * scroll: `scrollIntoView`). For navKind 'index' the agent does not navigate (main sends keys with
+ * sendInputEvent, 6.7); it answers `navigated: false, reason: 'index'` with the current slide.
+ */
+export interface GotoResult {
+  navigated: boolean;
+  /** The current slide after waiting up to 1 s for it to change (6.7). */
+  current: number;
+  navKind: SlideNavKind;
+  reason?: string;
+}
+
+/** `settle`: fonts.ready, two animation frames, animations paused (6.7 step 3). */
+export interface SettleResult {
+  fontsReady: boolean;
+  /** Animations paused with Animation.pause(). */
+  paused: number;
+  /** The `*{animation-play-state:paused!important}` sheet is in document.adoptedStyleSheets. */
+  sheetAdopted: boolean;
+}
+
+/** `find`: every text node whose data contains the needle, visible or not (6.9 Find). */
+export interface FindResult {
+  matches: { key: number; locator: NodeLocator; node: DomTextNode; visible: boolean; slide: number | null }[];
+  /** More than the reply limit matched; the list is cut. */
+  truncated: boolean;
+}
+
+/** `locate`: the text node at a locator, or `found: false`. */
+export interface LocateResult {
+  found: boolean;
+  node: WalkNode | null;
+  /** Passes the section 10 step 4 visibility test right now. */
+  visible: boolean;
+  slide: number | null;
+}
+
+/** `scroll-blocks`: the blocks of a scrolling document (9.4 step 3), in document order; `goto` index i scrolls to block i. */
+export interface ScrollBlocksResult {
+  blocks: { index: number; cssPath: string; title: string; top: number; height: number }[];
+}
+
+/** `key`: the synthetic-key fallback of 6.7 Index replay (used only if sendInputEvent cannot reach an offscreen deck). */
+export interface KeyResult {
+  dispatched: boolean;
+  /** The current slide after waiting up to 1 s for it to change. */
+  current: number;
+}
+
+// Added by preload: payloads of the MainToDeck channels other than init and renderRequest.
+
+/** MainToDeck.appMode. A bare AppMode string is also accepted by the preload. */
+export interface AppModeUpdate {
+  appMode: AppMode;
+  editingAllowed?: boolean;
+}
+
+/**
+ * MainToDeck.notes: every note of the document. `created` maps the `clientId` of this view's NoteOp `create`
+ * to the id main gave the note, so the open card can send `update` and `close`. A bare Note[] is also accepted.
+ */
+export interface NotesUpdate {
+  notes: Note[];
+  created?: { clientId: string; id: string }[];
+}
+
+/** MainToDeck.map: the client map for the current version, or null (not UTF-8, or no map yet). */
+export type MapUpdate = ClientMap | null;
+
+/** MainToDeck.chrome (6.7 Note screenshots): hide cards and outlines; the ink stays. */
+export interface ChromeUpdate {
+  hidden: boolean;
 }
 
 /** Finds a text node again after a reload of the same (or a probe-edited) file. */
@@ -183,6 +291,13 @@ export const ShellToMain = {
   diagRecord: 'bl:shell:diag-record',
   diagRunAuto: 'bl:shell:diag-run-auto',
   diagSave: 'bl:shell:diag-save',
+  /** Added by app-shell: hide the "This page tried to leave the document" bar (9.9). */
+  dismissBanner: 'bl:shell:dismiss-banner',
+  /**
+   * Added by app-shell: show a native popup menu (the file name's path + Reveal, Share, the trust bar's
+   * overflow). Native menus draw above the deck view, which covers the shell's content area.
+   */
+  popupMenu: 'bl:shell:popup-menu',
 } as const;
 
 export const MainToShell = {
@@ -197,6 +312,8 @@ export interface ShellLayout {
   statusBar: number;
   leftRail: number;
   rightPanel: number;
+  /** Added by app-shell: height of the "This page tried to leave the document" bar (0 when hidden). */
+  banner: number;
 }
 
 export interface ShellState {
@@ -210,7 +327,8 @@ export interface ShellState {
   editingAllowed: boolean;
   capabilities: Capabilities;
   readOnlyReason: string | null; // e.g. "deck.html is not UTF-8; direct edits are off"
-  slide: { current: number; count: number; kind: SlideState['kind'] } | null;
+  /** `titles` added by app-shell: the left rail's slide titles (SlideState.titles). */
+  slide: { current: number; count: number; kind: SlideState['kind']; titles: string[] } | null;
   saveState: string;
   layout: ShellLayout;
   notes: Pick<Note, 'id' | 'status' | 'text' | 'kind'>[];
@@ -230,7 +348,14 @@ export interface DiagState {
   steps: DiagStep[];
   log: { at: string; event: string; data: Record<string, unknown> }[];
   savedTo: string | null;
+  /** Added by app-render: the Diagnostics deck's app mode (Cmd+1/2/3 switch it), shown in its shell. */
+  appMode?: AppMode;
+  /** Added by app-render: the automatic checks are running. */
+  running?: boolean;
 }
+
+/** Added by app-shell: the native popup menus the shell can ask for (ShellApi.popupMenu). */
+export type ShellMenu = 'file' | 'share' | 'trust-overflow';
 
 /** The API the shell preload exposes as window.blueline (named, typed functions only; 9.1). */
 export interface ShellApi {
@@ -243,6 +368,10 @@ export interface ShellApi {
   dismissTrustBar(): Promise<void>;
   openInBrowser(): Promise<void>;
   revealFile(): Promise<void>;
+  /** Added by app-shell (ShellToMain.dismissBanner). */
+  dismissBanner(): Promise<void>;
+  /** Added by app-shell (ShellToMain.popupMenu): `x`, `y` in the shell's CSS pixels. */
+  popupMenu(menu: ShellMenu, x: number, y: number): Promise<void>;
   diag: {
     getState(): Promise<DiagState>;
     onState(cb: (s: DiagState) => void): void;
@@ -250,4 +379,43 @@ export interface ShellApi {
     runAuto(): Promise<void>;
     save(): Promise<string>;
   };
+}
+
+// ----------------------------------------------------------------- app commands (added by app-shell)
+// The `blueline` command launches the app with `--bl-cmd=<AppCommand>`, `--bl-args=<base64url JSON>` and,
+// for map and check, `--bl-out=<file>` (6.1; docs/ARCHITECTURE.md, Commands).
+
+export type AppCommand = 'open' | 'map' | 'check';
+
+/** `--bl-args` of `open`: absolute paths (the CLI resolves them against its own working directory). */
+export interface OpenArgs {
+  files: string[];
+  protected: boolean;
+}
+
+/** `--bl-args` of `map` (section 10, Phase 0: `blueline map deck.html --report [--json] [--min-coverage 0.95]`). */
+export interface MapArgs {
+  /** Absolute path of the deck. */
+  deck: string;
+  report: boolean;
+  json: boolean;
+  /** 0..1, or null when not given. */
+  minCoverage: number | null;
+}
+
+/** `--bl-args` of `check` (section 10, Diagnostics window). */
+export interface CheckArgs {
+  /** Run only the automatic checks and exit (no guided steps). */
+  auto: boolean;
+}
+
+/**
+ * What a `map` or `check` run writes to `--bl-out` (JSON). The CLI prints `text`, or `json` with `--json`,
+ * and exits with the app's exit code.
+ */
+export interface CommandResult {
+  command: 'map' | 'check';
+  exitCode: number;
+  text: string;
+  json: unknown;
 }

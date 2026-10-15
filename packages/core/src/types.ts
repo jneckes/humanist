@@ -148,6 +148,46 @@ export interface HtmlRun {
   aligned: boolean;
   /** True when the raw run spells a U+00A0 as `&nbsp;` somewhere (encode rule, 9.2 Strategy 1 step 5). */
   usesNbspRef: boolean;
+  /**
+   * Added by core-mapper: how this run's raw text decodes, for rebuilding its decoded-to-raw table
+   * (`htmlRunTable` in html-tables.ts). Absent fields take the defaults.
+   */
+  textOpts?: HtmlTextOptions;
+}
+
+/**
+ * Added by core-mapper. The parse5 rules that make a text node's value differ from a plain decode of its
+ * raw slice (9.2 rule 4, Strategy 1 step 5).
+ */
+export interface HtmlTextOptions {
+  /**
+   * The text node is the first child of a `<pre>` or `<listing>` and starts right after its start tag: the
+   * parser drops one leading newline (LF, CR, CRLF or a reference to U+000A), which stays in the raw range.
+   */
+  dropLeadingNewline?: boolean;
+  /**
+   * A raw U+0000: dropped in HTML content (`'drop'`, the default), U+FFFD in SVG or MathML content
+   * (`'replace'`).
+   */
+  nul?: 'drop' | 'replace';
+}
+
+/**
+ * Added by core-mapper: everything buildServedCopy changes in src, computed by buildMap from the same
+ * parse, so the served copy's stamps agree with the map's runs. All offsets index src.
+ */
+export interface ServedPlan {
+  /** src.length when the plan was made (a guard against applying it to another string). */
+  srcLength: number;
+  /** ` data-bl-e="<stamp>"` goes at `offset`, right after the raw tag name (9.2 Strategy 1 step 3). Sorted. */
+  stamps: { offset: number; stamp: string }[];
+  /** Ranges of `data-bl-e` attributes already in the source, removed from every served copy. Sorted. */
+  strip: { start: number; end: number }[];
+  /**
+   * Protected view only (9.9): attribute rewrites that remove `dns-prefetch`, `preconnect`, `prefetch` and
+   * `prerender` from `<link rel>` and neutralise `<meta http-equiv="x-dns-prefetch-control">`. Sorted.
+   */
+  hints: { start: number; end: number; text: string }[];
 }
 
 /** Strategy 2 unit: one JS string literal, one untagged template literal, or one JSON string value. */
@@ -167,6 +207,12 @@ export interface LiteralUnit {
   html: boolean;
   /** False if a cooked-to-raw table could not be built (then all its runs are `none`). */
   aligned: boolean;
+  /**
+   * Templates only (added by core-literals): raw ranges in src of each `${…}` substitution, from the `$`
+   * to just after its `}`. Each is one atomic unit of the cooked-to-raw table that cooks to U+E000
+   * (jsLiteralTable's `placeholders` option, relative to `start`).
+   */
+  placeholders?: { start: number; end: number }[];
 }
 
 /** Strategy 2 run: a whole non-HTML unit, or one text node of an HTML unit. */
@@ -186,6 +232,13 @@ export interface LiteralRun {
   html: boolean;
   line: number;
   col: number;
+  /**
+   * Added by core-literals. False when the run's raw mapping could not be built (its unit is unaligned,
+   * or the HTML text table of an HTML run failed), and for a shadow run (the HTML-decoded text of a
+   * literal without `<` that contains a character reference, as innerHTML would show it): the run still
+   * counts for uniqueness but is never `exact`. extractLiterals always sets it; absent is read as true.
+   */
+  aligned?: boolean;
 }
 
 export interface ScriptInfo {
@@ -219,12 +272,21 @@ export interface DeckMap {
   units: LiteralUnit[];
   literals: LiteralRun[];
   scripts: ScriptInfo[];
-  /** Attribute values of id, class (whole value and each token), name, for, href and data-* attributes (9.2, ambiguity by key). */
+  /**
+   * Attribute values of id, class (whole value and each token), name, for, href and data-* attributes (9.2,
+   * ambiguity by key), then object keys that are not units: JSON object keys and identifier keys of JS object
+   * literals and class fields (mapper-literals: a deck can render a key as text). Each value once.
+   */
   keyValues: string[];
-  /** The same values with where they occur, for the key warning "also used as a key at deck.html:<line>". */
+  /**
+   * The same values with where they occur, for the key warning "also used as a key at deck.html:<line>".
+   * `attr` is the attribute name, or 'json key' / 'object key'.
+   */
   keys: { value: string; attr: string; line: number }[];
   /** parse5 parse errors of the source (code and raw offset), for "no new parse errors" (9.2 Verify). */
   parseErrors: { code: string; offset: number }[];
+  /** Added by core-mapper: the served copy's edits (stamps, stripped `data-bl-e`, resource hints). buildMap always sets it. */
+  served?: ServedPlan;
 }
 
 /** What the overlay needs from the map (sent over IPC; 9.2 Matching DOM to source at runtime). */
@@ -232,7 +294,12 @@ export interface ClientMap {
   version: string;
   utf8: boolean;
   runs: Pick<HtmlRun, 'id' | 'stamp' | 'textIndex' | 'value' | 'aligned'>[];
-  literals: Pick<LiteralRun, 'id' | 'value' | 'placeholder' | 'html'>[];
+  /**
+   * `strategy` and `aligned` were added by core-literals so the overlay's matcher can report
+   * `json-literal` and refuse unaligned runs; toClientMap should copy both. Absent strategy is read as
+   * `script-literal`, absent aligned as true.
+   */
+  literals: (Pick<LiteralRun, 'id' | 'value' | 'placeholder' | 'html'> & Partial<Pick<LiteralRun, 'strategy' | 'aligned'>>)[];
   keyValues: string[];
 }
 
