@@ -82,7 +82,9 @@ htmlTextTable(raw: string, decoded: string, opts?: { dropLeadingNewline?: boolea
 encodeHtmlText(text: string, opts: { nbspAsRef: boolean }): string  // & → &amp;, < → &lt;, U+00A0 → &nbsp; when nbspAsRef
 
 // mapper-literals.ts
-extractLiterals(src: string, scripts: ScriptInfo[], lines: LineIndex): { units: LiteralUnit[]; literals: LiteralRun[]; scripts: ScriptInfo[] }
+extractLiterals(src: string, scripts: ScriptInfo[], lines: LineIndex): { units: LiteralUnit[]; literals: LiteralRun[]; scripts: ScriptInfo[]; keys: { value: string; attr: string; line: number }[] }
+// keys: JSON object keys and identifier keys of JS object literals and class fields; buildMap merges them into
+// DeckMap.keys/keyValues, so a literal with the same text is ambiguous (`key`) (PHASE0-FINDINGS F15)
 
 // js-literals.ts
 jsLiteralTable(rawContent: string, kind: 'string' | 'template' | 'json-string', quote: "'" | '"' | '`'): { cooked: string; table: OffsetTable } | null
@@ -126,6 +128,9 @@ parse5 errors, Strategy 2 checks), restore on failure, and the verbatim fallback
 - **Deck view webPreferences:** `sandbox: true, contextIsolation: true, nodeIntegration: false,
   webSecurity: true, partition, preload: dist/preload-deck.cjs, additionalArguments: ['--bl-mode=deck']`.
   Partition: non-persistent `deck-<docId>` when Protected, `persist:deck-<fileKey>` when Trusted.
+  A Trusted file keeps its docId (and so its origin and storage, 6.10) across opens: random, generated once,
+  kept in `<userData>/files/<fileKey>/origin` (`documents.ts` `trustedDocumentId`). Protected opens always get
+  a fresh docId.
 - **Render windows** (6.7): hidden offscreen `BrowserWindow`s (`show: false`, `offscreen: { deviceScaleFactor }`,
   `enableLargerThanScreen: true`), same partition, protocol and policy as the document, preload in
   `--bl-mode=render`. Pool of at most 2 per document.
