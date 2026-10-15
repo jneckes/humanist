@@ -1,0 +1,22 @@
+{
+  "name": "@blueline/core",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "Blueline core: text units, mapper (read side), matcher, slide detection, anchoring, notes format and schema, session types.",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "acorn": "^8.19.0",
+    "acorn-walk": "^8.3.5",
+    "approx-string-match": "^2.0.1",
+    "diff-match-patch": "^1.0.5",
+    "entities": "^8.1.0",
+    "parse5": "^8.0.1"
+  }
+}

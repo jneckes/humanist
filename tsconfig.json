@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@blueline/core": ["./packages/core/src/index.ts"],
+      "@blueline/core/*": ["./packages/core/src/*"],
+      "@blueline/editor": ["./packages/editor/src/index.ts"],
+      "@blueline/editor/*": ["./packages/editor/src/*"]
+    }
+  },
+  "include": ["packages/*/src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["node_modules", "**/dist/**"]
+}

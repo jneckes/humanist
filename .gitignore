@@ -1,0 +1,15 @@
+node_modules/
+dist/
+out/
+release/
+*.log
+.DS_Store
+coverage/
+test-results/
+playwright-report/
+# Real decks and their baselines stay local (SPEC section 13, question 1; section 11)
+fixtures/local/*
+!fixtures/local/README.md
+# blueline map probe copies (SPEC 9.7)
+.*.bl-probe.html
+.blueline/

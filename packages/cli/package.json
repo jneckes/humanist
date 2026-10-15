@@ -1,0 +1,9 @@
+{
+  "name": "@blueline/cli",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "description": "The blueline command. Never install or run it through npx (SPEC 9.5).",
+  "type": "module",
+  "main": "./src/index.ts"
+}

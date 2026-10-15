@@ -1,0 +1,36 @@
+{
+  "name": "blueline-monorepo",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Blueline: a reader, reviewer and finisher for HTML documents.",
+  "license": "SEE LICENSING.md",
+  "workspaces": [
+    "packages/core",
+    "packages/editor",
+    "packages/app",
+    "packages/cli"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:reader-only": "node scripts/build.mjs --reader-only",
+    "dev": "node scripts/build.mjs --watch --run",
+    "start": "node scripts/run-electron.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:e2e": "node scripts/build.mjs && playwright test -c test/e2e/playwright.config.ts",
+    "test:security": "node scripts/build.mjs && playwright test -c test/security/playwright.config.ts",
+    "map": "node packages/cli/dist/blueline.cjs map",
+    "dist": "node scripts/build.mjs && electron-builder --config packages/app/electron-builder.config.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@types/diff-match-patch": "^1.0.36",
+    "@types/node": "^24.19.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.5"
+  }
+}
