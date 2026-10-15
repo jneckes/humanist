@@ -221,6 +221,8 @@ export interface DeckMap {
   scripts: ScriptInfo[];
   /** Attribute values of id, class (whole value and each token), name, for, href and data-* attributes (9.2, ambiguity by key). */
   keyValues: string[];
+  /** The same values with where they occur, for the key warning "also used as a key at deck.html:<line>". */
+  keys: { value: string; attr: string; line: number }[];
   /** parse5 parse errors of the source (code and raw offset), for "no new parse errors" (9.2 Verify). */
   parseErrors: { code: string; offset: number }[];
 }

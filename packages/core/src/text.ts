@@ -38,6 +38,13 @@ export function latin1(bytes: Uint8Array): string {
   return out;
 }
 
+/** Inverse of latin1(): the served copy of a non-UTF-8 deck is built through latin1 (9.1 Charset). */
+export function encodeLatin1(s: string): Uint8Array {
+  const out = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 0xff;
+  return out;
+}
+
 export function encodeDeck(src: string): Uint8Array {
   return new TextEncoder().encode(src);
 }
