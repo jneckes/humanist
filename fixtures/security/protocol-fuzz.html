@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Protocol path fuzz</title>
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<style>
+  body { font: 16px system-ui, sans-serif; margin: 24px; }
+  /* If a crafted path resolves to outside/outside.css, it sets this to rgb(9, 9, 9): an escape. */
+  #bl-fuzz-probe { color: rgb(0, 0, 0); }
+  #bl-outside { color: rgb(0, 0, 0); }
+</style>
+</head>
+<body>
+<h1>Protocol path fuzz</h1>
+<p id="bl-fuzz-probe">A crafted path must never reach a file outside the document's folder.</p>
+<p id="bl-outside">outside probe</p>
+
+<script>
+(function () {
+  var B = window.__bl;
+  // Each path is requested on the document's own host; the handler either serves the document (the exact
+  // name), redirects to -files, or 404s. None may resolve to a file outside the folder. The CSS target is
+  // outside/outside.css, which would recolour #bl-outside if a path escaped.
+  var paths = [
+    '../outside/outside.css',
+    '..%2foutside%2foutside.css',
+    '%2e%2e/outside/outside.css',
+    '%2e%2e%2foutside%2foutside.css',
+    '..%252foutside%252foutside.css',
+    '%2e%2e%5coutside%5coutside.css',
+    '....//outside/outside.css',
+    '..%c0%afoutside/outside.css',
+    '%uff0e%uff0e/outside/outside.css',
+    '．．/outside/outside.css',
+    '.%2e/outside/outside.css',
+    'foo/../../outside/outside.css',
+    '/outside/outside.css',
+    '//outside/outside.css',
+    '.ssh/id_rsa.css',
+    '%2essh/id_rsa.css',
+    'link-outside.css',
+    'link-outside-dir/outside.css',
+    'link-etc.css',
+    'sub/%2e%2e/%2e%2e/outside/outside.css'
+  ];
+
+  var done = 0;
+  function finish() { if (++done >= paths.length) setTimeout(function () { B.done('load'); }, 600); }
+
+  paths.forEach(function (p, i) {
+    var name = 'css-' + i;
+    try {
+      var l = document.createElement('link');
+      l.rel = 'stylesheet';
+      l.href = p;
+      l.onload = function () {
+        // onload can fire for a redirected in-folder file too; the escape signal is the recoloured probe.
+        var c = getComputedStyle(document.getElementById('bl-outside')).color;
+        B.set(name, 'fuzz', c === 'rgb(9, 9, 9)' ? 'leaked' : 'blocked', p + ' (' + c + ')');
+        finish();
+      };
+      l.onerror = function () { B.set(name, 'fuzz', 'blocked', p + ' (error)'); finish(); };
+      document.head.appendChild(l);
+    } catch (e) { B.set(name, 'fuzz', 'blocked', B.errText(e)); finish(); }
+  });
+
+  // Also try to read a couple as bytes, which must fail outright even for an in-folder file (cross-origin).
+  function readBlocked(name, path) {
+    fetch(path).then(function (r) { return r.text(); }).then(
+      function (t) { B.set(name, 'fuzz-read', 'leaked', path + ' -> ' + t.slice(0, 20)); },
+      function (e) { B.set(name, 'fuzz-read', 'blocked', B.errText(e)); }
+    );
+  }
+  readBlocked('read-dotdot', '../outside/outside.txt');
+  readBlocked('read-enc-dotdot', '%2e%2e/outside/outside.txt');
+})();
+</script>
+</body>
+</html>

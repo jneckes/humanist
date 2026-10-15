@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Storage persistence</title>
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; }</style>
+</head>
+<body>
+<h1>Storage</h1>
+<p>6.10 Storage: Protected clears storage when the window closes; Trusted keeps it per file. This page reads
+what is there at load (into __bl.found) and writes a value the suite controls, then the suite reopens the
+file and reads __bl.found again.</p>
+
+<script>
+(function () {
+  var B = window.__bl;
+  var token = (B.cfg && B.cfg.uniq) || 'x';
+  var found = { cookie: '', local: null, session: null, idb: null, cache: null };
+  B.found = found;
+
+  function markWritten(name, ok, detail) { B.set(name, 'storage', ok ? 'ok' : 'blocked', detail); }
+
+  // Read first.
+  try { found.cookie = document.cookie; } catch (e) { found.cookie = 'ERR ' + B.errText(e); }
+  try { found.local = localStorage.getItem('bl-store'); } catch (e) { found.local = 'ERR ' + B.errText(e); }
+  try { found.session = sessionStorage.getItem('bl-store'); } catch (e) { found.session = 'ERR ' + B.errText(e); }
+
+  // Then write this run's value.
+  try { document.cookie = 'bl-store=' + token + '; path=/; max-age=86400'; markWritten('cookie', true, document.cookie); }
+  catch (e) { markWritten('cookie', false, B.errText(e)); }
+  try { localStorage.setItem('bl-store', token); markWritten('localStorage', true, token); }
+  catch (e) { markWritten('localStorage', false, B.errText(e)); }
+  try { sessionStorage.setItem('bl-store', token); markWritten('sessionStorage', true, token); }
+  catch (e) { markWritten('sessionStorage', false, B.errText(e)); }
+
+  // IndexedDB (read then write).
+  try {
+    var open = indexedDB.open('bl-db', 1);
+    open.onupgradeneeded = function () { open.result.createObjectStore('kv'); };
+    open.onsuccess = function () {
+      var db = open.result;
+      try {
+        var r = db.transaction('kv', 'readonly').objectStore('kv').get('bl');
+        r.onsuccess = function () {
+          found.idb = r.result == null ? null : String(r.result);
+          var w = db.transaction('kv', 'readwrite').objectStore('kv').put(token, 'bl');
+          w.onsuccess = function () { markWritten('indexeddb', true, token); db.close(); };
+          w.onerror = function () { markWritten('indexeddb', false, 'put'); db.close(); };
+        };
+        r.onerror = function () { found.idb = 'ERR'; db.close(); };
+      } catch (e) { found.idb = 'ERR ' + B.errText(e); markWritten('indexeddb', false, B.errText(e)); db.close(); }
+    };
+    open.onerror = function () { found.idb = 'ERR open'; markWritten('indexeddb', false, 'open'); };
+  } catch (e) { found.idb = 'ERR ' + B.errText(e); markWritten('indexeddb', false, B.errText(e)); }
+
+  // Cache Storage (same-origin; a blueline:// Response cached and read back).
+  if (window.caches && caches.open) {
+    caches.open('bl-cache').then(function (c) {
+      return c.match('bl-key').then(function (m) {
+        return (m ? m.text() : Promise.resolve(null)).then(function (prev) {
+          found.cache = prev;
+          return c.put('bl-key', new Response(token)).then(function () { markWritten('cache', true, token); });
+        });
+      });
+    }).catch(function (e) { found.cache = 'ERR ' + B.errText(e); markWritten('cache', false, B.errText(e)); });
+  } else {
+    found.cache = 'unavailable';
+  }
+
+  setTimeout(function () { B.done('load'); }, 1000);
+})();
+</script>
+</body>
+</html>

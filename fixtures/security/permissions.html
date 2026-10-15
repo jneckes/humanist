@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Permissions and devices</title>
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; } button { display: block; margin: 6px 0; }</style>
+</head>
+<body>
+<h1>Permissions and devices</h1>
+<p>Every permission must be denied in both trust states (9.9). Device choosers must be refused with no
+device. The device calls run from a real click (the suite clicks the button with trusted input), because
+requestDevice needs a user gesture.</p>
+
+<button id="run-devices" type="button">Request devices</button>
+
+<script>
+(function () {
+  var B = window.__bl;
+
+  function denied(name, kind, p) {
+    return Promise.resolve(p).then(
+      function (v) {
+        // navigator.hid.requestDevice resolves to an empty array when no device is chosen (unlike USB,
+        // serial and Bluetooth, which reject): an empty result is "no access granted", i.e. blocked.
+        if (Array.isArray(v) && v.length === 0) { B.set(name, kind, 'blocked', 'empty result (no device)'); return; }
+        B.set(name, kind, 'leaked', 'granted ' + (v && v.toString ? v.toString() : ''));
+      },
+      function (e) { B.set(name, kind, 'blocked', B.errText(e)); }
+    );
+  }
+
+  // Permissions that need no gesture: attempt at load.
+  if (navigator.mediaDevices) {
+    denied('getUserMedia', 'permission', navigator.mediaDevices.getUserMedia({ audio: true, video: true }).then(function (s) {
+      s.getTracks().forEach(function (t) { t.stop(); });
+      return 'stream';
+    }));
+    if (navigator.mediaDevices.getDisplayMedia) {
+      denied('getDisplayMedia', 'permission', navigator.mediaDevices.getDisplayMedia({ video: true }).then(function (s) { s.getTracks().forEach(function (t) { t.stop(); }); return 'stream'; }));
+    } else { B.set('getDisplayMedia', 'permission', 'blocked', 'unavailable'); }
+  } else {
+    B.set('getUserMedia', 'permission', 'blocked', 'mediaDevices unavailable');
+  }
+
+  denied('geolocation', 'permission', new Promise(function (res, rej) {
+    if (!navigator.geolocation) { rej(new Error('no geolocation')); return; }
+    navigator.geolocation.getCurrentPosition(function () { res('position'); }, function (e) { rej(new Error('geo ' + e.code)); }, { timeout: 4000 });
+  }));
+
+  if (typeof Notification !== 'undefined' && Notification.requestPermission) {
+    denied('notifications', 'permission', Promise.resolve(Notification.requestPermission()).then(function (p) {
+      if (p === 'granted') return 'granted'; throw new Error('permission ' + p);
+    }));
+  } else { B.set('notifications', 'permission', 'blocked', 'unavailable'); }
+
+  if (navigator.clipboard && navigator.clipboard.readText) {
+    denied('clipboard-read', 'permission', navigator.clipboard.readText().then(function (t) { return 'read ' + t.length; }));
+  } else { B.set('clipboard-read', 'permission', 'blocked', 'unavailable'); }
+
+  if (navigator.requestMIDIAccess) {
+    denied('midi', 'permission', navigator.requestMIDIAccess({ sysex: true }).then(function () { return 'midi'; }));
+  } else { B.set('midi', 'permission', 'blocked', 'unavailable'); }
+
+  // permissions.query must not report any of these granted.
+  if (navigator.permissions && navigator.permissions.query) {
+    ['geolocation', 'notifications', 'camera', 'microphone'].forEach(function (n) {
+      navigator.permissions.query({ name: n }).then(
+        function (s) { B.set('query-' + n, 'permission', s.state === 'granted' ? 'leaked' : 'blocked', s.state); },
+        function (e) { B.set('query-' + n, 'permission', 'blocked', B.errText(e)); }
+      );
+    });
+  }
+
+  // Device choosers: only from a real click (requestDevice is gesture-gated).
+  document.getElementById('run-devices').addEventListener('click', function () {
+    function dev(name, fn) {
+      if (!fn) { B.set(name, 'device', 'blocked', 'unavailable'); return; }
+      denied(name, 'device', fn());
+    }
+    dev('bluetooth', navigator.bluetooth ? function () { return navigator.bluetooth.requestDevice({ acceptAllDevices: true }); } : null);
+    dev('hid', navigator.hid ? function () { return navigator.hid.requestDevice({ filters: [] }); } : null);
+    dev('serial', navigator.serial ? function () { return navigator.serial.requestPort({}); } : null);
+    dev('usb', navigator.usb ? function () { return navigator.usb.requestDevice({ filters: [] }); } : null);
+    setTimeout(function () { B.done('devices'); }, 1500);
+  });
+
+  setTimeout(function () { B.done('load'); }, 2000);
+})();
+</script>
+</body>
+</html>

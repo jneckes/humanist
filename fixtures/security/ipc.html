@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Forged IPC target</title>
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; }</style>
+</head>
+<body>
+<!-- A plain Protected deck the forged-IPC test drives. 9.1 Preload: a renderer exploit can send any message
+     the preload can; main must accept nothing from a deck that writes a file or changes trust, a setting or
+     another document. The suite sends forged payloads on every DeckToMain channel through __blTestIpc, which
+     the preload exposes in its isolated world only in test builds (--bl-test=1). No slide engine is needed;
+     the heading gives the walk a node. -->
+<h1 id="heading">A plain document for the forged-IPC test</h1>
+<p id="para">Nothing here tries to escape; the test sends the messages from outside the page.</p>
+</body>
+</html>

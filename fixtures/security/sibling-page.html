@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sibling local page</title>
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; }</style>
+</head>
+<body>
+<!-- The local .html the navigation fixture links to. 9.9: a clicked local .html opens in its own Blueline
+     window, with its own session, map and trust state (Protected if the opener is). The suite checks a new
+     window appears for this file, not the opener's deck navigating. -->
+<h1 data-bl-sibling-page="yes">Sibling page opened in Blueline</h1>
+<p>If you can read this in its own window, the local-link rule worked.</p>
+</body>
+</html>

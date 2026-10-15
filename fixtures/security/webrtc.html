@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>WebRTC ICE</title>
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; }</style>
+</head>
+<body>
+<h1>WebRTC</h1>
+<p>This page opens peer connections with STUN and TURN servers on the test host. In Protected view the DNS
+server must see no query, and the UDP and TCP listeners no packet or connection (9.9: WebRTC ICE opens
+sockets with no request onBeforeRequest can cancel; disable_non_proxied_udp plus the closed-port proxy must
+stop it).</p>
+
+<script>
+(function () {
+  var B = window.__bl;
+  if (typeof RTCPeerConnection !== 'function') {
+    B.set('rtc', 'webrtc', 'blocked', 'RTCPeerConnection undefined');
+    B.done('load');
+    return;
+  }
+  // The test host by name (resolves to the sink IP) and by address (the sink IP). Not loopback: Chromium
+  // bypasses the Protected proxy for loopback, and a real attacker host is never loopback.
+  var z = B.cfg.uniq + '.' + B.cfg.zone;
+  var iceServers = [
+    { urls: 'stun:stun-name.' + z + ':' + B.cfg.udp },
+    { urls: 'stun:' + B.cfg.sink + ':' + B.cfg.udp },
+    { urls: 'turn:turn-udp.' + z + ':' + B.cfg.udp + '?transport=udp', username: 'u', credential: 'p' },
+    { urls: 'turn:turn-tcp.' + z + ':' + B.cfg.tcp + '?transport=tcp', username: 'u', credential: 'p' },
+    { urls: 'turn:' + B.cfg.sink + ':' + B.cfg.tcp + '?transport=tcp', username: 'u', credential: 'p' },
+    { urls: 'turns:turn-tls.' + z + ':' + B.cfg.tcp + '?transport=tcp', username: 'u', credential: 'p' }
+  ];
+  var candidates = [];
+  try {
+    var pc = new RTCPeerConnection({ iceServers: iceServers, iceCandidatePoolSize: 2 });
+    pc.onicecandidate = function (e) {
+      if (e.candidate && e.candidate.candidate) candidates.push(e.candidate.candidate);
+    };
+    pc.createDataChannel('probe');
+    pc.createOffer().then(function (o) { return pc.setLocalDescription(o); }).then(function () {
+      B.set('rtc', 'webrtc', 'pending', 'gathering');
+    }).catch(function (e) { B.set('rtc', 'webrtc', 'blocked', B.errText(e)); });
+    // Whatever candidates were gathered (host/srflx/relay): a srflx or relay candidate would mean a packet
+    // reached the test host. The suite's listeners are the real check; this is a second opinion.
+    setTimeout(function () {
+      var kinds = candidates.map(function (c) { return (c.match(/ typ (\w+)/) || [])[1] || '?'; });
+      B.set('rtc-candidates', 'webrtc', kinds.indexOf('srflx') >= 0 || kinds.indexOf('relay') >= 0 ? 'leaked' : 'blocked', kinds.join(','));
+      try { pc.close(); } catch (e) {}
+      B.done('load');
+    }, 5000);
+  } catch (e) {
+    B.set('rtc', 'webrtc', 'blocked', B.errText(e));
+    B.done('load');
+  }
+})();
+</script>
+</body>
+</html>

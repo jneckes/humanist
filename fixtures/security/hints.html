@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Resource hints and DNS prefetch</title>
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<!-- 9.9 "Channels that onBeforeRequest does not see": resource hints look up names with no request the
+     listener can cancel. In Protected view the served copy must have these removed and the PAC proxy must
+     keep any lookup from leaving, so the suite's DNS server must see no query for these unique names. -->
+<meta http-equiv="x-dns-prefetch-control" content="on">
+<link rel="dns-prefetch" href="//static-dns-prefetch.__BL_UNIQ__.__BL_ZONE__">
+<link rel="preconnect" href="http://static-preconnect.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__">
+<link rel="prefetch" href="http://static-prefetch.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/static-prefetch/p">
+<link rel="prerender" href="http://static-prerender.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/static-prerender/p">
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; }</style>
+</head>
+<body>
+<h1>Resource hints</h1>
+<p>This page hints at many host names. In Protected view none of them may be looked up.</p>
+<!-- A plain link: Chromium prefetches the DNS of a hovered or visible link. -->
+<a href="http://anchor-link.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/">a link</a>
+
+<script type="speculationrules">
+{
+  "prefetch": [{ "urls": ["http://speculation-prefetch.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/speculation-prefetch/p"] }],
+  "prerender": [{ "urls": ["http://speculation-prerender.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/speculation-prerender/p"] }]
+}
+</script>
+
+<script>
+(function () {
+  var B = window.__bl;
+  function hint(rel, name, asAttr) {
+    try {
+      var l = document.createElement('link');
+      l.rel = rel;
+      l.href = (rel === 'dns-prefetch' ? '//' : 'http://') + name + '.' + B.cfg.uniq + '.' + B.cfg.zone + (rel === 'dns-prefetch' ? '' : ':' + B.cfg.port + '/');
+      if (asAttr) l.setAttribute('as', asAttr);
+      document.head.appendChild(l);
+      B.set(name, 'hint', 'pending', rel);
+    } catch (e) { B.set(name, 'hint', 'blocked', B.errText(e)); }
+  }
+  // Script-inserted hints, added after load (SPEC 9.9: "static and script-inserted dns-prefetch and preconnect").
+  // Several dns-prefetch links, so a leak is deterministic (dns-prefetch is best-effort and may be deduped).
+  for (var i = 0; i < 4; i++) hint('dns-prefetch', 'js-dns-prefetch-' + i);
+  hint('preconnect', 'js-preconnect');
+  hint('prefetch', 'js-prefetch', 'fetch');
+  hint('prerender', 'js-prerender');
+  // Programmatic DNS prefetch via an inserted anchor the page then focuses.
+  try {
+    var a = document.createElement('a');
+    a.href = 'http://js-anchor.' + B.cfg.uniq + '.' + B.cfg.zone + ':' + B.cfg.port + '/';
+    a.textContent = 'x';
+    document.body.appendChild(a);
+    B.set('js-anchor', 'hint', 'pending', 'anchor');
+  } catch (e) { B.set('js-anchor', 'hint', 'blocked', B.errText(e)); }
+  setTimeout(function () { B.done('load'); }, 1500);
+})();
+</script>
+</body>
+</html>

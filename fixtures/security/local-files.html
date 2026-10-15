@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Local file reads</title>
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<style>
+  body { font: 16px system-ui, sans-serif; margin: 24px; }
+  #bl-sibling-css-probe { color: rgb(0, 0, 0); }
+</style>
+<!-- A sibling stylesheet shown as a positive control: it may style the page (allowed), but cssRules on it
+     must throw because it is cross-origin (served from the -files host). -->
+<link id="sibling-style" rel="stylesheet" href="sibling.css">
+</head>
+<body>
+<h1>Local files</h1>
+<p>This page tries to read files beside the document in both trust states. 9.1 Serving: the page may show
+them, never read them, in Protected and Trusted alike.</p>
+<p id="bl-sibling-css-probe">styled by a sibling sheet</p>
+<img id="sibling-img" alt="sibling" width="10" height="10" src="sibling.png"
+     onload="__bl.set('sibling-img-show','display','ok','shown')" onerror="__bl.set('sibling-img-show','display','blocked','error')">
+<iframe id="sibling-frame" title="sibling" width="20" height="20" src="sibling.svg"></iframe>
+<object id="sibling-object" width="20" height="20" data="sibling.svg" type="image/svg+xml"></object>
+<canvas id="canvas" width="10" height="10"></canvas>
+
+<script>
+(function () {
+  var B = window.__bl;
+
+  function readBlocked(name, kind, p) {
+    return Promise.resolve(p).then(
+      function (v) { B.set(name, kind, 'leaked', 'read ' + String(v).slice(0, 40)); },
+      function (e) { B.set(name, kind, 'blocked', B.errText(e)); }
+    );
+  }
+
+  // fetch/XHR of sibling and parent files, and the dotfile key (9.1: none may return bytes).
+  readBlocked('fetch-parent', 'file', fetch('../confidential.txt').then(function (r) { return r.text(); }));
+  readBlocked('fetch-sibling', 'file', fetch('confidential.txt').then(function (r) { return r.text(); }));
+  readBlocked('fetch-ssh', 'file', fetch('.ssh/id_rsa').then(function (r) { return r.text(); }));
+  readBlocked('fetch-ssh-css', 'file', fetch('.ssh/id_rsa.css').then(function (r) { return r.text(); }));
+  readBlocked('fetch-dotdot-ssh', 'file', fetch('%2e%2e/outside/outside.txt').then(function (r) { return r.text(); }));
+  readBlocked('xhr-sibling', 'file', new Promise(function (res, rej) {
+    var x = new XMLHttpRequest();
+    try { x.open('GET', 'confidential.txt'); x.onload = function () { res(x.responseText); }; x.onerror = function () { rej(new Error('xhr error')); }; x.send(); }
+    catch (e) { rej(e); }
+  }));
+
+  // A module script from the -files origin must not load (as on file://).
+  readBlocked('module-sibling', 'file', import('./sibling.mjs').then(function () { return window.__blSiblingModule ? 'module ran' : 'imported'; }));
+
+  // A worker from the -files origin must not run.
+  readBlocked('worker-sibling', 'file', new Promise(function (res, rej) {
+    try {
+      var w = new Worker('sibling-worker.js');
+      var t = setTimeout(function () { rej(new Error('no reply')); w.terminate(); }, 2500);
+      w.onmessage = function (e) { clearTimeout(t); res(e.data); w.terminate(); };
+      w.onerror = function () { clearTimeout(t); rej(new Error('worker error')); w.terminate(); };
+    } catch (e) { rej(e); }
+  }));
+
+  // A sibling script that throws: its error must be muted (no readable message cross-origin).
+  window.addEventListener('error', function (e) {
+    if (String(e.filename || '').indexOf('sibling-throws') >= 0) {
+      B.set('script-error-message', 'file', e.message && e.message !== 'Script error.' ? 'leaked' : 'blocked', e.message || '(muted)');
+    }
+  });
+  (function () {
+    var s = document.createElement('script');
+    s.src = 'sibling-throws.js';
+    s.onload = function () { B.set('sibling-script-load', 'display', 'ok', 'loaded'); };
+    s.onerror = function () { B.set('sibling-script-load', 'display', 'blocked', 'error'); };
+    document.head.appendChild(s);
+  })();
+
+  // cssRules of the sibling sheet must throw (tainted cross-origin sheet).
+  setTimeout(function () {
+    try {
+      var sheet = document.getElementById('sibling-style').sheet;
+      var n = sheet && sheet.cssRules ? sheet.cssRules.length : -1;
+      B.set('cssrules', 'file', n >= 0 ? 'leaked' : 'blocked', 'rules=' + n);
+    } catch (e) { B.set('cssrules', 'file', 'blocked', B.errText(e)); }
+
+    // A canvas drawn from the sibling image, then read back: the canvas must be tainted (getImageData throws).
+    try {
+      var img = document.getElementById('sibling-img');
+      var cv = document.getElementById('canvas');
+      var ctx = cv.getContext('2d');
+      ctx.drawImage(img, 0, 0);
+      try {
+        ctx.getImageData(0, 0, 1, 1);
+        B.set('canvas-read', 'file', 'leaked', 'getImageData ok');
+      } catch (e) { B.set('canvas-read', 'file', 'blocked', B.errText(e)); }
+    } catch (e) { B.set('canvas-read', 'file', 'blocked', 'draw ' + B.errText(e)); }
+
+    // The sibling frame's document must be cross-origin (reading contentDocument throws or is null).
+    try {
+      var fr = document.getElementById('sibling-frame');
+      var inner = fr.contentDocument;
+      B.set('iframe-read', 'file', inner && inner.body ? 'leaked' : 'blocked', inner ? 'same-origin' : 'null');
+    } catch (e) { B.set('iframe-read', 'file', 'blocked', B.errText(e)); }
+
+    B.done('load');
+  }, 1500);
+
+  // file: and app: URLs must be refused outright.
+  readBlocked('file-scheme', 'scheme', fetch('file:///etc/hostname').then(function (r) { return r.text(); }));
+  readBlocked('app-scheme', 'scheme', fetch('app://shell/index.html').then(function (r) { return r.text(); }));
+})();
+</script>
+</body>
+</html>

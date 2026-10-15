@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Downloads</title>
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; } button, a { display: block; margin: 6px 0; }</style>
+</head>
+<body>
+<h1>Downloads</h1>
+<p>9.9: will-download is cancelled in Protected view and needs confirmation (a save dialog) in Trusted. The
+suite clicks each control with real input and reads what main did with the download item.</p>
+
+<button id="blob-download" type="button">Download a blob</button>
+<a id="data-download" href="data:text/plain;base64,YmwtdGVzdA==" download="bl-data.txt">download a data: URL</a>
+<a id="remote-download" href="http://remote-download.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/remote-download/download" download="bl-remote.bin">download a remote file</a>
+
+<script>
+(function () {
+  var B = window.__bl;
+  B.set('downloads', 'download', 'pending', 'awaiting clicks');
+  document.getElementById('blob-download').addEventListener('click', function () {
+    try {
+      var blob = new Blob(['bl-download-bytes'], { type: 'application/octet-stream' });
+      var u = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = u;
+      a.download = 'bl-blob.bin';
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(u); }, 2000);
+      B.set('blob-download', 'download', 'pending', 'clicked');
+    } catch (e) { B.set('blob-download', 'download', 'blocked', B.errText(e)); }
+  });
+  setTimeout(function () { B.done('load'); }, 500);
+})();
+</script>
+</body>
+</html>

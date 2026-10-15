@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Navigation and popups</title>
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; } a { display: block; margin: 6px 0; }</style>
+</head>
+<body>
+<h1>Navigation</h1>
+<p>This page tries to leave the document in many ways. 9.9: every top-level navigation the user did not
+click is cancelled, and the document stays; popups are denied. None may reach the test host.</p>
+
+<!-- Links for the suite to click with real input. The suite reads which dialog each raises. -->
+<a id="link-http" href="http://clicked-http.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/clicked-http/">external http link</a>
+<a id="link-mailto" href="mailto:nobody@clicked-mailto.__BL_UNIQ__.__BL_ZONE__">mailto link</a>
+<a id="link-local" href="sibling-page.html">local .html link</a>
+<a id="link-file" href="file:///etc/hostname">file link</a>
+<a id="link-ping" href="http://clicked-ping-href.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/ping-href/"
+   ping="http://clicked-ping.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/a-ping/">a with ping</a>
+<a id="link-blank" href="http://clicked-blank.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/" target="_blank">target _blank</a>
+
+<iframe name="navsink" title="sink" width="10" height="10" src="about:blank"></iframe>
+<form id="form-top" method="get" target="_top" action="http://form-top.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/form-top/f">
+  <input type="hidden" name="q" value="1">
+</form>
+<form id="form-self" method="get" action="http://form-self.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/form-self/f">
+  <input type="hidden" name="q" value="1">
+</form>
+
+<script>
+(function () {
+  var B = window.__bl;
+  var here = location.href;
+  function base(u) { try { var a = new URL(u); a.hash = ''; return a.href; } catch (e) { return u; } }
+  function stillHere() { return base(location.href) === base(here); }
+
+  // Unclicked top-level navigations: each must be cancelled and leave the document in place.
+  function navTry(name, fn) {
+    try { fn(); } catch (e) { B.set(name, 'nav', 'blocked', B.errText(e)); return; }
+    // Only mark 'pending' if the probe did not already record its own result (window-open does).
+    if (!B.results[name]) B.set(name, 'nav', 'pending', 'attempted');
+  }
+  navTry('location-assign', function () { location.assign('http://location-assign.' + B.cfg.uniq + '.' + B.cfg.zone + ':' + B.cfg.port + '/'); });
+  navTry('location-href', function () { location.href = 'http://location-href.' + B.cfg.uniq + '.' + B.cfg.zone + ':' + B.cfg.port + '/'; });
+  navTry('location-replace', function () { location.replace('http://location-replace.' + B.cfg.uniq + '.' + B.cfg.zone + ':' + B.cfg.port + '/'); });
+  navTry('window-open', function () {
+    var w = window.open('http://window-open.' + B.cfg.uniq + '.' + B.cfg.zone + ':' + B.cfg.port + '/', '_blank');
+    B.set('window-open', 'popup', w ? 'leaked' : 'blocked', 'returned ' + (w ? 'window' : 'null'));
+  });
+  navTry('window-open-noopener', function () { window.open('http://window-open-noopener.' + B.cfg.uniq + '.' + B.cfg.zone + ':' + B.cfg.port + '/', '_blank', 'noopener'); });
+  navTry('form-top', function () { document.getElementById('form-top').submit(); });
+  navTry('form-self', function () { document.getElementById('form-self').submit(); });
+  navTry('reload', function () { /* reload must be a silent self-nav, never the "left document" bar */ location.reload(); });
+  navTry('synthetic-click', function () {
+    var a = document.createElement('a');
+    a.href = 'http://synthetic-click.' + B.cfg.uniq + '.' + B.cfg.zone + ':' + B.cfg.port + '/';
+    a.target = '_blank';
+    document.body.appendChild(a);
+    a.click(); // isTrusted false: main must treat it as not clicked
+  });
+  navTry('custom-scheme', function () { location.href = 'blparty://custom-scheme.' + B.cfg.uniq + '.' + B.cfg.zone + '/'; });
+
+  setTimeout(function () {
+    B.set('still-here', 'nav', stillHere() ? 'ok' : 'leaked', location.href);
+    B.done('load');
+  }, 1200);
+})();
+</script>
+</body>
+</html>

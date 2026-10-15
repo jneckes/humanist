@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Meta refresh</title>
+<!-- 9.9: a <meta http-equiv=refresh> is a navigation the user did not click; it must be cancelled and leave
+     the document in place, and must not reach the test host. A separate file because the refresh fires at
+     load, before any script could record the starting URL. -->
+<meta http-equiv="refresh" content="0; url=http://meta-refresh.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/meta-refresh/go">
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; }</style>
+</head>
+<body>
+<h1>Meta refresh</h1>
+<p>This page asks to refresh to the test host at once.</p>
+<script>
+(function () {
+  var B = window.__bl;
+  var here = location.href;
+  setTimeout(function () {
+    function base(u) { try { var a = new URL(u); a.hash = ''; return a.href; } catch (e) { return u; } }
+    B.set('meta-refresh', 'nav', base(location.href) === base(here) ? 'blocked' : 'leaked', location.href);
+    B.done('load');
+  }, 1500);
+})();
+</script>
+</body>
+</html>

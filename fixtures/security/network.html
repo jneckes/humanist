@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Network probes</title>
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<!-- Static subresources: in Protected view the network policy must cancel each one (none is connect-src).
+     In Trusted view they load, which is the positive control. Hosts carry the run label and zone so the
+     suite can attribute whatever reaches its server. -->
+<link rel="stylesheet" href="http://css-static.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/css-static/s.css"
+      onload="__bl.set('css-static','subresource','leaked','onload')" onerror="__bl.set('css-static','subresource','blocked','onerror')">
+<link rel="preload" as="image" href="http://preload.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/preload/p.png">
+<link rel="modulepreload" href="http://modulepreload.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/modulepreload/m.js">
+<script defer src="http://js-static.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/js-static/s.js"
+        onload="__bl.set('js-static','subresource','leaked','onload')" onerror="__bl.set('js-static','subresource','blocked','onerror')"></script>
+<style>
+  @import url("http://css-import.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/css-import/i.css");
+  @font-face { font-family: Remote; src: url("http://font.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/font/f.woff2") format("woff2"); }
+  body { font: 16px system-ui, sans-serif; margin: 24px; max-width: 900px; }
+  .needs-font { font-family: Remote, monospace; }
+  .bg { width: 20px; height: 20px; background-image: url("http://css-bg.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/css-bg/b.png"); }
+</style>
+</head>
+<body>
+<h1>Network probes</h1>
+<p class="needs-font">This page asks the network for many things. In Protected view none must reach the test server.</p>
+<div class="bg"></div>
+<img width="1" height="1" alt="" src="http://img-static.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/img-static/i.png"
+     onload="__bl.set('img-static','subresource','leaked','onload')" onerror="__bl.set('img-static','subresource','blocked','onerror')">
+<img width="1" height="1" alt="" src="http://__BL_SINK__:__BL_PORT__/__BL_UNIQ__/img-ip/i.png"
+     onload="__bl.set('img-ip','subresource','leaked','onload')" onerror="__bl.set('img-ip','subresource','blocked','onerror')">
+<iframe width="10" height="10" title="remote" src="http://frame.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/frame/f"></iframe>
+<iframe name="sink" title="sink" width="10" height="10" src="about:blank"></iframe>
+<form id="postform" method="post" target="sink" action="http://form-post.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/form-post/f">
+  <input type="hidden" name="payload" value="probe-__BL_UNIQ__">
+</form>
+
+<script>
+(function () {
+  var B = window.__bl;
+
+  function report(name, kind, p) {
+    return Promise.resolve(p).then(
+      function (v) { B.set(name, kind, 'leaked', 'resolved ' + v); },
+      function (e) { B.set(name, kind, 'blocked', B.errText(e)); }
+    );
+  }
+
+  // fetch and XHR read a response's bytes: Protected must block them (connect-src 'none' + the listener);
+  // Trusted allows them (positive control).
+  report('fetch', 'read', fetch(B.url('fetch'), { cache: 'no-store' }).then(function (r) { return r.status; }));
+  report('fetch-keepalive', 'read', fetch(B.url('fetch-keepalive'), { keepalive: true, method: 'POST', body: 'x' }).then(function (r) { return r.status; }));
+  report('fetch-ip', 'read', fetch(B.addr('fetch-ip'), { cache: 'no-store' }).then(function (r) { return r.status; }));
+
+  report('xhr', 'read', new Promise(function (res, rej) {
+    try {
+      var x = new XMLHttpRequest();
+      x.open('GET', B.url('xhr'));
+      x.onload = function () { res(x.status); };
+      x.onerror = function () { rej(new Error('xhr error')); };
+      x.send();
+    } catch (e) { rej(e); }
+  }));
+
+  // sendBeacon and <a ping> report as resource type "ping"; Protected blocks both.
+  try { B.set('sendBeacon', 'beacon', navigator.sendBeacon(B.url('send-beacon'), 'b') ? 'queued' : 'refused', 'queued=' + navigator.sendBeacon); }
+  catch (e) { B.set('sendBeacon', 'beacon', 'blocked', B.errText(e)); }
+
+  // WebSocket: Protected blocks the handshake; Trusted completes it (the server logs the upgrade).
+  report('websocket', 'socket', new Promise(function (res, rej) {
+    try {
+      var ws = new WebSocket('ws://ws.' + B.cfg.uniq + '.' + B.cfg.zone + ':' + B.cfg.port + '/' + B.cfg.uniq + '/websocket');
+      var t = setTimeout(function () { rej(new Error('no open')); try { ws.close(); } catch (e) {} }, 4000);
+      ws.onopen = function () { clearTimeout(t); res('open'); try { ws.close(); } catch (e) {} };
+      ws.onerror = function () { clearTimeout(t); rej(new Error('ws error')); };
+    } catch (e) { rej(e); }
+  }));
+
+  // EventSource reports as a normal connect; Protected blocks it.
+  report('eventsource', 'read', new Promise(function (res, rej) {
+    try {
+      var es = new EventSource(B.url('eventsource', 'http', '/events'));
+      var t = setTimeout(function () { rej(new Error('no message')); es.close(); }, 4000);
+      es.onmessage = function () { clearTimeout(t); res('message'); es.close(); };
+      es.onerror = function () { clearTimeout(t); rej(new Error('es error')); es.close(); };
+    } catch (e) { rej(e); }
+  }));
+
+  // A dynamic import() of a remote module; Protected blocks it.
+  report('dynamic-import', 'read', import(B.url('dynamic-import', 'http', '/m.js')));
+
+  // A worker from a remote URL; Protected blocks it.
+  report('remote-worker', 'read', new Promise(function (res, rej) {
+    try {
+      var w = new Worker(B.url('remote-worker', 'http', '/w.js'));
+      var t = setTimeout(function () { rej(new Error('no reply')); w.terminate(); }, 3000);
+      w.onmessage = function () { clearTimeout(t); res('reply'); w.terminate(); };
+      w.onerror = function () { clearTimeout(t); rej(new Error('worker error')); w.terminate(); };
+    } catch (e) { rej(e); }
+  }));
+
+  // WebTransport (HTTP/3 over UDP). Not always present; absence counts as blocked.
+  if (typeof WebTransport === 'function') {
+    try {
+      var wt = new WebTransport('https://webtransport.' + B.cfg.uniq + '.' + B.cfg.zone + ':' + B.cfg.udp + '/' + B.cfg.uniq);
+      report('webtransport', 'socket', wt.ready.then(function () { return 'ready'; }));
+    } catch (e) { B.set('webtransport', 'socket', 'blocked', B.errText(e)); }
+  } else {
+    B.set('webtransport', 'socket', 'blocked', 'WebTransport undefined');
+  }
+
+  // Service worker registration (its script is a remote URL).
+  if (navigator.serviceWorker && typeof navigator.serviceWorker.register === 'function') {
+    report('service-worker', 'read', navigator.serviceWorker.register(B.url('service-worker', 'http', '/sw.js')).then(function () { return 'registered'; }));
+  } else {
+    B.set('service-worker', 'read', 'blocked', 'serviceWorker unavailable');
+  }
+
+  // A form POST into an iframe: Protected cancels the subframe navigation and blocks the request.
+  try { document.getElementById('postform').submit(); B.set('form-post', 'nav', 'pending', 'submitted'); }
+  catch (e) { B.set('form-post', 'nav', 'blocked', B.errText(e)); }
+
+  // Beacons fired on pagehide/visibilitychange, the classic "send on close" channel.
+  function lateBeacon() {
+    try { navigator.sendBeacon(B.url('pagehide-beacon'), 'bye'); } catch (e) {}
+    try { fetch(B.url('pagehide-fetch'), { keepalive: true, method: 'POST', body: 'bye' }).catch(function () {}); } catch (e) {}
+  }
+  window.addEventListener('pagehide', lateBeacon);
+  window.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') lateBeacon(); });
+
+  // Give the subresources a moment, then mark the load phase done.
+  setTimeout(function () { B.done('load'); }, 1500);
+})();
+</script>
+</body>
+</html>
