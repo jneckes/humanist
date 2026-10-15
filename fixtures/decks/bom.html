@@ -1,0 +1,72 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onboarding in one week</title>
+<style>
+  :root { --ink: #1e1b4b; --muted: #6366f1; --paper: #eef2ff; --card: #ffffff; font-family: "Inter", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #c7d2fe; overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide { position: absolute; inset: 0; display: none; padding: 104px 128px; background: var(--paper); color: var(--ink); }
+  .slide.active { display: block; }
+  h1 { font-size: 96px; margin: 160px 0 24px; letter-spacing: -.02em; }
+  h2 { font-size: 64px; margin: 0 0 48px; }
+  .lede { font-size: 34px; color: var(--muted); margin: 0; }
+  .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 32px; }
+  .step { background: var(--card); border-radius: 20px; padding: 40px; font-size: 28px; line-height: 1.35; }
+  .step strong { display: block; font-size: 22px; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-bottom: 12px; }
+  .quote { font-size: 44px; line-height: 1.3; max-width: 1200px; }
+  .who { font-size: 24px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+  <section class="slide active">
+    <h1>Onboarding in one week</h1>
+    <p class="lede" id="lede"></p>
+  </section>
+  <section class="slide">
+    <h2>The first five days</h2>
+    <div class="steps">
+      <div class="step"><strong>Day 1</strong>Laptop, accounts and a buddy before 10am.</div>
+      <div class="step"><strong>Day 2–3</strong>Shadow two customer calls and one incident review.</div>
+      <div class="step"><strong>Day 4–5</strong>Ship a small fix to production with your buddy.</div>
+    </div>
+  </section>
+  <section class="slide">
+    <h2>What new starters said</h2>
+    <p class="quote" id="quote"></p>
+    <p class="who">Survey of 38 people who joined in Q3</p>
+  </section>
+</div>
+
+<script type="application/json" id="copy">{"quote": "By Friday I had shipped something real, and that changed how I felt about the job."}</script>
+<script>
+  (function () {
+    var LEDE = 'A plan for every new engineer, from laptop to first deploy';
+    document.getElementById('lede').textContent = LEDE;
+    var copy = JSON.parse(document.getElementById('copy').textContent);
+    document.getElementById('quote').textContent = copy.quote;
+
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var i = 0;
+    function show(n) {
+      i = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight') show(i + 1);
+      if (e.key === 'ArrowLeft') show(i - 1);
+    });
+    function fit() {
+      var s = Math.min(innerWidth / 1600, innerHeight / 900);
+      document.getElementById('deck').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    addEventListener('resize', fit);
+    fit();
+  })();
+</script>
+</body>
+</html>

@@ -1,0 +1,541 @@
+{
+  "deckSha": "43fe500f3bca51119ba674ff8b6856d86873d3a5fd7f47fd5ddc7b78782aef46",
+  "coverage": {
+    "exact": 48,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 48
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Quarterly review",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1541,
+      "end": 1557,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Go-to-market update",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1577,
+      "end": 1596,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Prepared by ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1609,
+      "end": 1621,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Revenue Operations",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1629,
+      "end": 1647,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": " for the ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1656,
+      "end": 1665,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "leadership team",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1669,
+      "end": 1684,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": ".",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1689,
+      "end": 1690,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Faster",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1721,
+      "end": 1727,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "cheaper",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1735,
+      "end": 1742,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "simpler",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1753,
+      "end": 1760,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Plan for ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1820,
+      "end": 1829,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "2027",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1846,
+      "end": 1850,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Revenue grew ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1870,
+      "end": 1883,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "31%",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1891,
+      "end": 1894,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": " in Q3, led by ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1903,
+      "end": 1918,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "enterprise",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1922,
+      "end": 1932,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": " renewals.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1937,
+      "end": 1947,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "See the ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1959,
+      "end": 1967,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "appendix",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1987,
+      "end": 1995,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": " for the ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1999,
+      "end": 2008,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "cohort_v2",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2014,
+      "end": 2023,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": " definitions.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2030,
+      "end": 2043,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "First line of the summary",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2055,
+      "end": 2080,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "second line after a break",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2084,
+      "end": 2109,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Who owns what",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2162,
+      "end": 2175,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Hire",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2203,
+      "end": 2207,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": " two solutions engineers ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2211,
+      "end": 2236,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "(EMEA)",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2239,
+      "end": 2245,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Owner",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2273,
+      "end": 2278,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": " Sales leadership",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2287,
+      "end": 2304,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Owner",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2328,
+      "end": 2333,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": " Marketing",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2342,
+      "end": 2352,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Q3",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2371,
+      "end": 2373,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": " ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2377,
+      "end": 2383,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "(preliminary)",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2386,
+      "end": 2399,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": " numbers are unaudited",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2403,
+      "end": 2425,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Appendix",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2503,
+      "end": 2511,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Note: ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2532,
+      "end": 2538,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "pricing",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2542,
+      "end": 2549,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": " is provisional",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2554,
+      "end": 2569,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": " until legal signs off.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2578,
+      "end": 2601,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Questions? Ask in ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2644,
+      "end": 2662,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "#gtm-planning",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2707,
+      "end": 2720,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": " or email ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2724,
+      "end": 2734,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "revops@northwind.example",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2776,
+      "end": 2800,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": ".",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2804,
+      "end": 2805,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "The full playbook is at ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2831,
+      "end": 2855,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "northwind.example/gtm",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2894,
+      "end": 2915,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "inline-markup.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 4,
+      "reached": 4,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Go-to-market update",
+        "reached": true,
+        "exact": 10,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 10
+      },
+      {
+        "slide": 1,
+        "title": "Plan for 2027",
+        "reached": true,
+        "exact": 14,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 14
+      },
+      {
+        "slide": 2,
+        "title": "Who owns what",
+        "reached": true,
+        "exact": 12,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 12
+      },
+      {
+        "slide": 3,
+        "title": "Appendix",
+        "reached": true,
+        "exact": 12,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 12
+      }
+    ],
+    "totals": {
+      "exact": 48,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 48
+    },
+    "coverage": {
+      "exact": 48,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 48,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 17,
+      "withInline": 13,
+      "allExact": 13,
+      "allPassed": 13,
+      "shareWithInline": 0.7647058823529411,
+      "shareAllExact": 1
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 48,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 48,
+      "passed": 48,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

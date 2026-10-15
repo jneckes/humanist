@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Northwind 2027 strategy</title>
+<link rel="stylesheet" href="vendor/reset.css">
+<link rel="stylesheet" href="vendor/reveal.css">
+<link rel="stylesheet" href="vendor/theme/white.css">
+<style>
+  .reveal { --nw-accent: #2563eb; --nw-muted: #64748b; }
+  .reveal .meta { font-size: 0.7em; color: var(--nw-muted); }
+  .reveal .stats { display: flex; gap: 48px; justify-content: center; margin-top: 64px; }
+  .reveal .stat { border-top: 8px solid var(--nw-accent); padding: 28px 36px; text-align: left; min-width: 360px; background: #f8fafc; }
+  .reveal .stat strong { display: block; font-size: 2.2em; color: var(--nw-accent); }
+  .reveal .stat span { font-size: 0.75em; color: var(--nw-muted); }
+  .reveal .bet { text-align: left; max-width: 1200px; margin: 0 auto; }
+  .reveal .bet p { font-size: 0.9em; }
+  .reveal .owner { font-size: 0.6em; color: var(--nw-muted); }
+</style>
+<script>
+  // Diagnostics (SPEC 6.2 and 10, Diagnostics window). The deck's own capture-phase keydown listeners on
+  // window and document. Each keydown they see is recorded on <html> as data-bl-key-log="<seq>:<key>:<isTrusted>",
+  // where seq counts events (not listener calls). The preload compares it before and after its own capture
+  // listener: if its listener ran first, seq has not moved yet when it runs; if its stopImmediatePropagation()
+  // stops these listeners, seq does not move at all.
+  (function () {
+    var seq = 0;
+    var seen = new WeakSet();
+    var trace = [];
+    function record(where, e) {
+      if (!seen.has(e)) {
+        seen.add(e);
+        seq += 1;
+      }
+      document.documentElement.dataset.blKeyLog = seq + ':' + e.key + ':' + e.isTrusted;
+      trace.push(seq + ':' + where + ':' + e.key + ':' + e.isTrusted);
+      if (trace.length > 20) trace.shift();
+      document.documentElement.dataset.blKeyTrace = trace.join(' ');
+    }
+    window.addEventListener('keydown', function (e) { record('window', e); }, true);
+    document.addEventListener('keydown', function (e) { record('document', e); }, true);
+  })();
+</script>
+</head>
+<body>
+<div class="reveal">
+  <div class="slides">
+
+    <section id="title">
+      <h1>Northwind 2027</h1>
+      <h2 id="diag-heading" data-bl-diag="heading">Strategy offsite, day one</h2>
+      <p class="meta">Leadership team · Lisbon · 15 October 2026</p>
+    </section>
+
+    <section id="where-we-are">
+      <h2>Where we are</h2>
+      <div class="stats">
+        <div class="stat"><strong>$48M</strong><span>ARR, up 34% on last year</span></div>
+        <div class="stat"><strong>212</strong><span>customers on annual plans</span></div>
+        <div class="stat"><strong>96%</strong><span>gross revenue retention</span></div>
+      </div>
+    </section>
+
+    <section>
+      <section id="bets">
+        <h2>Three bets for 2027</h2>
+        <ol>
+          <li class="fragment">Self-serve first for teams under fifty</li>
+          <li class="fragment">Partners sell the enterprise tier</li>
+          <li class="fragment">One platform, not three products</li>
+        </ol>
+        <p class="owner">Press the down arrow for each bet</p>
+      </section>
+      <section id="bet-one">
+        <div class="bet">
+          <h3>Bet one: self-serve</h3>
+          <p>Half of new logos should start on a card, without talking to sales.</p>
+          <p class="owner">Owner: Growth</p>
+        </div>
+      </section>
+      <section id="bet-two">
+        <div class="bet">
+          <h3>Bet two: partners</h3>
+          <p>Three systems integrators carry the enterprise motion in EMEA.</p>
+          <p class="owner">Owner: Partnerships</p>
+        </div>
+      </section>
+      <section id="bet-three">
+        <div class="bet">
+          <h3>Bet three: platform</h3>
+          <p>Billing, identity and audit move to one shared service by Q3.</p>
+          <p class="owner">Owner: Platform engineering</p>
+        </div>
+      </section>
+    </section>
+
+    <section id="stop">
+      <h2>What we will stop doing</h2>
+      <ul>
+        <li>Custom contracts under $50k</li>
+        <li>On-premises installs for new customers</li>
+        <li>Quarterly roadmap decks nobody reads</li>
+      </ul>
+    </section>
+
+    <section id="questions">
+      <h2>Questions</h2>
+      <p>Day two starts at 9:00 in the garden room.</p>
+      <aside class="notes">Leave ten minutes for the hiring plan; Priya has the numbers.</aside>
+    </section>
+
+  </div>
+</div>
+
+<script src="vendor/reveal.js"></script>
+<script>
+  Reveal.initialize({
+    hash: true,
+    width: 1600,
+    height: 900,
+    margin: 0.04,
+    controls: true,
+    progress: true,
+    transition: 'fade',
+  });
+</script>
+</body>
+</html>

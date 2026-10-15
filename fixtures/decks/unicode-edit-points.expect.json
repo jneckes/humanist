@@ -1,0 +1,21 @@
+{
+  "deck": "unicode-edit-points.html",
+  "kind": "generic",
+  "slides": 3,
+  "navKind": "index",
+  "titles": ["Launch plan — “Atlas” 🚀", "Milestones — “week by week” 📅", "Risks — “and who owns them” 🧭"],
+  "expect": [
+    { "text": "Launch plan — “Atlas” 🚀", "confidence": "exact", "strategy": "html-text", "why": "em dash, curly quotes and an astral emoji (2 UTF-16 units, 4 UTF-8 bytes) right before the edit point at the end of the run: offsets are UTF-16, never bytes (9.2 rule 2)" },
+    { "text": "Private beta — “50 teams” 🧪", "confidence": "exact", "strategy": "html-text", "why": "raw characters in parsed text" },
+    { "text": "Public beta — “open sign-up” 🚀", "confidence": "exact", "strategy": "html-text", "why": "&#8220; &#8221; and the astral reference &#x1F680; (decodes to a surrogate pair, one atomic unit)" },
+    { "text": "Café launch party — “Friday” 🥳", "confidence": "exact", "strategy": "html-text", "why": "the é is e + U+0301 (decomposed): exact equality needs no NFC (only the ambiguous path normalizes)" },
+    { "text": "Six weeks to general availability — “no surprises” 🎯", "confidence": "exact", "strategy": "script-literal", "why": "raw em dash, quotes and emoji inside a single-quoted literal" },
+    { "text": "General availability — “day one” 🎉", "confidence": "exact", "strategy": "script-literal", "why": "escapes \\u2014 \\u201C \\u201D and \\u{1F389} (a code point escape that cooks to a surrogate pair), each atomic" },
+    { "text": "Post-launch review — “what broke” 🔍", "confidence": "exact", "strategy": "script-literal", "why": "the emoji written as two escapes \\uD83D\\uDD0D (a surrogate pair split across two atomic units)" },
+    { "text": "Risk", "confidence": "exact", "strategy": "script-literal", "why": "first run of an HTML literal set with innerHTML" },
+    { "text": " — “pricing page” 🧯", "confidence": "exact", "strategy": "script-literal", "why": "HTML-fragment run ending in an emoji" },
+    { "text": "Owner — “platform” 🛠️", "confidence": "exact", "strategy": "script-literal", "why": "template literal without placeholders; 🛠️ is U+1F6E0 + U+FE0F (variation selector)" },
+    { "text": "Owner: Café team — “Mia” 👩🏽‍💻", "confidence": "exact", "strategy": "json-literal", "why": "a ZWJ sequence (woman, skin tone, ZWJ, laptop: 7 UTF-16 units) as raw characters in JSON" },
+    { "text": "Regions — “EU first” 🇪🇺", "confidence": "exact", "strategy": "json-literal", "why": "JSON escapes \\u201c \\u201d and two surrogate-pair escapes for the regional-indicator flag" }
+  ]
+}

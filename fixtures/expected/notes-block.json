@@ -1,0 +1,198 @@
+{
+  "deckSha": "4d7ce024297bc58a757e8a279d24bfbc7c5314ee9e8a8d9fc7f8b81e9d929947",
+  "coverage": {
+    "exact": 9,
+    "ambiguous": 0,
+    "none": 1,
+    "total": 10
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Brand refresh review",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1510,
+      "end": 1530,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Design team · round two",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1556,
+      "end": 1579,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "New palette",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1631,
+      "end": 1642,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Harbor blue",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1708,
+      "end": 1719,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Sandstone",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1757,
+      "end": 1766,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Kelp green",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1804,
+      "end": 1814,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Contrast checked against WCAG AA on every pairing.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1852,
+      "end": 1902,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Voice and tone",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1965,
+      "end": 1979,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "A brand that sounds like us",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2006,
+      "end": 2033,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Draft palette — do not forward outside the brand team",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "no-match"
+    }
+  ],
+  "report": {
+    "deck": "notes-block.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 3,
+      "reached": 3,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Brand refresh review",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      },
+      {
+        "slide": 1,
+        "title": "New palette",
+        "reached": true,
+        "exact": 5,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 5
+      },
+      {
+        "slide": 2,
+        "title": "Voice and tone",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      }
+    ],
+    "totals": {
+      "exact": 9,
+      "ambiguous": 0,
+      "none": 1,
+      "total": 10
+    },
+    "coverage": {
+      "exact": 9,
+      "ambiguous": 0,
+      "none": 1,
+      "total": 10,
+      "share": 0.9,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [
+      {
+        "slide": 2,
+        "text": "Draft palette — do not forward outside the brand team",
+        "confidence": "none",
+        "reason": "no-match",
+        "candidates": 0
+      }
+    ],
+    "inline": {
+      "blocks": 10,
+      "withInline": 0,
+      "allExact": 0,
+      "allPassed": 0,
+      "shareWithInline": 0,
+      "shareAllExact": 0
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 9,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 9,
+      "passed": 9,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

@@ -1,0 +1,271 @@
+{
+  "deckSha": "988e803b296ff527356fdd23a3efd82b87d825d7d2cb0f3cd707838ba4278de4",
+  "coverage": {
+    "exact": 21,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 21
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Northwind Labs",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2183,
+      "end": 2197,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Analytics your whole team can read",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2245,
+      "end": 2279,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Northwind turns warehouse tables into dashboards that finance, sales and support use every day, without a data team in the loop.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2307,
+      "end": 2435,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Book a demo",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2499,
+      "end": 2510,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Get the monthly digest",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2576,
+      "end": 2598,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Subscribe",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2727,
+      "end": 2736,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "212",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2830,
+      "end": 2833,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "customers on annual plans",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2848,
+      "end": 2873,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "11 min",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2921,
+      "end": 2927,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "median time to first chart",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2942,
+      "end": 2968,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "SOC 2",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3016,
+      "end": 3021,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Type II, renewed every year",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3036,
+      "end": 3063,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "40+",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3111,
+      "end": 3114,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "native connectors",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3129,
+      "end": 3146,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Plain-language metrics",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3234,
+      "end": 3256,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Define revenue once and every chart agrees with finance.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3264,
+      "end": 3320,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Alerts that explain",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3360,
+      "end": 3379,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "When a number moves, the alert says which segment moved it.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3387,
+      "end": 3446,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Share without seats",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3486,
+      "end": 3505,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Send a live dashboard to anyone with a link that expires.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3513,
+      "end": 3570,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Figures as of 30 September 2026. Northwind Labs is a fictional company used in examples.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3608,
+      "end": 3696,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "single.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "single",
+      "navKind": "none",
+      "count": 1,
+      "reached": 1,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": null,
+      "forwardKey": null,
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Analytics your whole team can read",
+        "reached": true,
+        "exact": 21,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 21
+      }
+    ],
+    "totals": {
+      "exact": 21,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 21
+    },
+    "coverage": {
+      "exact": 21,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 21,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 21,
+      "withInline": 4,
+      "allExact": 4,
+      "allPassed": 4,
+      "shareWithInline": 0.19047619047619047,
+      "shareAllExact": 1
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 21,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 21,
+      "passed": 21,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

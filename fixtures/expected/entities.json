@@ -1,0 +1,566 @@
+{
+  "deckSha": "8fd4904165ca2c87c78d0e5df229321b875306d0efb4904f40a9e9acb9268dc4",
+  "coverage": {
+    "exact": 38,
+    "ambiguous": 0,
+    "none": 6,
+    "total": 44
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Board pre-read · October 2026",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2552,
+      "end": 2588,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Research & Development",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2601,
+      "end": 2627,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "FY27 operating plan — draft for review",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2653,
+      "end": 2697,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "1 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 1,
+      "text": "Where the R&D money goes",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2750,
+      "end": 2778,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "R&D spend rose to $4.2 million, up 18 % year over year.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2803,
+      "end": 2872,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Platform & infrastructure: 41 %",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2910,
+      "end": 2950,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Applied research — 27 %",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2966,
+      "end": 3000,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Design & research ops: 12 %",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3016,
+      "end": 3057,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "2 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 2,
+      "text": "What customers told us",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3121,
+      "end": 3143,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "“We couldn’t have shipped the migration without it.”",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3165,
+      "end": 3235,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "— Head of Platform, Northwind Health",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3269,
+      "end": 3311,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "“Setup took an afternoon, not a quarter.”",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3332,
+      "end": 3385,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "— VP Engineering, Harbor & Pine",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3419,
+      "end": 3461,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "3 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 3,
+      "text": "Pricing tiers",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3514,
+      "end": 3527,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Tier",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3566,
+      "end": 3570,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Seats",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3579,
+      "end": 3584,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Price per seat",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3593,
+      "end": 3607,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Starter",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3656,
+      "end": 3663,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "< 50",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3672,
+      "end": 3679,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "€12",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3688,
+      "end": 3696,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Growth",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3723,
+      "end": 3729,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "50–500",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3738,
+      "end": 3750,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "€9.50",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3759,
+      "end": 3769,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Enterprise",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3796,
+      "end": 3806,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "> 500",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3815,
+      "end": 3823,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "—",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3832,
+      "end": 3840,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Minimum term: 12 months, one invoice per year.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3899,
+      "end": 3945,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Prices exclude VAT & are billed annually. Discounts ≥ 20 % need CFO sign-off.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3970,
+      "end": 4059,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "4 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 4,
+      "text": "Fine print",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4117,
+      "end": 4127,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "© 2026 Northwind Labs. All rights reserved.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4140,
+      "end": 4187,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Q&A follows; bring questions about the 3<5 rule.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4199,
+      "end": 4250,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Footnote: ¬it; is how a legacy &not reads without its semicolon.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4262,
+      "end": 4333,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "&mdash without a semicolon is not a reference, so it stays as typed.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4345,
+      "end": 4413,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Numeric © and © also work without semicolons.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4425,
+      "end": 4478,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Windows-1252 rescue: – and € read as – and €.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4490,
+      "end": 4556,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "5 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 5,
+      "text": "Thank you",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4609,
+      "end": 4618,
+      "probe": "pass"
+    },
+    {
+      "slide": 5,
+      "text": "Questions & next steps → see the appendix",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4644,
+      "end": 4694,
+      "probe": "pass"
+    },
+    {
+      "slide": 5,
+      "text": "rd-planning@northwind.example · Slack #rd‑plan",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4722,
+      "end": 4782,
+      "probe": "pass"
+    },
+    {
+      "slide": 5,
+      "text": "6 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    }
+  ],
+  "report": {
+    "deck": "entities.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 6,
+      "reached": 6,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Research & Development",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 4
+      },
+      {
+        "slide": 1,
+        "title": "Where the R&D money goes",
+        "reached": true,
+        "exact": 5,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 6
+      },
+      {
+        "slide": 2,
+        "title": "What customers told us",
+        "reached": true,
+        "exact": 5,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 6
+      },
+      {
+        "slide": 3,
+        "title": "Pricing tiers",
+        "reached": true,
+        "exact": 15,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 16
+      },
+      {
+        "slide": 4,
+        "title": "Fine print",
+        "reached": true,
+        "exact": 7,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 8
+      },
+      {
+        "slide": 5,
+        "title": "Thank you",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 4
+      }
+    ],
+    "totals": {
+      "exact": 38,
+      "ambiguous": 0,
+      "none": 6,
+      "total": 44
+    },
+    "coverage": {
+      "exact": 38,
+      "ambiguous": 0,
+      "none": 6,
+      "total": 44,
+      "share": 0.8636363636363636,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [
+      {
+        "slide": 0,
+        "text": "1 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 1,
+        "text": "2 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "3 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 3,
+        "text": "4 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 4,
+        "text": "5 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 5,
+        "text": "6 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      }
+    ],
+    "inline": {
+      "blocks": 39,
+      "withInline": 0,
+      "allExact": 0,
+      "allPassed": 0,
+      "shareWithInline": 0,
+      "shareAllExact": 0
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 38,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 38,
+      "passed": 38,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

@@ -1,0 +1,4 @@
+# These decks are byte-exact test inputs: crlf.html must keep its CRLFs, every other deck its LFs, bom.html its
+# BOM and windows-1252.html its windows-1252 bytes (SPEC 9.2, Text units, encoding and line endings).
+# Never convert line endings on checkout or commit, whatever core.autocrlf says.
+* -text

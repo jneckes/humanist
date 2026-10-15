@@ -1,0 +1,22 @@
+{
+  "deck": "notes-block.html",
+  "kind": "generic",
+  "slides": 3,
+  "navKind": "index",
+  "titles": ["Brand refresh review", "New palette", "Voice and tone"],
+  "notesBlock": {
+    "present": true,
+    "baseSha": "b0bcf2bbb1582e54adb8413e4e613bdd1b2445188c4f04718bc96f2bd7f29254",
+    "people": ["anna-x7k2", "sam-lee-q9w3"],
+    "notes": ["n-0001", "n-0002"],
+    "why": "a valid block (format blueline-notes, version 1) as the last element of <body>; every < in its JSON is \\u003C, including the '</script>' and '<!--' in note n-0001's text, so neither can end the block (section 8, Escaping). baseSha is the sha256 of the file with the block's <script> element removed. The mapper removes it before mapping, so no run comes from it, and the served copy does not contain it",
+    "decoy": "a second <script type=\"application/vnd.blueline+json\" id=\"blueline-notes\"> inside <template id=\"callout-tpl\"> is page content: never read as notes (its note n-0099 by mallory-zz99 must never appear), served and mapped as it is, and cloned into slide 3 by the page"
+  },
+  "expect": [
+    { "text": "Brand refresh review", "confidence": "exact", "strategy": "html-text", "why": "parsed text before the notes block; offsets before the block are unaffected by its removal" },
+    { "text": "Harbor blue", "confidence": "exact", "strategy": "html-text", "why": "target of note n-0001 (stamp bl-4 at baseSha)" },
+    { "text": "Contrast checked against WCAG AA on every pairing.", "confidence": "exact", "strategy": "html-text", "why": "parsed text" },
+    { "text": "A brand that sounds like us", "confidence": "exact", "strategy": "html-text", "why": "target of the verbatim suggestion n-0002 (stamp bl-9 at baseSha); Apply would find 'before' here (6.8)" },
+    { "text": "Draft palette — do not forward outside the brand team", "confidence": "none", "strategy": null, "reason": "no-match", "why": "cloned from <template> content at runtime: template content is never stamped (9.2 Strategy 1 step 4) and is not a literal, so there is no candidate" }
+  ]
+}

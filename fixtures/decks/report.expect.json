@@ -1,0 +1,24 @@
+{
+  "deck": "report.html",
+  "kind": "scroll",
+  "slides": 5,
+  "navKind": "scroll",
+  "titles": ["Summary", "Method", "Findings", "Recommendations", "Appendix"],
+  "sections": ["summary", "method", "findings", "recommendations", "appendix"],
+  "expect": [
+    { "text": "Customer onboarding study", "confidence": "exact", "strategy": "html-text", "why": "masthead h1 above the first section[id]: only in view at the top of the page, so the scroll walk must also look before scrolling to the first block (section 10 step 3)" },
+    { "text": "Customer Success · interviews with 24 accounts · October 2026", "confidence": "exact", "strategy": "html-text", "why": "masthead byline" },
+    { "text": "Findings", "confidence": "exact", "strategy": "html-text", "why": "occurs twice in parsed text (contents link and section heading); each node maps to its own stamp" },
+    { "text": "New accounts that reach their ", "confidence": "exact", "strategy": "html-text", "why": "run before a <strong> in a paragraph" },
+    { "text": "first shared dashboard", "confidence": "exact", "strategy": "html-text", "why": "<strong> run" },
+    { "text": "Accounts that stalled on SSO: 9 of 24", "confidence": "exact", "strategy": "html-text", "why": "'9 of 24' in parsed text is exact; the same shape built in JS would be computed" },
+    { "text": "Twelve mid-market accounts (100–999 employees)", "confidence": "exact", "strategy": "html-text", "why": "ordered list item under an h3" },
+    { "text": "onboarding_events", "confidence": "exact", "strategy": "html-text", "why": "<code> run" },
+    { "text": "14", "confidence": "exact", "strategy": "html-text", "why": "a numeric table cell" },
+    { "text": "Security questionnaire", "confidence": "exact", "strategy": "html-text", "why": "table cell" },
+    { "text": "We bought it in June and our analysts first logged in at the end of July.", "confidence": "exact", "strategy": "html-text", "why": "blockquote" },
+    { "text": "thirty-minute SSO session", "confidence": "exact", "strategy": "html-text", "why": "link text inside a list item" },
+    { "text": "“Walk me through your first week.”", "confidence": "exact", "strategy": "html-text", "why": "<em> with curly quotes" },
+    { "text": "Prepared by Customer Success Research. Internal use only.", "confidence": "exact", "strategy": "html-text", "why": "footer after the last section, reached when the last block scrolls into view" }
+  ]
+}

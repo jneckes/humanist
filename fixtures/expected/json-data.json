@@ -1,0 +1,661 @@
+{
+  "deckSha": "3221503f3eb5131235231771429886831c4bb591c53d3f4a7274112f1773ef8a",
+  "coverage": {
+    "exact": 31,
+    "ambiguous": 8,
+    "none": 9,
+    "total": 48
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Checkout redesign — results",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2633,
+      "end": 2665,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Summary",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2728,
+      "end": 2735,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "A calmer checkout",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2754,
+      "end": 2771,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Cart abandonment fell from 71% to 58% after the redesign.",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2789,
+      "end": 2846,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Phase 1",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2872,
+      "end": 2879,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": " ships in ",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2888,
+      "end": 2898,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "January",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2902,
+      "end": 2909,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": ", behind a flag.",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2914,
+      "end": 2930,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Harbor & Pine",
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "key"
+    },
+    {
+      "slide": 0,
+      "text": "Internal · do not forward",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 5524,
+      "end": 5549,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "1 / 4",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 1,
+      "text": "What we heard",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2984,
+      "end": 2997,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Shoppers wanted fewer surprises",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3016,
+      "end": 3047,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "\"Where's my order?\" was the top support question",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3077,
+      "end": 3127,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Shipping costs at the last step felt like a trick",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3139,
+      "end": 3188,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Harbor & Pine",
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "key"
+    },
+    {
+      "slide": 1,
+      "text": "Research team",
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "duplicate"
+    },
+    {
+      "slide": 1,
+      "text": "Internal · do not forward",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 5524,
+      "end": 5549,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "2 / 4",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 2,
+      "text": "Eight weeks in",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3283,
+      "end": 3297,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "The numbers after launch",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3316,
+      "end": 3340,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Conversion",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "no-match"
+    },
+    {
+      "slide": 2,
+      "text": "3.4%",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 2,
+      "text": "+0.6 pts",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3423,
+      "end": 3431,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Average order",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "no-match"
+    },
+    {
+      "slide": 2,
+      "text": "$62",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 2,
+      "text": "+$4",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3499,
+      "end": 3502,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Retention",
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "key"
+    },
+    {
+      "slide": 2,
+      "text": "41%",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 2,
+      "text": "+3 pts",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3566,
+      "end": 3572,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Harbor & Pine",
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "key"
+    },
+    {
+      "slide": 2,
+      "text": "Research team",
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "duplicate"
+    },
+    {
+      "slide": 2,
+      "text": "Internal · do not forward",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 5524,
+      "end": 5549,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "3 / 4",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 3,
+      "text": "Next",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3666,
+      "end": 3670,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Roll out in three waves",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3689,
+      "end": 3712,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Wave 1: ",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3730,
+      "end": 3738,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "EU",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3741,
+      "end": 3743,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": " & ",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3747,
+      "end": 3754,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "UK",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3757,
+      "end": 3759,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": ". Wave 2: ",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3763,
+      "end": 3773,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "US",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3776,
+      "end": 3778,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": ". Wave 3: everyone else.",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3782,
+      "end": 3806,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Retention",
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "key"
+    },
+    {
+      "slide": 3,
+      "text": "Owner sign-off needed by 14 November",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 3852,
+      "end": 3888,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Harbor & Pine",
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "key"
+    },
+    {
+      "slide": 3,
+      "text": "Internal · do not forward",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 5524,
+      "end": 5549,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "4 / 4",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    }
+  ],
+  "report": {
+    "deck": "json-data.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 4,
+      "reached": 4,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "A calmer checkout",
+        "reached": true,
+        "exact": 9,
+        "ambiguous": 1,
+        "none": 1,
+        "total": 11
+      },
+      {
+        "slide": 1,
+        "title": "Shoppers wanted fewer surprises",
+        "reached": true,
+        "exact": 5,
+        "ambiguous": 2,
+        "none": 1,
+        "total": 8
+      },
+      {
+        "slide": 2,
+        "title": "The numbers after launch",
+        "reached": true,
+        "exact": 6,
+        "ambiguous": 3,
+        "none": 6,
+        "total": 15
+      },
+      {
+        "slide": 3,
+        "title": "Roll out in three waves",
+        "reached": true,
+        "exact": 11,
+        "ambiguous": 2,
+        "none": 1,
+        "total": 14
+      }
+    ],
+    "totals": {
+      "exact": 31,
+      "ambiguous": 8,
+      "none": 9,
+      "total": 48
+    },
+    "coverage": {
+      "exact": 31,
+      "ambiguous": 8,
+      "none": 9,
+      "total": 48,
+      "share": 0.6458333333333334,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [
+      {
+        "slide": 0,
+        "text": "Harbor & Pine",
+        "confidence": "ambiguous",
+        "reason": "key",
+        "candidates": 1
+      },
+      {
+        "slide": 0,
+        "text": "1 / 4",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 1,
+        "text": "Harbor & Pine",
+        "confidence": "ambiguous",
+        "reason": "key",
+        "candidates": 1
+      },
+      {
+        "slide": 1,
+        "text": "Research team",
+        "confidence": "ambiguous",
+        "reason": "duplicate",
+        "candidates": 2
+      },
+      {
+        "slide": 1,
+        "text": "2 / 4",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "Conversion",
+        "confidence": "none",
+        "reason": "no-match",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "3.4%",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "Average order",
+        "confidence": "none",
+        "reason": "no-match",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "$62",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "Retention",
+        "confidence": "ambiguous",
+        "reason": "key",
+        "candidates": 1
+      },
+      {
+        "slide": 2,
+        "text": "41%",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "Harbor & Pine",
+        "confidence": "ambiguous",
+        "reason": "key",
+        "candidates": 1
+      },
+      {
+        "slide": 2,
+        "text": "Research team",
+        "confidence": "ambiguous",
+        "reason": "duplicate",
+        "candidates": 2
+      },
+      {
+        "slide": 2,
+        "text": "3 / 4",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 3,
+        "text": "Retention",
+        "confidence": "ambiguous",
+        "reason": "key",
+        "candidates": 1
+      },
+      {
+        "slide": 3,
+        "text": "Harbor & Pine",
+        "confidence": "ambiguous",
+        "reason": "key",
+        "candidates": 1
+      },
+      {
+        "slide": 3,
+        "text": "4 / 4",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      }
+    ],
+    "inline": {
+      "blocks": 39,
+      "withInline": 2,
+      "allExact": 2,
+      "allPassed": 2,
+      "shareWithInline": 0.05128205128205128,
+      "shareAllExact": 1
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 28,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 31,
+      "passed": 31,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

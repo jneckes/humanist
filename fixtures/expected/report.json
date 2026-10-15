@@ -1,0 +1,685 @@
+{
+  "deckSha": "ac54eb3350ecf63020e70b5aad9f93794b13a92b9c49a83046fe2679b96d629b",
+  "coverage": {
+    "exact": 63,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 63
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Research report",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2020,
+      "end": 2035,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Customer onboarding study",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2048,
+      "end": 2073,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Customer Success · interviews with 24 accounts · October 2026",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2101,
+      "end": 2162,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Summary",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2253,
+      "end": 2260,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Method",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2300,
+      "end": 2306,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Findings",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2348,
+      "end": 2356,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Recommendations",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2405,
+      "end": 2420,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Appendix",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2462,
+      "end": 2470,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Summary",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2576,
+      "end": 2583,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "New accounts that reach their ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2596,
+      "end": 2626,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "first shared dashboard",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2634,
+      "end": 2656,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": " within seven days renew at almost twice the rate of those that do not.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2665,
+      "end": 2736,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Most delays happen before the product is even opened: ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2748,
+      "end": 2802,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "security review",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2806,
+      "end": 2821,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": ", single sign-on and data access approvals.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2826,
+      "end": 2869,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Median time to first dashboard: 11 days",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2893,
+      "end": 2932,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Accounts that stalled on SSO: 9 of 24",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2948,
+      "end": 2985,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Accounts with a named internal champion: 15 of 24",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3001,
+      "end": 3050,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Method",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3112,
+      "end": 3118,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "We interviewed admins and first users at 24 accounts that signed between April and July, and matched their answers to product telemetry.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3131,
+      "end": 3267,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Who we talked to",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3280,
+      "end": 3296,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Twelve mid-market accounts (100–999 employees)",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3321,
+      "end": 3367,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Eight enterprise accounts (1,000+ employees)",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3383,
+      "end": 3427,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Four accounts that churned in their first quarter",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3443,
+      "end": 3492,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "What we measured",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3516,
+      "end": 3532,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Telemetry came from the ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3545,
+      "end": 3569,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "onboarding_events",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3575,
+      "end": 3592,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": " table, joined on account id.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3599,
+      "end": 3628,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Findings",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3681,
+      "end": 3689,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Approvals, not product, set the pace",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3703,
+      "end": 3739,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Accounts that started security review before signing reached their first dashboard ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3752,
+      "end": 3835,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "six days sooner",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3843,
+      "end": 3858,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": ".",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3867,
+      "end": 3868,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Blocker",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3906,
+      "end": 3913,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Accounts",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3922,
+      "end": 3930,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Median delay",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3939,
+      "end": 3951,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Security questionnaire",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4000,
+      "end": 4022,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "14",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4043,
+      "end": 4045,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "6 days",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4066,
+      "end": 4072,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "SSO configuration",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4099,
+      "end": 4116,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "9",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4137,
+      "end": 4138,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "4 days",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4159,
+      "end": 4165,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Data warehouse access",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4192,
+      "end": 4213,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "7",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4234,
+      "end": 4235,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "5 days",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4256,
+      "end": 4262,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "We bought it in June and our analysts first logged in at the end of July.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4317,
+      "end": 4390,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Champions matter more than seats",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4412,
+      "end": 4444,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Of the four churned accounts, none had a named champion after the kickoff call.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4457,
+      "end": 4536,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Recommendations",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4596,
+      "end": 4611,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Send the security pack with the order form, not after it.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4636,
+      "end": 4693,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Offer a ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4709,
+      "end": 4717,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "thirty-minute SSO session",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4737,
+      "end": 4762,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": " in week one.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4766,
+      "end": 4779,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Ask every account to name a champion before kickoff.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4795,
+      "end": 4847,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Together these should bring the median time to first dashboard under seven days.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4870,
+      "end": 4950,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Appendix",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 5003,
+      "end": 5011,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Interview guide",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 5025,
+      "end": 5040,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Each interview took forty minutes and followed the same five prompts, starting with ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 5053,
+      "end": 5137,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "“Walk me through your first week.”",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 5141,
+      "end": 5175,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Recordings and notes are in the research drive, under ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 5192,
+      "end": 5246,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "2026-q3-onboarding",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 5252,
+      "end": 5270,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": ".",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 5277,
+      "end": 5278,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Prepared by Customer Success Research. Internal use only.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 5334,
+      "end": 5391,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "report.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "scroll",
+      "navKind": "scroll",
+      "count": 5,
+      "reached": 5,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": null,
+      "forwardKey": null,
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Summary",
+        "reached": true,
+        "exact": 20,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 20
+      },
+      {
+        "slide": 1,
+        "title": "Method",
+        "reached": true,
+        "exact": 9,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 9
+      },
+      {
+        "slide": 2,
+        "title": "Findings",
+        "reached": true,
+        "exact": 21,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 21
+      },
+      {
+        "slide": 3,
+        "title": "Recommendations",
+        "reached": true,
+        "exact": 6,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 6
+      },
+      {
+        "slide": 4,
+        "title": "Appendix",
+        "reached": true,
+        "exact": 7,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 7
+      }
+    ],
+    "totals": {
+      "exact": 63,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 63
+    },
+    "coverage": {
+      "exact": 63,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 63,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 50,
+      "withInline": 12,
+      "allExact": 12,
+      "allPassed": 12,
+      "shareWithInline": 0.24,
+      "shareAllExact": 1
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 63,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 63,
+      "passed": 63,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

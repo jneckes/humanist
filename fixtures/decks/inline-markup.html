@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Go-to-market update</title>
+<style>
+  :root { --bg: #fff7ed; --ink: #431407; --muted: #9a3412; --accent: #ea580c; --code: #fed7aa; font-family: "Inter", "Helvetica Neue", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #431407; overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide { position: absolute; inset: 0; display: none; padding: 104px 128px; background: var(--bg); color: var(--ink); }
+  .slide.active { display: block; }
+  .eyebrow { display: block; font-size: 24px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin-bottom: 20px; }
+  .eyebrow-line { margin: 140px 0 0; }
+  h1 { font-size: 100px; margin: 0 0 32px; letter-spacing: -.02em; }
+  h2 { font-size: 64px; margin: 0 0 44px; }
+  .hl { color: var(--accent); }
+  p, li { font-size: 34px; line-height: 1.45; max-width: 1250px; }
+  ul { padding-left: 40px; }
+  code { font: 30px/1 ui-monospace, "JetBrains Mono", monospace; background: var(--code); padding: 2px 8px; border-radius: 6px; }
+  a { color: var(--accent); }
+  .tagline { font-size: 40px; font-weight: 600; }
+  .small { font-size: 24px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+  <section class="slide active">
+    <p class="eyebrow-line"><span class="eyebrow">Quarterly review</span></p>
+    <h1>Go-to-market update</h1>
+    <p>Prepared by <strong>Revenue Operations</strong> for the <em>leadership team</em>.</p>
+    <p class="tagline"><b>Faster</b> <i>cheaper</i> <span>simpler</span></p>
+  </section>
+
+  <section class="slide">
+    <h2>Plan for <span class="hl">2027</span></h2>
+    <p>Revenue grew <strong>31%</strong> in Q3, led by <em>enterprise</em> renewals.</p>
+    <p>See the <a href="#appendix">appendix</a> for the <code>cohort_v2</code> definitions.</p>
+    <p>First line of the summary<br>second line after a break</p>
+  </section>
+
+  <section class="slide">
+    <h2>Who owns what</h2>
+    <ul>
+      <li><b>Hire</b> two solutions engineers <i>(EMEA)</i></li>
+      <li><strong>Owner</strong> Sales leadership</li>
+      <li><strong>Owner</strong> Marketing</li>
+      <li><b>Q3</b>&nbsp;<i>(preliminary)</i> numbers are unaudited</li>
+    </ul>
+  </section>
+
+  <section class="slide" id="appendix">
+    <h2>Appendix</h2>
+    <p><strong>Note: <em>pricing</em> is provisional</strong> until legal signs off.</p>
+    <p class="small" data-bl-e="bl-2">Questions? Ask in <a href="https://chat.northwind.example/gtm">#gtm-planning</a> or email <a href="mailto:revops@northwind.example">revops@northwind.example</a>.</p>
+    <p class="small">The full playbook is at <a href=https://northwind.example/gtm/>northwind.example/gtm</a></p>
+  </section>
+</div>
+
+<script>
+  (function () {
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var i = 0;
+    function show(n) {
+      i = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') show(i + 1);
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') show(i - 1);
+    });
+    function fit() {
+      var s = Math.min(innerWidth / 1600, innerHeight / 900);
+      document.getElementById('deck').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    addEventListener('resize', fit);
+    fit();
+  })();
+</script>
+</body>
+</html>

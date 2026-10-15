@@ -1,0 +1,16 @@
+{
+  "deck": "bom.html",
+  "kind": "generic",
+  "slides": 3,
+  "navKind": "index",
+  "titles": ["Onboarding in one week", "The first five days", "What new starters said"],
+  "bom": true,
+  "expect": [
+    { "text": "Onboarding in one week", "confidence": "exact", "strategy": "html-text", "why": "the file starts with EF BB BF: parse5 gets src.slice(1) and every offset is shifted back by 1 (9.2 rule 3); the probe's undo must restore the BOM byte for byte" },
+    { "text": "Laptop, accounts and a buddy before 10am.", "confidence": "exact", "strategy": "html-text", "why": "a div's own text after an inline <strong> (textIndex 0 of the div)" },
+    { "text": "Day 2–3", "confidence": "exact", "strategy": "html-text", "why": "a raw en dash (3 UTF-8 bytes, 1 UTF-16 unit) after the BOM" },
+    { "text": "Survey of 38 people who joined in Q3", "confidence": "exact", "strategy": "html-text", "why": "last static run, furthest from the BOM" },
+    { "text": "A plan for every new engineer, from laptop to first deploy", "confidence": "exact", "strategy": "script-literal", "why": "acorn parses the script's raw slice; its offsets must be shifted by the script start, which already counts the BOM" },
+    { "text": "By Friday I had shipped something real, and that changed how I felt about the job.", "confidence": "exact", "strategy": "json-literal", "why": "a JSON data block after the BOM" }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "deck": "csp-self-inline.html",
+  "kind": "generic",
+  "slides": 3,
+  "navKind": "index",
+  "titles": ["Checkout outage, 3 October", "Timeline", "What we are changing"],
+  "csp": {
+    "policy": "script-src 'self' 'unsafe-inline'",
+    "scriptsRan": "yes",
+    "siblingScriptRan": "absent",
+    "cspViolations": "exactly one script-src-elem entry, for the sibling script (Chromium reports a cross-origin redirected URL by its scheme only, e.g. 'script-src-elem blueline')",
+    "why": "the inline scripts run ('unsafe-inline') and set data-scripts-ran. The sibling csp-self-inline.js is requested on the <docId> host, redirected (307) to blueline://<docId>-files/ (9.1 Serving), and 'self' does not match that origin, so it is blocked: data-sibling-script-ran stays absent and data-csp-violations names it. Served from one web origin with its files, it would run. The overlay must add no violation of its own (9.1 Preload)."
+  },
+  "expect": [
+    { "text": "Checkout outage, 3 October", "confidence": "exact", "strategy": "html-text", "why": "parsed text in a deck with a page CSP; stamps and the served copy do not change the CSP" },
+    { "text": "Blameless review · 47 minutes of failed payments", "confidence": "exact", "strategy": "html-text", "why": "parsed text" },
+    { "text": "14:02", "confidence": "exact", "strategy": "script-literal", "why": "a literal that looks like a time: it equals one run, so it is exact, not computed" },
+    { "text": "Card payments start failing for one acquirer", "confidence": "exact", "strategy": "script-literal", "why": "literal in a nested array, rendered with textContent by an inline script the CSP allows" },
+    { "text": "Add the backup acquirer to the weekly game day", "confidence": "exact", "strategy": "script-literal", "why": "list item built by JS" }
+  ]
+}

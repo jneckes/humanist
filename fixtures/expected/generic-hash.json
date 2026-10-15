@@ -1,0 +1,370 @@
+{
+  "deckSha": "f965b4f442d8af36eb71a6c2dc93fcd46ff0ca5ef48623955577b1bc5c408ac4",
+  "coverage": {
+    "exact": 28,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 28
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Hiring plan FY27",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1697,
+      "end": 1713,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "People team proposal for the leadership meeting",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1739,
+      "end": 1786,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Use the arrow keys · each slide has its own link",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2875,
+      "end": 2923,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Roles we need",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1849,
+      "end": 1862,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Team",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1894,
+      "end": 1898,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Role",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1907,
+      "end": 1911,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "When",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1920,
+      "end": 1924,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Platform",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1949,
+      "end": 1957,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Staff engineer, reliability",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1966,
+      "end": 1993,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Q1",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2002,
+      "end": 2004,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Sales",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2029,
+      "end": 2034,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Solutions engineer, EMEA",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2043,
+      "end": 2067,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Q1",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2076,
+      "end": 2078,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Support",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2103,
+      "end": 2110,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Support lead, APAC hours",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2119,
+      "end": 2143,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Q2",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2152,
+      "end": 2154,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "A faster loop",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2238,
+      "end": 2251,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Week 1",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2308,
+      "end": 2314,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Screen and take-home brief",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2318,
+      "end": 2344,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Week 2",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2378,
+      "end": 2384,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Two panels on the same day",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2388,
+      "end": 2414,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Week 3",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2448,
+      "end": 2454,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Offer within 48 hours",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2458,
+      "end": 2479,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Budget",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2556,
+      "end": 2562,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Fully loaded cost for the year, including recruiting fees",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2588,
+      "end": 2645,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "$1.9M",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2669,
+      "end": 2674,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "The ask",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2735,
+      "end": 2742,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Approve all three roles today so offers go out before the holidays.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2768,
+      "end": 2835,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "generic-hash.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "hash",
+      "count": 5,
+      "reached": 5,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Hiring plan FY27",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 3
+      },
+      {
+        "slide": 1,
+        "title": "Roles we need",
+        "reached": true,
+        "exact": 13,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 13
+      },
+      {
+        "slide": 2,
+        "title": "A faster loop",
+        "reached": true,
+        "exact": 7,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 7
+      },
+      {
+        "slide": 3,
+        "title": "Budget",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 3
+      },
+      {
+        "slide": 4,
+        "title": "The ask",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      }
+    ],
+    "totals": {
+      "exact": 28,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 28
+    },
+    "coverage": {
+      "exact": 28,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 28,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 28,
+      "withInline": 3,
+      "allExact": 3,
+      "allPassed": 3,
+      "shareWithInline": 0.10714285714285714,
+      "shareAllExact": 1
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 28,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 28,
+      "passed": 28,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

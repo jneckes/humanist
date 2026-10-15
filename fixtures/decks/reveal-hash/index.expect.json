@@ -1,0 +1,30 @@
+{
+  "deck": "index.html",
+  "kind": "reveal",
+  "slides": 8,
+  "navKind": "reveal",
+  "titles": ["Northwind 2027", "Where we are", "Three bets for 2027", "Bet one: self-serve", "Bet two: partners", "Bet three: platform", "What we will stop doing", "Questions"],
+  "revealIndices": [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2], [2, 3], [3, 0], [4, 0]],
+  "hashes": ["#/title", "#/where-we-are", "#/bets", "#/bet-one", "#/bet-two", "#/bet-three", "#/stop", "#/questions"],
+  "designSize": { "w": 1600, "h": 900 },
+  "diagnostics": {
+    "heading": "h2#diag-heading[data-bl-diag=heading]",
+    "keyLog": "document.documentElement.dataset.blKeyLog = '<seq>:<key>:<isTrusted>'; seq counts keydown events seen by the page's capture listeners on window and document",
+    "keyTrace": "document.documentElement.dataset.blKeyTrace: the last 20 '<seq>:<window|document>:<key>:<isTrusted>' entries"
+  },
+  "expect": [
+    { "text": "Northwind 2027", "confidence": "exact", "strategy": "html-text", "why": "reveal.js 6.0.2 slide text; the white theme sets text-transform: uppercase on headings, but the DOM data (and the slide title) is the source case" },
+    { "text": "Strategy offsite, day one", "confidence": "exact", "strategy": "html-text", "why": "the Diagnostics heading (h2#diag-heading) that becomes contenteditable=\"plaintext-only\" (section 10, Diagnostics window)" },
+    { "text": "Leadership team · Lisbon · 15 October 2026", "confidence": "exact", "strategy": "html-text", "why": "raw middle dots in parsed text" },
+    { "text": "$48M", "confidence": "exact", "strategy": "html-text", "why": "a stat in parsed text; digits in parsed text are exact" },
+    { "text": "212", "confidence": "exact", "strategy": "html-text", "why": "a run that is only digits" },
+    { "text": "Three bets for 2027", "confidence": "exact", "strategy": "html-text", "why": "top of a vertical stack (indices [2, 0])" },
+    { "text": "Bet two: partners", "confidence": "exact", "strategy": "html-text", "why": "an h3 inside a vertical slide ([2, 2]); reached with Reveal.slide(2, 2)" },
+    { "text": "Owner: Platform engineering", "confidence": "exact", "strategy": "html-text", "why": "last vertical slide ([2, 3])" },
+    { "text": "Quarterly roadmap decks nobody reads", "confidence": "exact", "strategy": "html-text", "why": "list item on a horizontal slide after the stack ([3, 0])" },
+    { "text": "Day two starts at 9:00 in the garden room.", "confidence": "exact", "strategy": "html-text", "why": "a time in parsed text" },
+    { "text": "Self-serve first for teams under fifty", "confidence": "exact", "strategy": "html-text", "hiddenUntil": "fragment", "why": "a .fragment: opacity 0 until its fragment step is shown, so a walk that only calls Reveal.slide(h, v) never counts it (section 10 step 3)" },
+    { "text": "Leave ten minutes for the hiring plan; Priya has the numbers.", "confidence": "exact", "strategy": "html-text", "hiddenUntil": "speaker-view", "why": "speaker notes (<aside class=\"notes\">) are display: none in the deck; step 4 never counts them" },
+    { "text": "Questions. Day two starts at 9:00 in the garden room. ", "confidence": "none", "strategy": null, "reason": "no-match", "hiddenUntil": "clipped", "why": "reveal.js's own .aria-status live region: a 1×1 px box clipped to a zero area (clip: rect(1px, 1px, 1px, 1px)) at (0, 0) that repeats the current slide's text. A literal reading of section 10 step 4 would count it (its rect is non-zero), but it shows nothing, it is built at runtime so it could never map, and it repeats every run of the slide, so every probe sentinel would appear in it too. The walk skips text in absolutely positioned elements clipped to a zero area (core/dom-walk.ts WalkOptions.skipClipped), so it is never counted; were it counted it would be none (no-match)" }
+  ]
+}

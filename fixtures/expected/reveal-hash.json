@@ -1,0 +1,388 @@
+{
+  "deckSha": "780931425b020f770e8965f1a4d0bb662daef9b22099dbb0af81aa1483250333",
+  "coverage": {
+    "exact": 27,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 27
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Northwind 2027",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2312,
+      "end": 2326,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Strategy offsite, day one",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2383,
+      "end": 2408,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Leadership team · Lisbon · 15 October 2026",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2436,
+      "end": 2478,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Where we are",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2541,
+      "end": 2553,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "$48M",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2619,
+      "end": 2623,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "ARR, up 34% on last year",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2638,
+      "end": 2662,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "212",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2710,
+      "end": 2713,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "customers on annual plans",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2728,
+      "end": 2753,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "96%",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2801,
+      "end": 2804,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "gross revenue retention",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2819,
+      "end": 2842,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Three bets for 2027",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2937,
+      "end": 2956,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Press the down arrow for each bet",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3228,
+      "end": 3261,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Bet one: self-serve",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3352,
+      "end": 3371,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Half of new logos should start on a card, without talking to sales.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3390,
+      "end": 3457,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Owner: Growth",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3489,
+      "end": 3502,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Bet two: partners",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3608,
+      "end": 3625,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Three systems integrators carry the enterprise motion in EMEA.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3644,
+      "end": 3706,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Owner: Partnerships",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3738,
+      "end": 3757,
+      "probe": "pass"
+    },
+    {
+      "slide": 5,
+      "text": "Bet three: platform",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3865,
+      "end": 3884,
+      "probe": "pass"
+    },
+    {
+      "slide": 5,
+      "text": "Billing, identity and audit move to one shared service by Q3.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3903,
+      "end": 3964,
+      "probe": "pass"
+    },
+    {
+      "slide": 5,
+      "text": "Owner: Platform engineering",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3996,
+      "end": 4023,
+      "probe": "pass"
+    },
+    {
+      "slide": 6,
+      "text": "What we will stop doing",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4110,
+      "end": 4133,
+      "probe": "pass"
+    },
+    {
+      "slide": 6,
+      "text": "Custom contracts under $50k",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4162,
+      "end": 4189,
+      "probe": "pass"
+    },
+    {
+      "slide": 6,
+      "text": "On-premises installs for new customers",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4207,
+      "end": 4245,
+      "probe": "pass"
+    },
+    {
+      "slide": 6,
+      "text": "Quarterly roadmap decks nobody reads",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4263,
+      "end": 4299,
+      "probe": "pass"
+    },
+    {
+      "slide": 7,
+      "text": "Questions",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4372,
+      "end": 4381,
+      "probe": "pass"
+    },
+    {
+      "slide": 7,
+      "text": "Day two starts at 9:00 in the garden room.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4396,
+      "end": 4438,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "index.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "reveal",
+      "navKind": "reveal",
+      "count": 8,
+      "reached": 8,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": null,
+      "forwardKey": null,
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Northwind 2027",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 3
+      },
+      {
+        "slide": 1,
+        "title": "Where we are",
+        "reached": true,
+        "exact": 7,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 7
+      },
+      {
+        "slide": 2,
+        "title": "Three bets for 2027",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      },
+      {
+        "slide": 3,
+        "title": "Bet one: self-serve",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 3
+      },
+      {
+        "slide": 4,
+        "title": "Bet two: partners",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 3
+      },
+      {
+        "slide": 5,
+        "title": "Bet three: platform",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 3
+      },
+      {
+        "slide": 6,
+        "title": "What we will stop doing",
+        "reached": true,
+        "exact": 4,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 4
+      },
+      {
+        "slide": 7,
+        "title": "Questions",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      }
+    ],
+    "totals": {
+      "exact": 27,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 27
+    },
+    "coverage": {
+      "exact": 27,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 27,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 27,
+      "withInline": 3,
+      "allExact": 3,
+      "allPassed": 3,
+      "shareWithInline": 0.1111111111111111,
+      "shareAllExact": 1
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 27,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 27,
+      "passed": 27,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

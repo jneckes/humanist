@@ -1,0 +1,18 @@
+{
+  "deck": "single.html",
+  "kind": "single",
+  "slides": 1,
+  "navKind": "none",
+  "titles": ["Analytics your whole team can read"],
+  "expect": [
+    { "text": "Northwind Labs", "confidence": "exact", "strategy": "html-text", "why": "a one-pager with no section, .slide, [data-slide] or section[id]: one pass (section 10 step 3), and all of it fits in 1600×900" },
+    { "text": "Analytics your whole team can read", "confidence": "exact", "strategy": "html-text", "why": "the first h1–h3 is the title (9.4)" },
+    { "text": "Book a demo", "confidence": "exact", "strategy": "html-text", "why": "link styled as a button" },
+    { "text": "212", "confidence": "exact", "strategy": "html-text", "why": "a stat in parsed text" },
+    { "text": "11 min", "confidence": "exact", "strategy": "html-text", "why": "a stat in parsed text" },
+    { "text": "Send a live dashboard to anyone with a link that expires.", "confidence": "exact", "strategy": "html-text", "why": "feature card body" },
+    { "text": "Figures as of 30 September 2026. Northwind Labs is a fictional company used in examples.", "confidence": "exact", "strategy": "html-text", "why": "fine print at the bottom, still inside the viewport" },
+    { "text": "Get the monthly digest", "confidence": "exact", "strategy": "html-text", "why": "a <label> (section 7 rule 1); its for and the input id/name are keys, but only literal runs are checked against keys" },
+    { "text": "Subscribe", "confidence": "exact", "strategy": "html-text", "why": "a static <button> (section 7 rule 1)" }
+  ]
+}

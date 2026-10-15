@@ -1,0 +1,21 @@
+{
+  "deck": "csp-default-none.html",
+  "kind": "generic",
+  "slides": 3,
+  "navKind": "index",
+  "titles": ["Fieldkit 2.0", "Built for the basement", "From the pilot"],
+  "csp": {
+    "policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'",
+    "scriptsRan": "yes",
+    "imageBlocked": "yes",
+    "cspViolations": "img-src data",
+    "why": "the strictest fixture: nothing loads by URL. Inline scripts and styles run; the data: logo is blocked (img-src falls back to default-src 'none'), which is the deck's own CSP being honoured. The overlay must still mount and work with constructable stylesheets and CSSOM writes only, and add no violation (9.1 Preload). SPEC 9.1 also wants a note card with a recording here: recordings arrive in Phase 5, so that part is not in this fixture yet."
+  },
+  "expect": [
+    { "text": "Fieldkit 2.0", "confidence": "exact", "strategy": "html-text", "why": "parsed text" },
+    { "text": "Inspections that work with no signal", "confidence": "exact", "strategy": "html-text", "why": "parsed text" },
+    { "text": "Works offline", "confidence": "exact", "strategy": "script-literal", "why": "card title literal rendered by an inline script" },
+    { "text": "Conflicts are merged field by field, never overwritten.", "confidence": "exact", "strategy": "script-literal", "why": "card body literal" },
+    { "text": "Our inspectors stopped carrying paper the week we rolled it out.", "confidence": "exact", "strategy": "script-literal", "why": "a const string rendered with textContent" }
+  ]
+}

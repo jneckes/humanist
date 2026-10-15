@@ -1,0 +1,235 @@
+{
+  "deckSha": "048fe69f23bcb66cb3bc968d7f640935a4bcee04b98f400eb91080b31cdf2375",
+  "coverage": {
+    "exact": 14,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 14
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Meet ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1340,
+      "end": 1345,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Relay",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1349,
+      "end": 1354,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Booth 14 · runs on its own, so visitors cannot leave the demo",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1372,
+      "end": 1433,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Kiosk mode",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1991,
+      "end": 2001,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Every keystroke stays here",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1477,
+      "end": 1503,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "This page calls preventDefault() on every keydown, including browser shortcuts, so a visitor cannot print, save or zoom it.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1516,
+      "end": 1639,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Arrow keys still move the demo",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1683,
+      "end": 1713,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Press ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1726,
+      "end": 1732,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "→",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1750,
+      "end": 1751,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": " for the next slide and ",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1758,
+      "end": 1782,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "←",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1800,
+      "end": 1801,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": " to go back.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1808,
+      "end": 1820,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Ask us for a trial",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1864,
+      "end": 1882,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Scan the code on the stand, or leave your card with the team.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1895,
+      "end": 1956,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "keys-prevent-default.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 4,
+      "reached": 4,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Meet Relay",
+        "reached": true,
+        "exact": 4,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 4
+      },
+      {
+        "slide": 1,
+        "title": "Every keystroke stays here",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      },
+      {
+        "slide": 2,
+        "title": "Arrow keys still move the demo",
+        "reached": true,
+        "exact": 6,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 6
+      },
+      {
+        "slide": 3,
+        "title": "Ask us for a trial",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      }
+    ],
+    "totals": {
+      "exact": 14,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 14
+    },
+    "coverage": {
+      "exact": 14,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 14,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 11,
+      "withInline": 2,
+      "allExact": 2,
+      "allPassed": 2,
+      "shareWithInline": 0.18181818181818182,
+      "shareAllExact": 1
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 14,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 14,
+      "passed": 14,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

@@ -1,0 +1,245 @@
+{
+  "deckSha": "a34a122f5b5574a75b763840b3b8a612d085bad2a3838813033e9a0572d7c8c6",
+  "coverage": {
+    "exact": 0,
+    "ambiguous": 0,
+    "none": 9,
+    "total": 9
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "“Quarterly review” – Q3",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "not-utf8"
+    },
+    {
+      "slide": 0,
+      "text": "Sales & marketing · prepared for the board…",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "not-utf8"
+    },
+    {
+      "slide": 1,
+      "text": "Results at a glance",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "not-utf8"
+    },
+    {
+      "slide": 1,
+      "text": "• Revenue: €4.8m, up 12% – ahead of plan",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "not-utf8"
+    },
+    {
+      "slide": 1,
+      "text": "• Win rate: 31% (Q2: 27%)",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "not-utf8"
+    },
+    {
+      "slide": 1,
+      "text": "• Brand™ awareness doubled in the DACH region",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "not-utf8"
+    },
+    {
+      "slide": 2,
+      "text": "What’s next",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "not-utf8"
+    },
+    {
+      "slide": 2,
+      "text": "‘We’ll open Zürich in Q1 — and hire locally.’",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "not-utf8"
+    },
+    {
+      "slide": 2,
+      "text": "— Head of Sales, Europe",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "not-utf8"
+    }
+  ],
+  "report": {
+    "deck": "windows-1252.html",
+    "utf8": false,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 3,
+      "reached": 3,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "“Quarterly review” – Q3",
+        "reached": true,
+        "exact": 0,
+        "ambiguous": 0,
+        "none": 2,
+        "total": 2
+      },
+      {
+        "slide": 1,
+        "title": "Results at a glance",
+        "reached": true,
+        "exact": 0,
+        "ambiguous": 0,
+        "none": 4,
+        "total": 4
+      },
+      {
+        "slide": 2,
+        "title": "What’s next",
+        "reached": true,
+        "exact": 0,
+        "ambiguous": 0,
+        "none": 3,
+        "total": 3
+      }
+    ],
+    "totals": {
+      "exact": 0,
+      "ambiguous": 0,
+      "none": 9,
+      "total": 9
+    },
+    "coverage": {
+      "exact": 0,
+      "ambiguous": 0,
+      "none": 9,
+      "total": 9,
+      "share": 0,
+      "probeFailed": 0,
+      "verified": false
+    },
+    "nonExact": [
+      {
+        "slide": 0,
+        "text": "“Quarterly review” – Q3",
+        "confidence": "none",
+        "reason": "not-utf8",
+        "candidates": 0
+      },
+      {
+        "slide": 0,
+        "text": "Sales & marketing · prepared for the board…",
+        "confidence": "none",
+        "reason": "not-utf8",
+        "candidates": 0
+      },
+      {
+        "slide": 1,
+        "text": "Results at a glance",
+        "confidence": "none",
+        "reason": "not-utf8",
+        "candidates": 0
+      },
+      {
+        "slide": 1,
+        "text": "• Revenue: €4.8m, up 12% – ahead of plan",
+        "confidence": "none",
+        "reason": "not-utf8",
+        "candidates": 0
+      },
+      {
+        "slide": 1,
+        "text": "• Win rate: 31% (Q2: 27%)",
+        "confidence": "none",
+        "reason": "not-utf8",
+        "candidates": 0
+      },
+      {
+        "slide": 1,
+        "text": "• Brand™ awareness doubled in the DACH region",
+        "confidence": "none",
+        "reason": "not-utf8",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "What’s next",
+        "confidence": "none",
+        "reason": "not-utf8",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "‘We’ll open Zürich in Q1 — and hire locally.’",
+        "confidence": "none",
+        "reason": "not-utf8",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "— Head of Sales, Europe",
+        "confidence": "none",
+        "reason": "not-utf8",
+        "candidates": 0
+      }
+    ],
+    "inline": {
+      "blocks": 9,
+      "withInline": 0,
+      "allExact": 0,
+      "allPassed": 0,
+      "shareWithInline": 0,
+      "shareAllExact": 0
+    },
+    "probe": {
+      "ran": false,
+      "why": "windows-1252.html is not UTF-8: every node is none (not-utf8) and the file is never written (9.2 rule 1)",
+      "runs": 0,
+      "originalUnchanged": true,
+      "copyRemoved": null,
+      "nodes": 0,
+      "passed": 0,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

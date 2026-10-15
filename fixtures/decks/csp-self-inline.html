@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-inline'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Incident review: checkout outage</title>
+<style>
+  :root { --bg: #fff1f2; --ink: #4c0519; --muted: #9f1239; --accent: #e11d48; --card: #ffffff; font-family: "Inter", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #4c0519; overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide { position: absolute; inset: 0; display: none; padding: 100px 128px; background: var(--bg); color: var(--ink); }
+  .slide.active { display: block; }
+  h1 { font-size: 96px; margin: 160px 0 24px; letter-spacing: -.02em; }
+  h2 { font-size: 62px; margin: 0 0 44px; }
+  .lede { font-size: 32px; color: var(--muted); }
+  ol.timeline { list-style: none; padding: 0; margin: 0; font-size: 30px; }
+  ol.timeline li { display: grid; grid-template-columns: 160px 1fr; gap: 24px; padding: 16px 0; border-bottom: 1px solid #fecdd3; }
+  ol.timeline time { font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums; }
+  .actions li { font-size: 32px; margin-bottom: 18px; }
+</style>
+<script>
+  // Every CSP violation in this document, as "<effectiveDirective> <blockedURI>" joined by " | ", so a test can
+  // tell the deck's own expected violations from any the overlay would cause (SPEC 9.1, Preload).
+  (function () {
+    var seen = [];
+    document.addEventListener('securitypolicyviolation', function (e) {
+      seen.push(e.effectiveDirective + ' ' + (e.blockedURI || '-'));
+      document.documentElement.dataset.cspViolations = seen.join(' | ');
+    });
+  })();
+</script>
+</head>
+<body>
+<div class="deck" id="deck">
+  <section class="slide active">
+    <h1>Checkout outage, 3 October</h1>
+    <p class="lede">Blameless review · 47 minutes of failed payments</p>
+  </section>
+  <section class="slide">
+    <h2>Timeline</h2>
+    <ol class="timeline" id="timeline"></ol>
+  </section>
+  <section class="slide">
+    <h2>What we are changing</h2>
+    <ul class="actions" id="actions"></ul>
+  </section>
+</div>
+
+<!-- A sibling script: 'self' is blueline://<docId>, but sibling files are served from blueline://<docId>-files (9.1), so this may be blocked. It only sets data-sibling-script-ran. -->
+<script src="csp-self-inline.js"></script>
+<script>
+  (function () {
+    var EVENTS = [
+      ['14:02', 'Card payments start failing for one acquirer'],
+      ['14:09', 'On-call engineer paged by the error-rate alert'],
+      ['14:31', 'Traffic shifted to the backup acquirer'],
+      ['14:49', 'Error rate back to normal; incident closed'],
+    ];
+    var ACTIONS = [
+      'Fail over automatically after two minutes of errors',
+      'Add the backup acquirer to the weekly game day',
+    ];
+
+    var timeline = document.getElementById('timeline');
+    EVENTS.forEach(function (e) {
+      var li = document.createElement('li');
+      var t = document.createElement('time');
+      t.textContent = e[0];
+      var what = document.createElement('span');
+      what.textContent = e[1];
+      li.append(t, what);
+      timeline.appendChild(li);
+    });
+    var actions = document.getElementById('actions');
+    ACTIONS.forEach(function (a) {
+      var li = document.createElement('li');
+      li.textContent = a;
+      actions.appendChild(li);
+    });
+
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var i = 0;
+    function show(n) {
+      i = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') show(i + 1);
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') show(i - 1);
+    });
+    function fit() {
+      var s = Math.min(innerWidth / 1600, innerHeight / 900);
+      document.getElementById('deck').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    addEventListener('resize', fit);
+    fit();
+
+    document.documentElement.dataset.scriptsRan = 'yes';
+  })();
+</script>
+</body>
+</html>

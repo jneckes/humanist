@@ -1,0 +1,199 @@
+{
+  "deckSha": "21dd2aec3a7f227c0d1ac348a287c303e636e087130e95ea8cc9dde8d07bb618",
+  "coverage": {
+    "exact": 11,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 11
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Release engineering review",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1601,
+      "end": 1627,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "We moved the release train from monthly to weekly,\nand kept the change-failure rate flat.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1654,
+      "end": 1744,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "How a release ships now",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1801,
+      "end": 1824,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "npm run build\nnpm run deploy -- --canary 5%\n",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1855,
+      "end": 1901,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Every merge to main ships within the hour, or the train waits for the fix.",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2393,
+      "end": 2470,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Train health since March",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1996,
+      "end": 2020,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Weekly trains since March.\nTwo rollbacks, both under ten minutes.",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2490,
+      "end": 2556,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Metric",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2094,
+      "end": 2100,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Last 30 days",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2291,
+      "end": 2303,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Lead time",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2152,
+      "end": 2161,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Under two days",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2318,
+      "end": 2332,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "crlf.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 3,
+      "reached": 3,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Release engineering review",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      },
+      {
+        "slide": 1,
+        "title": "How a release ships now",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 3
+      },
+      {
+        "slide": 2,
+        "title": "Train health since March",
+        "reached": true,
+        "exact": 6,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 6
+      }
+    ],
+    "totals": {
+      "exact": 11,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 11
+    },
+    "coverage": {
+      "exact": 11,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 11,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 11,
+      "withInline": 0,
+      "allExact": 0,
+      "allPassed": 0,
+      "shareWithInline": 0,
+      "shareAllExact": 0
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 11,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 11,
+      "passed": 11,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

@@ -1,0 +1,226 @@
+{
+  "deckSha": "a8203d6a8f1330e9cbf11162f3b0a09c960cdea70934a9dc2e8edb1c3f02ca4c",
+  "coverage": {
+    "exact": 14,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 14
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Launch plan — “Atlas” 🚀",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1468,
+      "end": 1492,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Six weeks to general availability — “no surprises” 🎯",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2309,
+      "end": 2362,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Milestones — “week by week” 📅",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1581,
+      "end": 1611,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Private beta — “50 teams” 🧪",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1667,
+      "end": 1695,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Public beta — “open sign-up” 🚀",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1711,
+      "end": 1761,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "General availability — “day one” 🎉",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2397,
+      "end": 2454,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Post-launch review — “what broke” 🔍",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2464,
+      "end": 2525,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Owner: Café team — “Mia” 👩🏽‍💻",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2147,
+      "end": 2179,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Regions — “EU first” 🇪🇺",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2196,
+      "end": 2251,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Risks — “and who owns them” 🧭",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1901,
+      "end": 1931,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Risk",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2556,
+      "end": 2560,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": " — “pricing page” 🧯",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2564,
+      "end": 2584,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Owner — “platform” 🛠️",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2606,
+      "end": 2628,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Café launch party — “Friday” 🥳",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2030,
+      "end": 2062,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "unicode-edit-points.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 3,
+      "reached": 3,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Launch plan — “Atlas” 🚀",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      },
+      {
+        "slide": 1,
+        "title": "Milestones — “week by week” 📅",
+        "reached": true,
+        "exact": 7,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 7
+      },
+      {
+        "slide": 2,
+        "title": "Risks — “and who owns them” 🧭",
+        "reached": true,
+        "exact": 5,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 5
+      }
+    ],
+    "totals": {
+      "exact": 14,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 14
+    },
+    "coverage": {
+      "exact": 14,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 14,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 13,
+      "withInline": 1,
+      "allExact": 1,
+      "allPassed": 1,
+      "shareWithInline": 0.07692307692307693,
+      "shareAllExact": 1
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 14,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 14,
+      "passed": 14,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

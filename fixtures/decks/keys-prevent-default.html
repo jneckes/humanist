@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiosk mode: trade show demo</title>
+<style>
+  :root { --bg: #0c0a09; --ink: #fafaf9; --muted: #a8a29e; --accent: #facc15; font-family: "Inter", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide { position: absolute; inset: 0; padding: 110px 130px; background: var(--bg); color: var(--ink); display: none; }
+  .slide.on { display: block; }
+  h1 { font-size: 110px; margin: 160px 0 24px; letter-spacing: -.03em; }
+  h1 em { font-style: normal; color: var(--accent); }
+  h2 { font-size: 68px; margin: 0 0 48px; }
+  p { font-size: 34px; line-height: 1.4; color: var(--muted); max-width: 1150px; }
+  .kbd { display: inline-block; border: 2px solid var(--muted); border-radius: 8px; padding: 0 12px; font: 600 26px/1.6 ui-monospace, monospace; color: var(--ink); }
+  .badge { position: absolute; right: 48px; top: 40px; font-size: 18px; color: var(--accent); letter-spacing: .1em; text-transform: uppercase; }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+  <div class="slide on">
+    <h1>Meet <em>Relay</em></h1>
+    <p>Booth 14 · runs on its own, so visitors cannot leave the demo</p>
+  </div>
+  <div class="slide">
+    <h2>Every keystroke stays here</h2>
+    <p>This page calls preventDefault() on every keydown, including browser shortcuts, so a visitor cannot print, save or zoom it.</p>
+  </div>
+  <div class="slide">
+    <h2>Arrow keys still move the demo</h2>
+    <p>Press <span class="kbd">→</span> for the next slide and <span class="kbd">←</span> to go back.</p>
+  </div>
+  <div class="slide">
+    <h2>Ask us for a trial</h2>
+    <p>Scan the code on the stand, or leave your card with the team.</p>
+  </div>
+  <div class="badge">Kiosk mode</div>
+</div>
+
+<script>
+  (function () {
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var at = 0;
+    var seen = [];
+    var root = document.documentElement;
+
+    function show(i) {
+      at = Math.max(0, Math.min(slides.length - 1, i));
+      slides.forEach(function (s, k) { s.classList.toggle('on', k === at); });
+    }
+
+    function chord(e) {
+      var mods = (e.metaKey ? 'Meta+' : '') + (e.ctrlKey ? 'Control+' : '') + (e.altKey ? 'Alt+' : '') + (e.shiftKey ? 'Shift+' : '');
+      return mods + e.key;
+    }
+
+    // Swallow everything (SPEC 6.2: app chords must still work because main takes them in before-input-event,
+    // before the page sees them). The page records what it saw, for the test:
+    //   data-page-keys     the last 50 chords the page received, space-separated (e.g. "ArrowRight Meta+s")
+    //   data-page-key-count how many keydown events reached this listener
+    window.addEventListener('keydown', function (e) {
+      e.preventDefault();
+      seen.push(chord(e));
+      if (seen.length > 50) seen.shift();
+      root.dataset.pageKeys = seen.join(' ');
+      root.dataset.pageKeyCount = String(Number(root.dataset.pageKeyCount || 0) + 1);
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') show(at + 1);
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') show(at - 1);
+    }, true);
+
+    // Belt and braces, as kiosk decks do: block the context menu and wheel zoom too.
+    window.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    window.addEventListener('wheel', function (e) { if (e.ctrlKey) e.preventDefault(); }, { passive: false });
+
+    function fit() {
+      var s = Math.min(innerWidth / 1600, innerHeight / 900);
+      document.getElementById('deck').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    addEventListener('resize', fit);
+    fit();
+  })();
+</script>
+</body>
+</html>

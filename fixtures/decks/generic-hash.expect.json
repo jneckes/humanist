@@ -1,0 +1,18 @@
+{
+  "deck": "generic-hash.html",
+  "kind": "generic",
+  "slides": 5,
+  "navKind": "hash",
+  "titles": ["Hiring plan FY27", "Roles we need", "A faster loop", "Budget", "The ask"],
+  "hashes": ["#intro", "#roles", "#process", "#budget", "#ask"],
+  "expect": [
+    { "text": "Hiring plan FY27", "confidence": "exact", "strategy": "html-text", "why": "the engine writes location.hash = '#<slide id>' on every move and renders from hashchange, so 9.4 navigates it by hash (nav.value is the hash); it opens with no hash, so the first slide's hash appears only after navigating back to it" },
+    { "text": "Use the arrow keys · each slide has its own link", "confidence": "exact", "strategy": "html-text", "why": "chrome outside the slides, visible on every slide; counted once" },
+    { "text": "Q1", "confidence": "exact", "strategy": "html-text", "why": "two cells hold the same text; each maps to its own stamp" },
+    { "text": "Staff engineer, reliability", "confidence": "exact", "strategy": "html-text", "why": "table cell" },
+    { "text": "Week 2", "confidence": "exact", "strategy": "html-text", "why": "<b> inside a div that also has its own text" },
+    { "text": "Two panels on the same day", "confidence": "exact", "strategy": "html-text", "why": "the div's own text after the <b>" },
+    { "text": "$1.9M", "confidence": "exact", "strategy": "html-text", "why": "a number in parsed text" },
+    { "text": "Approve all three roles today so offers go out before the holidays.", "confidence": "exact", "strategy": "html-text", "why": "last slide, reached by hash" }
+  ]
+}

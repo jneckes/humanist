@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Customer onboarding study</title>
+<style>
+  :root { --ink: #1f2328; --muted: #59636e; --accent: #0969da; --line: #d1d9e0; --soft: #f6f8fa; font-family: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; color: var(--ink); background: #fff; line-height: 1.6; font-size: 19px; }
+  header.masthead { padding: 72px 0 40px; border-bottom: 1px solid var(--line); }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 32px; }
+  .kicker { font-size: 15px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); margin: 0 0 8px; }
+  h1 { font-size: 52px; line-height: 1.1; margin: 0 0 16px; letter-spacing: -.02em; }
+  .byline { color: var(--muted); margin: 0; }
+  nav.toc { margin: 32px 0 0; padding: 20px 24px; background: var(--soft); border-radius: 12px; }
+  nav.toc ol { margin: 0; padding-left: 24px; columns: 2; }
+  nav.toc a { color: var(--accent); text-decoration: none; }
+  section { padding: 56px 0 72px; border-bottom: 1px solid var(--line); min-height: 760px; }
+  h2 { font-size: 34px; margin: 0 0 20px; }
+  h3 { font-size: 23px; margin: 36px 0 8px; }
+  p { margin: 0 0 18px; }
+  code { font: 16px ui-monospace, "SF Mono", monospace; background: var(--soft); padding: 2px 6px; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0 24px; font-size: 17px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  th { background: var(--soft); font-weight: 600; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  blockquote { margin: 24px 0; padding: 4px 24px; border-left: 4px solid var(--accent); color: var(--muted); font-style: italic; }
+  footer { padding: 40px 0 80px; color: var(--muted); font-size: 15px; }
+</style>
+</head>
+<body>
+<header class="masthead">
+  <div class="wrap">
+    <p class="kicker">Research report</p>
+    <h1>Customer onboarding study</h1>
+    <p class="byline">Customer Success · interviews with 24 accounts · October 2026</p>
+    <nav class="toc" aria-label="Contents">
+      <ol>
+        <li><a href="#summary">Summary</a></li>
+        <li><a href="#method">Method</a></li>
+        <li><a href="#findings">Findings</a></li>
+        <li><a href="#recommendations">Recommendations</a></li>
+        <li><a href="#appendix">Appendix</a></li>
+      </ol>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <section id="summary">
+    <h2>Summary</h2>
+    <p>New accounts that reach their <strong>first shared dashboard</strong> within seven days renew at almost twice the rate of those that do not.</p>
+    <p>Most delays happen before the product is even opened: <em>security review</em>, single sign-on and data access approvals.</p>
+    <ul>
+      <li>Median time to first dashboard: 11 days</li>
+      <li>Accounts that stalled on SSO: 9 of 24</li>
+      <li>Accounts with a named internal champion: 15 of 24</li>
+    </ul>
+  </section>
+
+  <section id="method">
+    <h2>Method</h2>
+    <p>We interviewed admins and first users at 24 accounts that signed between April and July, and matched their answers to product telemetry.</p>
+    <h3>Who we talked to</h3>
+    <ol>
+      <li>Twelve mid-market accounts (100–999 employees)</li>
+      <li>Eight enterprise accounts (1,000+ employees)</li>
+      <li>Four accounts that churned in their first quarter</li>
+    </ol>
+    <h3>What we measured</h3>
+    <p>Telemetry came from the <code>onboarding_events</code> table, joined on account id.</p>
+  </section>
+
+  <section id="findings">
+    <h2>Findings</h2>
+    <h3>Approvals, not product, set the pace</h3>
+    <p>Accounts that started security review before signing reached their first dashboard <strong>six days sooner</strong>.</p>
+    <table>
+      <thead><tr><th>Blocker</th><th>Accounts</th><th>Median delay</th></tr></thead>
+      <tbody>
+        <tr><td>Security questionnaire</td><td class="num">14</td><td class="num">6 days</td></tr>
+        <tr><td>SSO configuration</td><td class="num">9</td><td class="num">4 days</td></tr>
+        <tr><td>Data warehouse access</td><td class="num">7</td><td class="num">5 days</td></tr>
+      </tbody>
+    </table>
+    <blockquote>We bought it in June and our analysts first logged in at the end of July.</blockquote>
+    <h3>Champions matter more than seats</h3>
+    <p>Of the four churned accounts, none had a named champion after the kickoff call.</p>
+  </section>
+
+  <section id="recommendations">
+    <h2>Recommendations</h2>
+    <ol>
+      <li>Send the security pack with the order form, not after it.</li>
+      <li>Offer a <a href="#appendix">thirty-minute SSO session</a> in week one.</li>
+      <li>Ask every account to name a champion before kickoff.</li>
+    </ol>
+    <p>Together these should bring the median time to first dashboard under seven days.</p>
+  </section>
+
+  <section id="appendix">
+    <h2>Appendix</h2>
+    <h3>Interview guide</h3>
+    <p>Each interview took forty minutes and followed the same five prompts, starting with <em>“Walk me through your first week.”</em></p>
+    <p>Recordings and notes are in the research drive, under <code>2026-q3-onboarding</code>.</p>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">Prepared by Customer Success Research. Internal use only.</div>
+</footer>
+</body>
+</html>

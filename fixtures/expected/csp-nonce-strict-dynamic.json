@@ -1,0 +1,236 @@
+{
+  "deckSha": "6961e108c7796dc8a875b0f62605ee7d77f8357e45a23d525b32bf5782424838",
+  "coverage": {
+    "exact": 13,
+    "ambiguous": 0,
+    "none": 1,
+    "total": 14
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Design system adoption",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1859,
+      "end": 1881,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Where each product team stands, and what blocks the rest",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1907,
+      "end": 1963,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Adoption by team",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2015,
+      "end": 2031,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Checkout",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2267,
+      "end": 2275,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Migrated",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2287,
+      "end": 2295,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Search",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2315,
+      "end": 2321,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "In progress",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2333,
+      "end": 2344,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Accounts",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2364,
+      "end": 2372,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Not started",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2384,
+      "end": 2395,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Help centre",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2415,
+      "end": 2426,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Blocked on icons",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2438,
+      "end": 2454,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Next quarter",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2125,
+      "end": 2137,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Ship the icon set so Help centre can start in January",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2477,
+      "end": 2530,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Status pulled from the design-ops tracker every Monday",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "no-match"
+    }
+  ],
+  "report": {
+    "deck": "csp-nonce-strict-dynamic.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 3,
+      "reached": 3,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Design system adoption",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      },
+      {
+        "slide": 1,
+        "title": "Adoption by team",
+        "reached": true,
+        "exact": 9,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 9
+      },
+      {
+        "slide": 2,
+        "title": "Next quarter",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      }
+    ],
+    "totals": {
+      "exact": 13,
+      "ambiguous": 0,
+      "none": 1,
+      "total": 14
+    },
+    "coverage": {
+      "exact": 13,
+      "ambiguous": 0,
+      "none": 1,
+      "total": 14,
+      "share": 0.9285714285714286,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [
+      {
+        "slide": 2,
+        "text": "Status pulled from the design-ops tracker every Monday",
+        "confidence": "none",
+        "reason": "no-match",
+        "candidates": 0
+      }
+    ],
+    "inline": {
+      "blocks": 14,
+      "withInline": 0,
+      "allExact": 0,
+      "allPassed": 0,
+      "shareWithInline": 0,
+      "shareAllExact": 0
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 13,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 13,
+      "passed": 13,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 1,
+    "warnings": [
+      "the page logged 1 console error during the walk, first: Executing inline script violates the following Content Security Policy directive 'script-src 'nonce-x' 'strict-dynamic''. Either the 'unsafe-inline' keyword, a hash ('sha256-pizUr0I40ojyz3Qu1glRR52e39"
+    ]
+  }
+}

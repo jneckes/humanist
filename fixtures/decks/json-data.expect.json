@@ -1,0 +1,27 @@
+{
+  "deck": "json-data.html",
+  "kind": "generic",
+  "slides": 4,
+  "navKind": "index",
+  "titles": ["A calmer checkout", "Shoppers wanted fewer surprises", "The numbers after launch", "Roll out in three waves"],
+  "expect": [
+    { "text": "A calmer checkout", "confidence": "exact", "strategy": "json-literal", "why": "a JSON string value in <script type=\"application/json\"> rendered with textContent (section 7 rule 3; 9.2 Strategy 2 step 2, JSON blocks)" },
+    { "text": "Checkout redesign — results", "confidence": "exact", "strategy": "json-literal", "why": "the JSON escape \\u2014 is one atomic unit of the cooked-to-raw table" },
+    { "text": "\"Where's my order?\" was the top support question", "confidence": "exact", "strategy": "json-literal", "why": "\\\" escapes at the start of the value; ' is never escaped in JSON (step 5.3)" },
+    { "text": "Cart abandonment fell from 71% to 58% after the redesign.", "confidence": "exact", "strategy": "json-literal", "why": "digits inside one string value are not computed" },
+    { "text": "Phase 1", "confidence": "exact", "strategy": "json-literal", "why": "a text node of an HTML string value (the value contains <, so it is one HTML fragment and each text node is a run)" },
+    { "text": " ships in ", "confidence": "exact", "strategy": "json-literal", "why": "HTML-fragment run between <strong> and <em>" },
+    { "text": " & ", "confidence": "exact", "strategy": "json-literal", "why": "&amp; inside an HTML string value: reference and JSON characters compose into one table" },
+    { "text": ". Wave 3: everyone else.", "confidence": "exact", "strategy": "json-literal", "why": "last run of the HTML value" },
+    { "text": "+0.6 pts", "confidence": "exact", "strategy": "json-literal", "why": "a short string value; an edit is JSON-escaped (step 5.3)" },
+    { "text": "Owner sign-off needed by 14 November", "confidence": "exact", "strategy": "json-literal", "why": "string value rendered with textContent" },
+    { "text": "Research team", "confidence": "ambiguous", "strategy": null, "reason": "duplicate", "candidates": 2, "why": "the same value appears in two slides' owner fields: more than one run is equal" },
+    { "text": "Harbor & Pine", "confidence": "ambiguous", "strategy": null, "reason": "key", "why": "the value also appears as data-client=\"Harbor &amp; Pine\" on #deck (attribute values are compared decoded)" },
+    { "text": "Retention", "confidence": "ambiguous", "strategy": null, "reason": "key", "why": "a key equal to a value: \"Retention\" is a JSON object key that the deck renders as a metric label (Object.entries) and also the 'focus' value on slide 4. The run's text does not occur once in the file and the deck uses it as a key (9.2 Strategy 2 step 3), so neither node may be exact; an exact match would write the label edit into the focus value on slide 4" },
+    { "text": "Conversion", "confidence": "none", "strategy": null, "reason": "no-match", "why": "JSON object keys are not units (only string values are, step 2), so a label rendered from a key has no run" },
+    { "text": "3.4%", "confidence": "none", "strategy": null, "reason": "computed", "why": "a JSON number formatted at runtime" },
+    { "text": "$62", "confidence": "none", "strategy": null, "reason": "computed", "why": "'$' + a JSON number" },
+    { "text": "1 / 4", "confidence": "none", "strategy": null, "reason": "computed", "why": "page counter built from numbers" },
+    { "text": "Internal · do not forward", "confidence": "exact", "strategy": "script-literal", "why": "a literal in the renderer, which is <script type=\"module\"> (parsed with sourceType module, Strategy 2 step 1); one run shown on every slide, so every node maps to it (renders of the same run)" }
+  ]
+}

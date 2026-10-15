@@ -1,0 +1,22 @@
+{
+  "deck": "keys-prevent-default.html",
+  "kind": "generic",
+  "slides": 4,
+  "navKind": "index",
+  "titles": ["Meet Relay", "Every keystroke stays here", "Arrow keys still move the demo", "Ask us for a trial"],
+  "keys": {
+    "check": "SPEC 6.2: the page calls preventDefault() on every keydown in a window capture listener. App chords (Cmd+1/2/3, Cmd+Option+P, Cmd+F, Cmd+S, Cmd+Shift+E, Cmd+P, Cmd+Shift+Enter) must still run, because main takes them in before-input-event before the page sees them; Cmd+V and other chords pass through to the page.",
+    "pageKeys": "document.documentElement.dataset.pageKeys: the last 50 chords the page received, space-separated, modifiers first (e.g. 'ArrowRight Meta+v')",
+    "pageKeyCount": "document.documentElement.dataset.pageKeyCount: keydown events that reached the page",
+    "expectAfterAppChord": "an app chord is absent from pageKeys and does not change pageKeyCount; ArrowRight still moves the deck"
+  },
+  "expect": [
+    { "text": "Meet ", "confidence": "exact", "strategy": "html-text", "why": "h1 text before an <em>; the slides are <div class=\"slide\"> (9.4 matches .slide on any element)" },
+    { "text": "Relay", "confidence": "exact", "strategy": "html-text", "why": "the <em>'s text" },
+    { "text": "Booth 14 · runs on its own, so visitors cannot leave the demo", "confidence": "exact", "strategy": "html-text", "why": "parsed text" },
+    { "text": "Kiosk mode", "confidence": "exact", "strategy": "html-text", "why": "chrome outside the slides; text-transform: uppercase on screen, source case in the DOM" },
+    { "text": "→", "confidence": "exact", "strategy": "html-text", "why": "a one-character run inside a <span>" },
+    { "text": " for the next slide and ", "confidence": "exact", "strategy": "html-text", "why": "the paragraph's second text node (textIndex 1)" },
+    { "text": "Scan the code on the stand, or leave your card with the team.", "confidence": "exact", "strategy": "html-text", "why": "last slide" }
+  ]
+}

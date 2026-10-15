@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operating plan FY27</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #111a2e;
+    --ink: #e6edf7;
+    --muted: #93a4bd;
+    --accent: #5eead4;
+    --warn: #fbbf24;
+    --line: #22304d;
+    font-family: "Inter", "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #05080f; color: var(--ink); overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide {
+    position: absolute; inset: 0; display: none; flex-direction: column;
+    padding: 88px 120px 120px; background: radial-gradient(1200px 700px at 85% 0%, #13233f 0%, var(--bg) 60%);
+  }
+  .slide.is-current { display: flex; }
+  .kicker { font-size: 22px; letter-spacing: .14em; text-transform: uppercase; color: var(--accent); margin: 0 0 20px; }
+  .slide h2 { font-size: 72px; line-height: 1.05; margin: 0 0 20px; letter-spacing: -.02em; max-width: 1250px; }
+  .subtitle { font-size: 32px; color: var(--muted); margin: 0 0 48px; }
+  .body { font-size: 36px; line-height: 1.35; max-width: 1150px; margin: 0 0 40px; }
+  .body strong, .body b { color: var(--accent); }
+  .pill { display: inline-block; padding: 4px 18px; border: 2px solid var(--accent); border-radius: 999px; }
+  .bullets { font-size: 30px; line-height: 1.6; margin: 0; padding-left: 36px; }
+  .metrics { display: flex; gap: 40px; }
+  .metric { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 32px 40px; font-size: 26px; color: var(--muted); }
+  .metric b { display: block; font-size: 64px; color: var(--ink); margin-bottom: 8px; }
+  .callout { font-size: 26px; margin: 0 0 24px; }
+  .callout strong { color: var(--warn); margin-right: 12px; }
+  .note { font-size: 24px; color: var(--muted); margin: 0 0 16px; }
+  .source { font-size: 20px; color: var(--muted); font-family: "JetBrains Mono", ui-monospace, monospace; margin-top: auto; }
+  .status { position: absolute; top: 88px; right: 120px; font-size: 20px; font-weight: 600; padding: 8px 18px; border-radius: 8px; color: #05080f; }
+  .slide-foot {
+    position: absolute; left: 120px; right: 120px; bottom: 40px;
+    display: flex; align-items: center; gap: 32px; font-size: 18px; color: var(--muted);
+    border-top: 1px solid var(--line); padding-top: 18px;
+  }
+  .slide-foot .brand { font-weight: 700; color: var(--ink); }
+  .slide-foot .count { margin-left: auto; }
+  .slide-foot button { font: inherit; color: var(--accent); background: none; border: 1px solid var(--line); border-radius: 6px; padding: 4px 12px; cursor: pointer; }
+  .glossary { position: absolute; right: 0; top: 0; bottom: 0; width: 520px; background: var(--panel); padding: 64px 48px; border-left: 1px solid var(--line); font-size: 22px; }
+  .glossary dt { color: var(--accent); font-weight: 700; margin-top: 18px; }
+  .glossary dd { margin: 4px 0 0; color: var(--muted); }
+</style>
+</head>
+<body>
+<main id="deck" class="deck" data-client="Northwind Health"></main>
+<aside id="Glossary" class="glossary" hidden>
+  <h3>Terms used in this deck</h3>
+  <dl>
+    <dt>ARR</dt><dd>Annual recurring revenue, measured at month end.</dd>
+    <dt>NRR</dt><dd>Net revenue retention over the trailing twelve months.</dd>
+  </dl>
+</aside>
+
+<script>
+  (function () {
+    'use strict';
+
+    const CLIENT = 'Northwind Health';
+    const DATE = 'October 2026';
+    const PARTS = 'four';
+    const GLOSSARY = 'Glossary';
+
+    // Status chips are keyed by their label, as decks often do.
+    const STATUS_COLOR = {
+      'On track': '#34d399',
+      'At risk': '#fbbf24',
+      Decision: '#93c5fd',
+    };
+
+    const slides = [
+      {
+        kicker: 'Part one',
+        title: 'Revenue grew in every region',
+        subtitle: `Three bets for the next two quarters`,
+        body: '<strong>42%</strong> of new revenue now comes from <em>self-serve</em> accounts.',
+        status: 'On track',
+        bullets: ['Expand into two new regions', 'Hire a head of partnerships', 'Ship usage-based pricing'],
+      },
+      {
+        kicker: 'Part two',
+        title: "Margins held while support doubled",
+        subtitle: `Gross margin stayed above 70% all year`,
+        body: 'Support headcount went from <b>14</b> to <b>29</b>; tickets per agent fell by a third.',
+        status: 'On track',
+        metrics: [
+          { value: '$4.2M', label: 'net new ARR' },
+          { value: '118%', label: 'net revenue retention' },
+        ],
+      },
+      {
+        kicker: 'Part three',
+        title: 'Don\'t ship the \u201cnice to haves\u201d',
+        subtitle: `R&D and GTM share one roadmap`,
+        body: '<span class="pill">Pricing</span> &amp; <span class="pill">Packaging</span> move together in <b>Q1</b>.',
+        status: 'At risk',
+        callout: 'Watch: pricing page conversion',
+      },
+      {
+        kicker: 'Part four',
+        title: 'What we need from the board',
+        subtitle: `Two decisions, one approval`,
+        body: 'Approve the <strong>FY27 hiring plan</strong> and the <strong>EMEA entity</strong>.',
+        status: 'Decision',
+        note: 'Ops &amp; R&amp;D budgets now move together',
+        source: String.raw`Source: finance\exports\q3-close.csv`,
+      },
+    ];
+
+    const deck = document.getElementById('deck');
+    const panel = document.getElementById(GLOSSARY);
+
+    function el(tag, className) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      return node;
+    }
+
+    slides.forEach(function (s, i) {
+      const section = el('section', 'slide');
+
+      const kicker = el('p', 'kicker');
+      kicker.textContent = s.kicker + ' of ' + PARTS;
+      section.appendChild(kicker);
+
+      const h2 = el('h2');
+      h2.textContent = s.title;
+      section.appendChild(h2);
+
+      const sub = el('p', 'subtitle');
+      sub.textContent = s.subtitle;
+      section.appendChild(sub);
+
+      const body = el('p', 'body');
+      body.innerHTML = s.body;
+      section.appendChild(body);
+
+      if (s.bullets) {
+        const ul = el('ul', 'bullets');
+        ul.innerHTML = s.bullets.map((b) => `<li>${b}</li>`).join('');
+        section.appendChild(ul);
+      }
+
+      if (s.metrics) {
+        const grid = el('div', 'metrics');
+        grid.innerHTML = s.metrics.map((m) => `<div class="metric"><b>${m.value}</b> ${m.label}</div>`).join('');
+        section.appendChild(grid);
+      }
+
+      if (s.callout) {
+        // 'Tag: text' split in two, as decks often do for callouts.
+        const [tag, text] = s.callout.split(': ');
+        const callout = el('p', 'callout');
+        const strong = el('strong');
+        strong.textContent = tag;
+        const span = el('span');
+        span.textContent = text;
+        callout.append(strong, span);
+        section.appendChild(callout);
+      }
+
+      if (s.note) {
+        const note = el('p', 'note');
+        note.innerHTML = s.note;
+        section.appendChild(note);
+      }
+
+      if (s.source) {
+        const src = el('p', 'source');
+        src.textContent = s.source;
+        section.appendChild(src);
+      }
+
+      const chip = el('span', 'status');
+      chip.textContent = s.status;
+      chip.style.background = STATUS_COLOR[s.status];
+      section.appendChild(chip);
+
+      const foot = el('footer', 'slide-foot');
+      const brand = el('span', 'brand');
+      brand.textContent = CLIENT;
+      const prepared = el('span');
+      prepared.textContent = `Prepared for ${CLIENT} · ${DATE}`;
+      const glossary = el('button');
+      glossary.type = 'button';
+      glossary.textContent = GLOSSARY;
+      glossary.addEventListener('click', function () { panel.hidden = !panel.hidden; });
+      const count = el('span', 'count');
+      count.textContent = 'Slide ' + (i + 1) + ' of ' + slides.length;
+      foot.append(brand, prepared, glossary, count);
+      section.appendChild(foot);
+
+      deck.appendChild(section);
+    });
+
+    const sections = Array.from(deck.children);
+    let current = 0;
+
+    function go(i) {
+      current = Math.max(0, Math.min(sections.length - 1, i));
+      sections.forEach((s, k) => s.classList.toggle('is-current', k === current));
+    }
+
+    function fit() {
+      const scale = Math.min(innerWidth / 1600, innerHeight / 900);
+      deck.style.transform = `translate(-50%, -50%) scale(${scale})`;
+    }
+
+    document.addEventListener('keydown', function (e) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') go(current + 1);
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') go(current - 1);
+    });
+    addEventListener('resize', fit);
+    fit();
+    go(0);
+  })();
+</script>
+</body>
+</html>

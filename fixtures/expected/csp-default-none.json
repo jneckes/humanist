@@ -1,0 +1,201 @@
+{
+  "deckSha": "56454dd00f65a8a518a5cfdfadf493d4250dff5c99002fe35c41dafc993da13b",
+  "coverage": {
+    "exact": 11,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 11
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Fieldkit 2.0",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2276,
+      "end": 2288,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Inspections that work with no signal",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2314,
+      "end": 2350,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Built for the basement",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2402,
+      "end": 2424,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Works offline",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2656,
+      "end": 2669,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Every form and photo is saved on the device first.",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2679,
+      "end": 2729,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Syncs later",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2750,
+      "end": 2761,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Changes upload in order when the connection returns.",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2771,
+      "end": 2823,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "No lost work",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2844,
+      "end": 2856,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Conflicts are merged field by field, never overwritten.",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2866,
+      "end": 2921,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "From the pilot",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2518,
+      "end": 2532,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Our inspectors stopped carrying paper the week we rolled it out.",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2950,
+      "end": 3014,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "csp-default-none.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 3,
+      "reached": 3,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Fieldkit 2.0",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      },
+      {
+        "slide": 1,
+        "title": "Built for the basement",
+        "reached": true,
+        "exact": 7,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 7
+      },
+      {
+        "slide": 2,
+        "title": "From the pilot",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      }
+    ],
+    "totals": {
+      "exact": 11,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 11
+    },
+    "coverage": {
+      "exact": 11,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 11,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 11,
+      "withInline": 0,
+      "allExact": 0,
+      "allPassed": 0,
+      "shareWithInline": 0,
+      "shareAllExact": 0
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 11,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 11,
+      "passed": 11,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 1,
+    "warnings": [
+      "the page logged 1 console error during the walk, first: Loading the image 'data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Ccircle cx='5' cy='5' r='5' fill='%2310b981'/%3E%3C/svg%3E' violates the following Content Secur"
+    ]
+  }
+}

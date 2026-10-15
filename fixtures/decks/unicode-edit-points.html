@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Launch plan — “Atlas” 🚀</title>
+<style>
+  :root { --bg: #fffaf0; --ink: #1c1917; --muted: #78716c; --accent: #db2777; --card: #ffffff; font-family: "Inter", "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #f5e9d7; overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide { position: absolute; inset: 0; display: none; padding: 100px 128px; background: var(--bg); color: var(--ink); }
+  .slide.active { display: block; }
+  h1 { font-size: 100px; margin: 150px 0 28px; letter-spacing: -.02em; }
+  h2 { font-size: 64px; margin: 0 0 44px; }
+  .lede { font-size: 36px; color: var(--muted); margin: 0; }
+  ol.timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: 18px; }
+  ol.timeline li { font-size: 34px; background: var(--card); border-left: 8px solid var(--accent); border-radius: 12px; padding: 20px 32px; }
+  .owner { margin-top: 36px; font-size: 26px; color: var(--muted); }
+  .risk { font-size: 40px; margin: 0 0 28px; }
+  .risk b { color: var(--accent); }
+  .party { font-size: 30px; margin-top: 48px; }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+  <section class="slide active">
+    <h1>Launch plan — “Atlas” 🚀</h1>
+    <p class="lede" id="lede"></p>
+  </section>
+
+  <section class="slide">
+    <h2>Milestones — “week by week” 📅</h2>
+    <ol class="timeline" id="timeline">
+      <li>Private beta — “50 teams” 🧪</li>
+      <li>Public beta — &#8220;open sign-up&#8221; &#x1F680;</li>
+    </ol>
+    <p class="owner" id="owner"></p>
+    <p class="owner" id="regions"></p>
+  </section>
+
+  <section class="slide">
+    <h2>Risks — “and who owns them” 🧭</h2>
+    <p class="risk" id="risk"></p>
+    <p class="owner" id="fixer"></p>
+    <p class="party">Café launch party — “Friday” 🥳</p>
+  </section>
+</div>
+
+<script type="application/json" id="people">
+{
+  "owner": "Owner: Café team — “Mia” 👩🏽‍💻",
+  "regions": "Regions — \u201cEU first\u201d \ud83c\uddea\ud83c\uddfa"
+}
+</script>
+<script>
+  (function () {
+    const LEDE = 'Six weeks to general availability — “no surprises” 🎯';
+    const MILESTONES = [
+      'General availability \u2014 \u201Cday one\u201D \u{1F389}',
+      'Post-launch review \u2014 \u201Cwhat broke\u201D \uD83D\uDD0D',
+    ];
+    const RISK = '<b>Risk</b> — “pricing page” 🧯';
+    const FIXER = `Owner — “platform” 🛠️`;
+
+    const people = JSON.parse(document.getElementById('people').textContent);
+    document.getElementById('lede').textContent = LEDE;
+    const list = document.getElementById('timeline');
+    MILESTONES.forEach(function (m) {
+      const li = document.createElement('li');
+      li.textContent = m;
+      list.appendChild(li);
+    });
+    document.getElementById('owner').textContent = people.owner;
+    document.getElementById('regions').textContent = people.regions;
+    document.getElementById('risk').innerHTML = RISK;
+    document.getElementById('fixer').textContent = FIXER;
+
+    const slides = Array.from(document.querySelectorAll('.slide'));
+    let at = 0;
+    function show(n) {
+      at = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach((s, k) => s.classList.toggle('active', k === at));
+    }
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight') show(at + 1);
+      if (e.key === 'ArrowLeft') show(at - 1);
+    });
+    function fit() {
+      const s = Math.min(innerWidth / 1600, innerHeight / 900);
+      document.getElementById('deck').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    addEventListener('resize', fit);
+    fit();
+  })();
+</script>
+</body>
+</html>

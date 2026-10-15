@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Release engineering review</title>
+<style>
+  :root { --bg: #111827; --ink: #f9fafb; --muted: #9ca3af; --accent: #f97316; --panel: #1f2937; font-family: "Inter", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #030712; overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide { position: absolute; inset: 0; display: none; padding: 100px 128px; background: var(--bg); color: var(--ink); }
+  .slide.active { display: block; }
+  h1 { font-size: 92px; margin: 140px 0 32px; letter-spacing: -.02em; }
+  h2 { font-size: 60px; margin: 0 0 40px; }
+  .lede { font-size: 34px; line-height: 1.4; color: var(--muted); max-width: 1150px; margin: 0 0 32px; }
+  pre.code { background: var(--panel); border-left: 6px solid var(--accent); padding: 32px 40px; font: 28px/1.5 "JetBrains Mono", ui-monospace, monospace; margin: 0 0 32px; }
+  .note { white-space: pre-line; font-size: 30px; line-height: 1.45; color: var(--ink); background: var(--panel); border-radius: 16px; padding: 32px 40px; max-width: 1100px; }
+  table { border-collapse: collapse; font-size: 30px; }
+  td, th { padding: 16px 28px 16px 0; text-align: left; border-bottom: 1px solid #374151; }
+  th { color: var(--muted); font-weight: 500; }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+  <section class="slide active">
+    <h1>Release engineering review</h1>
+    <p class="lede">We moved the release train from monthly to weekly,
+and kept the change-failure rate flat.</p>
+  </section>
+
+  <section class="slide">
+    <h2>How a release ships now</h2>
+    <pre class="code">
+npm run build
+npm run deploy -- --canary 5%
+</pre>
+    <p class="lede" id="lede"></p>
+  </section>
+
+  <section class="slide">
+    <h2>Train health since March</h2>
+    <div class="note" id="note"></div>
+    <table>
+      <tr><th>Metric</th><th id="metric-head"></th></tr>
+      <tr><td>Lead time</td><td id="lead"></td></tr>
+    </table>
+  </section>
+</div>
+
+<script type="application/json" id="numbers">
+{
+  "head": "Last 30 days",
+  "lead": "Under two days"
+}
+</script>
+<script>
+  (function () {
+    var LEDE = 'Every merge to main ships within the hour, \
+or the train waits for the fix.';
+    var NOTE = `Weekly trains since March.
+Two rollbacks, both under ten minutes.`;
+    var numbers = JSON.parse(document.getElementById('numbers').textContent);
+
+    document.getElementById('lede').textContent = LEDE;
+    document.getElementById('note').textContent = NOTE;
+    document.getElementById('metric-head').textContent = numbers.head;
+    document.getElementById('lead').textContent = numbers.lead;
+
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var i = 0;
+    function show(n) {
+      i = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') show(i + 1);
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') show(i - 1);
+    });
+    function fit() {
+      var s = Math.min(innerWidth / 1600, innerHeight / 900);
+      document.getElementById('deck').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    addEventListener('resize', fit);
+    fit();
+  })();
+</script>
+</body>
+</html>

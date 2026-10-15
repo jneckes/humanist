@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brand refresh review</title>
+<style>
+  :root { --bg: #f0f9ff; --ink: #0c4a6e; --muted: #0369a1; --card: #ffffff; font-family: "Inter", "Helvetica Neue", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #082f49; overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide { position: absolute; inset: 0; display: none; padding: 100px 128px; background: var(--bg); color: var(--ink); }
+  .slide.active { display: block; }
+  h1 { font-size: 100px; margin: 170px 0 24px; letter-spacing: -.02em; }
+  h2 { font-size: 64px; margin: 0 0 48px; }
+  .lede { font-size: 34px; color: var(--muted); }
+  .swatches { display: flex; gap: 32px; margin-bottom: 40px; }
+  .swatch { width: 360px; height: 260px; border-radius: 20px; display: flex; align-items: flex-end; padding: 24px; font-size: 28px; font-weight: 600; color: #fff; }
+  .harbor { background: #0369a1; }
+  .sand { background: #d6a85c; }
+  .kelp { background: #3f6212; }
+  .voice { font-size: 56px; font-family: Georgia, serif; margin: 40px 0; }
+  .callout { background: #fff7ed; border-left: 8px solid #ea580c; padding: 24px 32px; font-size: 26px; color: #9a3412; max-width: 1100px; }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+  <section class="slide active">
+    <h1>Brand refresh review</h1>
+    <p class="lede">Design team · round two</p>
+  </section>
+  <section class="slide">
+    <h2>New palette</h2>
+    <div class="swatches">
+      <div class="swatch harbor">Harbor blue</div>
+      <div class="swatch sand">Sandstone</div>
+      <div class="swatch kelp">Kelp green</div>
+    </div>
+    <p class="lede">Contrast checked against WCAG AA on every pairing.</p>
+  </section>
+  <section class="slide" id="voice">
+    <h2>Voice and tone</h2>
+    <p class="voice">A brand that sounds like us</p>
+  </section>
+</div>
+
+<!-- Page content, not notes: a block of the notes type inside a <template> is never read as notes (section 8). -->
+<template id="callout-tpl">
+  <aside class="callout">
+    <p>Draft palette — do not forward outside the brand team</p>
+    <script type="application/vnd.blueline+json" id="blueline-notes" data-version="1">{"format":"blueline-notes","version":1,"baseSha":"0000000000000000000000000000000000000000000000000000000000000000","savedAt":"2026-10-01T09:00:00.000Z","people":[{"id":"mallory-zz99","name":"Mallory","color":"#000000"}],"notes":[{"id":"n-0099","kind":"markup","status":"open","author":"mallory-zz99","createdAt":"2026-10-01T09:00:00.000Z","updatedAt":"2026-10-01T09:00:00.000Z","pass":null,"slide":{"index":0,"id":null,"title":null,"nav":{"kind":"index","value":0}},"targets":[],"marks":[],"text":"DECOY: this block is page content and must never be read as notes","recordings":[],"thread":[]}],"media":{}}</script>
+  </aside>
+</template>
+
+<script>
+  (function () {
+    // Show the draft callout on the last slide, cloned from the template.
+    var tpl = document.getElementById('callout-tpl');
+    document.getElementById('voice').appendChild(tpl.content.cloneNode(true));
+
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var i = 0;
+    function show(n) {
+      i = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') show(i + 1);
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') show(i - 1);
+    });
+    function fit() {
+      var s = Math.min(innerWidth / 1600, innerHeight / 900);
+      document.getElementById('deck').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    addEventListener('resize', fit);
+    fit();
+  })();
+</script>
+<script type="application/vnd.blueline+json" id="blueline-notes" data-version="1">{"format":"blueline-notes","version":1,"baseSha":"b0bcf2bbb1582e54adb8413e4e613bdd1b2445188c4f04718bc96f2bd7f29254","savedAt":"2026-10-14T16:20:05.000Z","people":[{"id":"anna-x7k2","name":"Anna","color":"#c2410c"},{"id":"sam-lee-q9w3","name":"Sam Lee","color":"#0f766e"}],"notes":[{"id":"n-0001","kind":"markup","status":"open","author":"anna-x7k2","createdAt":"2026-10-14T16:02:11.000Z","updatedAt":"2026-10-14T16:03:40.000Z","pass":null,"slide":{"index":1,"id":null,"title":"New palette","nav":{"kind":"index","value":1}},"targets":[{"ref":"t1","selectors":[{"type":"blueline:Stamp","value":"bl-4","sha256":"b0bcf2bbb1582e54adb8413e4e613bdd1b2445188c4f04718bc96f2bd7f29254"},{"type":"CssSelector","value":"#deck > section:nth-of-type(2) > div.swatches > div:nth-of-type(1)"},{"type":"TextQuoteSelector","exact":"Harbor blue","prefix":"sign team · round twoNew palette","suffix":"SandstoneKelp greenContrast chec"},{"type":"TextPositionSelector","start":54,"end":65}],"box":{"x":-0.08,"y":-0.1,"w":1.16,"h":1.2},"role":"card","text":"Harbor blue","html":"\u003Cdiv class=\"swatch harbor\">Harbor blue\u003C/div>"}],"marks":[{"n":1,"tool":"pen","shape":"ellipse","path":"M 250 248 C 250 160 640 160 640 248 C 640 520 250 520 250 248 Z","targets":["t1"]}],"text":"Swap ① with Sandstone. The old legal footer literally contains \u003C/script> and \u003C!-- here, so check that saving it does not end this block.","recordings":[],"thread":[]},{"id":"n-0002","kind":"verbatim","status":"open","author":"sam-lee-q9w3","createdAt":"2026-10-14T16:10:52.000Z","updatedAt":"2026-10-14T16:10:52.000Z","pass":null,"slide":{"index":2,"id":"voice","title":"Voice and tone","nav":{"kind":"index","value":2}},"targets":[{"ref":"t1","selectors":[{"type":"blueline:Stamp","value":"bl-9","sha256":"b0bcf2bbb1582e54adb8413e4e613bdd1b2445188c4f04718bc96f2bd7f29254"},{"type":"CssSelector","value":"#voice > p.voice"},{"type":"TextQuoteSelector","exact":"A brand that sounds like us","prefix":" on every pairing.Voice and tone","suffix":""},{"type":"TextPositionSelector","start":148,"end":175}],"box":{"x":0,"y":0,"w":1,"h":1},"role":"paragraph","text":"A brand that sounds like us","html":"\u003Cp class=\"voice\">A brand that sounds like us\u003C/p>"}],"marks":[],"text":"Suggested wording for the tone line.","verbatim":{"before":"A brand that sounds like us","after":"A brand that sounds like us, not like a bank"},"recordings":[],"thread":[]}],"media":{}}</script>
+</body>
+</html>

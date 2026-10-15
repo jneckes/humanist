@@ -1,0 +1,30 @@
+{
+  "deck": "generic-index.html",
+  "kind": "generic",
+  "slides": 6,
+  "navKind": "index",
+  "deckNav": {
+    "forward": "ArrowRight",
+    "back": "ArrowLeft"
+  },
+  "titles": ["Q3 business review", "Agenda", "Highlights", "Pipeline by stage", "Customer voice", "Slide 6"],
+  "expect": [
+    { "text": "Q3 business review", "confidence": "exact", "strategy": "html-text", "why": "slides are <article data-slide> (9.4 matches [data-slide]); inactive slides have opacity 0 and visibility hidden, not display none, so their boxes are non-zero" },
+    { "text": "Platform team · 15 October 2026", "confidence": "exact", "strategy": "html-text", "why": "parsed text on the first slide" },
+    { "text": "Agenda", "confidence": "exact", "strategy": "html-text", "why": "heading of the slide whose list is built by JS" },
+    { "text": "Highlights", "slide": 2, "confidence": "exact", "strategy": "html-text", "why": "the slide-3 heading (slide index 2) is its own stamped run" },
+    { "text": "Highlights", "slide": 1, "confidence": "ambiguous", "strategy": null, "reason": "stamp-other", "why": "the agenda <li> on slide index 1 copies the h2's textContent at runtime: one stamped run equals it, but it is not that stamp's own text (9.2 Matching: a JS-built contents list)" },
+    { "text": "Pipeline by stage", "slide": 3, "confidence": "exact", "strategy": "html-text", "why": "the original heading (slide index 3)" },
+    { "text": "Pipeline by stage", "slide": 1, "confidence": "ambiguous", "strategy": null, "reason": "stamp-other", "why": "agenda copy (slide index 1): JS-built, so not the stamp’s own text" },
+    { "text": "Customer voice", "confidence": "none", "strategy": null, "reason": "no-match", "why": "agenda entry copied from data-title: attribute values are never runs, so there are no candidates (title fallback, 9.4)" },
+    { "text": "Owner", "confidence": "exact", "strategy": "html-text", "why": "the same static label three times: each node maps to its own stamp, so duplicates in parsed text stay exact (only literal duplicates are ambiguous)" },
+    { "text": "Dana Okafor", "confidence": "exact", "strategy": "html-text", "why": "span next to a span" },
+    { "text": "p95 API latency fell from 420 ms to 190 ms after the cache rollout.", "confidence": "exact", "strategy": "html-text", "why": "parsed text with numbers" },
+    { "text": "$2.1M", "confidence": "exact", "strategy": "html-text", "why": "an SVG <text> value in an inline chart: SVG text is parsed text (section 7 rule 1), stamped like any element" },
+    { "text": "“The migration took a weekend, not a quarter.”", "confidence": "exact", "strategy": "html-text", "why": "slide with no heading: its title comes from data-title (9.4)" },
+    { "text": "Northwind Platform", "confidence": "exact", "strategy": "html-text", "why": "slide with neither heading nor data-title: its title is 'Slide 6' (9.4)" },
+    { "text": "01 / 06", "confidence": "none", "strategy": null, "reason": "computed", "why": "zero-padded counter built from numbers" },
+    { "text": "Discovery", "confidence": "exact", "strategy": "html-text", "why": "SVG <text> label (foreign content; the stamp goes right after the tag name)" },
+    { "text": "Open pipeline at quarter end, unweighted", "confidence": "exact", "strategy": "html-text", "why": "a <figcaption> (section 7 rule 1: captions)" }
+  ]
+}

@@ -1,0 +1,208 @@
+{
+  "deckSha": "4678513fda6ae03d7962a565b05d4871a548516f813d88392dd5b1b09a730aa6",
+  "coverage": {
+    "exact": 12,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 12
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Onboarding in one week",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1413,
+      "end": 1435,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "A plan for every new engineer, from laptop to first deploy",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2266,
+      "end": 2324,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "The first five days",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1523,
+      "end": 1542,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Day 1",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1604,
+      "end": 1609,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Laptop, accounts and a buddy before 10am.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1618,
+      "end": 1659,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Day 2–3",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1698,
+      "end": 1705,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Shadow two customer calls and one incident review.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1714,
+      "end": 1764,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Day 4–5",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1803,
+      "end": 1810,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Ship a small fix to production with your buddy.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1819,
+      "end": 1866,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "What new starters said",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1931,
+      "end": 1953,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "By Friday I had shipped something real, and that changed how I felt about the job.",
+      "strategy": "json-literal",
+      "confidence": "exact",
+      "start": 2130,
+      "end": 2212,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Survey of 38 people who joined in Q3",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2015,
+      "end": 2051,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "bom.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 3,
+      "reached": 3,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Onboarding in one week",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      },
+      {
+        "slide": 1,
+        "title": "The first five days",
+        "reached": true,
+        "exact": 7,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 7
+      },
+      {
+        "slide": 2,
+        "title": "What new starters said",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 3
+      }
+    ],
+    "totals": {
+      "exact": 12,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 12
+    },
+    "coverage": {
+      "exact": 12,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 12,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 12,
+      "withInline": 3,
+      "allExact": 3,
+      "allPassed": 3,
+      "shareWithInline": 0.25,
+      "shareAllExact": 1
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 12,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 12,
+      "passed": 12,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

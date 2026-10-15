@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hiring plan FY27</title>
+<style>
+  :root { --bg: #fefce8; --ink: #1a2e05; --muted: #4d7c0f; --accent: #65a30d; --card: #ffffff; font-family: "Inter", "Avenir Next", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #1a2e05; overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide { position: absolute; inset: 0; padding: 100px 128px; background: var(--bg); color: var(--ink); display: none; }
+  .slide.current { display: block; }
+  h1 { font-size: 100px; margin: 170px 0 24px; letter-spacing: -.02em; }
+  h2 { font-size: 64px; margin: 0 0 48px; }
+  .lede { font-size: 32px; color: var(--muted); }
+  table { border-collapse: collapse; font-size: 30px; min-width: 1100px; }
+  th, td { padding: 18px 32px 18px 0; text-align: left; border-bottom: 2px solid #ecfccb; }
+  th { font-size: 20px; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+  .steps { display: flex; gap: 24px; }
+  .step { flex: 1; background: var(--card); border-radius: 16px; padding: 32px; font-size: 26px; border-top: 8px solid var(--accent); }
+  .step b { display: block; font-size: 20px; color: var(--muted); margin-bottom: 8px; }
+  .big { font-size: 120px; font-weight: 800; color: var(--accent); margin: 40px 0 0; }
+  .nav-hint { position: absolute; left: 128px; bottom: 36px; font-size: 18px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+  <section class="slide" id="intro">
+    <h1>Hiring plan FY27</h1>
+    <p class="lede">People team proposal for the leadership meeting</p>
+  </section>
+  <section class="slide" id="roles">
+    <h2>Roles we need</h2>
+    <table>
+      <tr><th>Team</th><th>Role</th><th>When</th></tr>
+      <tr><td>Platform</td><td>Staff engineer, reliability</td><td>Q1</td></tr>
+      <tr><td>Sales</td><td>Solutions engineer, EMEA</td><td>Q1</td></tr>
+      <tr><td>Support</td><td>Support lead, APAC hours</td><td>Q2</td></tr>
+    </table>
+  </section>
+  <section class="slide" id="process">
+    <h2>A faster loop</h2>
+    <div class="steps">
+      <div class="step"><b>Week 1</b>Screen and take-home brief</div>
+      <div class="step"><b>Week 2</b>Two panels on the same day</div>
+      <div class="step"><b>Week 3</b>Offer within 48 hours</div>
+    </div>
+  </section>
+  <section class="slide" id="budget">
+    <h2>Budget</h2>
+    <p class="lede">Fully loaded cost for the year, including recruiting fees</p>
+    <p class="big">$1.9M</p>
+  </section>
+  <section class="slide" id="ask">
+    <h2>The ask</h2>
+    <p class="lede">Approve all three roles today so offers go out before the holidays.</p>
+  </section>
+  <p class="nav-hint">Use the arrow keys · each slide has its own link</p>
+</div>
+
+<script>
+  (function () {
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var current = -1;
+
+    function indexFromHash() {
+      var id = decodeURIComponent(location.hash.slice(1));
+      var i = slides.findIndex(function (s) { return s.id === id; });
+      return i < 0 ? 0 : i;
+    }
+
+    function render(i) {
+      current = i;
+      slides.forEach(function (s, k) { s.classList.toggle('current', k === i); });
+    }
+
+    function go(i) {
+      var next = Math.max(0, Math.min(slides.length - 1, i));
+      if (next === current) return;
+      location.hash = '#' + slides[next].id;
+    }
+
+    window.addEventListener('hashchange', function () { render(indexFromHash()); });
+    document.addEventListener('keydown', function (e) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); go(current + 1); }
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(current - 1); }
+    });
+
+    function fit() {
+      var s = Math.min(innerWidth / 1600, innerHeight / 900);
+      document.getElementById('deck').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    addEventListener('resize', fit);
+    fit();
+    render(indexFromHash());
+  })();
+</script>
+</body>
+</html>

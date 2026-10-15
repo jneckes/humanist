@@ -1,0 +1,41 @@
+{
+  "deck": "inline-markup.html",
+  "kind": "generic",
+  "slides": 4,
+  "navKind": "index",
+  "titles": ["Go-to-market update", "Plan for 2027", "Who owns what", "Appendix"],
+  "inlineBlocks": {
+    "withInlineAllExact": 1,
+    "why": "section 10 step 5: of the visible blocks that contain inline elements (13 of 16 here if a block is the nearest block-level parent), every one maps all its runs exact"
+  },
+  "expect": [
+    { "text": "Quarterly review", "confidence": "exact", "strategy": "html-text", "why": "text-transform: uppercase on screen; the DOM data and the run are source case (6.3, Source case)" },
+    { "text": "Prepared by ", "confidence": "exact", "strategy": "html-text", "why": "inline elements split the paragraph into runs (6.3, Inline markup is preserved): textIndex 0" },
+    { "text": "Revenue Operations", "confidence": "exact", "strategy": "html-text", "why": "<strong> run" },
+    { "text": " for the ", "confidence": "exact", "strategy": "html-text", "why": "textIndex 1 of the <p>, between <strong> and <em>" },
+    { "text": "leadership team", "confidence": "exact", "strategy": "html-text", "why": "<em> run" },
+    { "text": ".", "confidence": "exact", "strategy": "html-text", "why": "a one-character run after an inline element; it occurs twice in parsed text, and each node maps to its own stamp" },
+    { "text": "Faster", "confidence": "exact", "strategy": "html-text", "why": "<b>; the single spaces between the inline elements are whitespace-only nodes, never runs" },
+    { "text": "Plan for ", "confidence": "exact", "strategy": "html-text", "why": "heading text before a <span>" },
+    { "text": "2027", "confidence": "exact", "strategy": "html-text", "why": "digits in a <span> are parsed text, so exact" },
+    { "text": "31%", "confidence": "exact", "strategy": "html-text", "why": "<strong> run inside a sentence" },
+    { "text": " in Q3, led by ", "confidence": "exact", "strategy": "html-text", "why": "middle run, spaces at both ends" },
+    { "text": "appendix", "confidence": "exact", "strategy": "html-text", "why": "<a> text; its href (#appendix) is a key but only literal runs are checked against keys" },
+    { "text": "cohort_v2", "confidence": "exact", "strategy": "html-text", "why": "<code> run" },
+    { "text": "First line of the summary", "confidence": "exact", "strategy": "html-text", "why": "text before a <br> (textIndex 0)" },
+    { "text": "second line after a break", "confidence": "exact", "strategy": "html-text", "why": "text after a <br> (textIndex 1); a line break cannot be typed in v1 (5, 6.3)" },
+    { "text": "Hire", "confidence": "exact", "strategy": "html-text", "why": "<b> at the start of a list item" },
+    { "text": "(EMEA)", "confidence": "exact", "strategy": "html-text", "why": "<i> at the end" },
+    { "text": "Owner", "confidence": "exact", "strategy": "html-text", "why": "two <strong>Owner</strong> labels: parsed-text duplicates each map to their own stamp" },
+    { "text": " ", "confidence": "exact", "strategy": "html-text", "why": "&nbsp; alone between </b> and <i>: NBSP is not whitespace (9.2 Strategy 1 step 2), so this node is a run and is counted" },
+    { "text": " numbers are unaudited", "confidence": "exact", "strategy": "html-text", "why": "the list item's last run (textIndex 1, after the NBSP run at textIndex 0)" },
+    { "text": "Note: ", "confidence": "exact", "strategy": "html-text", "why": "nested inline: <strong> text before an <em> inside it" },
+    { "text": "pricing", "confidence": "exact", "strategy": "html-text", "why": "<em> inside <strong>" },
+    { "text": " is provisional", "confidence": "exact", "strategy": "html-text", "why": "<strong>'s textIndex 1" },
+    { "text": " until legal signs off.", "confidence": "exact", "strategy": "html-text", "why": "the <p>'s own run after the nested inline" },
+    { "text": "#gtm-planning", "confidence": "exact", "strategy": "html-text", "why": "link text" },
+    { "text": "revops@northwind.example", "confidence": "exact", "strategy": "html-text", "why": "link text; the href value (mailto:…) differs, so no key clash either" },
+    { "text": "Questions? Ask in ", "confidence": "exact", "strategy": "html-text", "why": "its <p> already carries data-bl-e=\"bl-2\" in the source; the served copy strips it and adds the map's own stamp (9.2 Strategy 1 step 3), so the old value cannot collide with the real bl-2" },
+    { "text": "northwind.example/gtm", "confidence": "exact", "strategy": "html-text", "why": "<a href=https://northwind.example/gtm/>: the stamp goes right after the tag name, never near the >, because the / belongs to the unquoted value (Strategy 1 step 3); the link must still point at …/gtm/" }
+  ]
+}

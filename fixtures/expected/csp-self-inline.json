@@ -1,0 +1,228 @@
+{
+  "deckSha": "ae46e72851c95f59ae9442c9193670b1c4ecefa026817eaa5979a51e5f5810c7",
+  "coverage": {
+    "exact": 14,
+    "ambiguous": 0,
+    "none": 0,
+    "total": 14
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Checkout outage, 3 October",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1926,
+      "end": 1952,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Blameless review · 47 minutes of failed payments",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1978,
+      "end": 2026,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Timeline",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2078,
+      "end": 2086,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "14:02",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2555,
+      "end": 2560,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Card payments start failing for one acquirer",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2564,
+      "end": 2608,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "14:09",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2620,
+      "end": 2625,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "On-call engineer paged by the error-rate alert",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2629,
+      "end": 2675,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "14:31",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2687,
+      "end": 2692,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Traffic shifted to the backup acquirer",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2696,
+      "end": 2734,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "14:49",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2746,
+      "end": 2751,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Error rate back to normal; incident closed",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2755,
+      "end": 2797,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "What we are changing",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2184,
+      "end": 2204,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Fail over automatically after two minutes of errors",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2835,
+      "end": 2886,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Add the backup acquirer to the weekly game day",
+      "strategy": "script-literal",
+      "confidence": "exact",
+      "start": 2896,
+      "end": 2942,
+      "probe": "pass"
+    }
+  ],
+  "report": {
+    "deck": "csp-self-inline.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 3,
+      "reached": 3,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Checkout outage, 3 October",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 2
+      },
+      {
+        "slide": 1,
+        "title": "Timeline",
+        "reached": true,
+        "exact": 9,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 9
+      },
+      {
+        "slide": 2,
+        "title": "What we are changing",
+        "reached": true,
+        "exact": 3,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 3
+      }
+    ],
+    "totals": {
+      "exact": 14,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 14
+    },
+    "coverage": {
+      "exact": 14,
+      "ambiguous": 0,
+      "none": 0,
+      "total": 14,
+      "share": 1,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [],
+    "inline": {
+      "blocks": 14,
+      "withInline": 0,
+      "allExact": 0,
+      "allPassed": 0,
+      "shareWithInline": 0,
+      "shareAllExact": 0
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 14,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 14,
+      "passed": 14,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 1,
+    "warnings": [
+      "the page logged 1 console error during the walk, first: Loading the script 'blueline://DOC-files/csp-self-inline.js' violates the following Content Security Policy directive: \"script-src 'self' 'unsafe-inline'\". Note that 'script-src-elem' was not explicit"
+    ]
+  }
+}

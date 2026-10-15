@@ -1,0 +1,17 @@
+{
+  "deck": "crlf.html",
+  "kind": "generic",
+  "slides": 3,
+  "navKind": "index",
+  "titles": ["Release engineering review", "How a release ships now", "Train health since March"],
+  "lineEnding": "\r\n",
+  "expect": [
+    { "text": "Release engineering review", "confidence": "exact", "strategy": "html-text", "why": "every line of the file ends in CRLF; offsets after each CR stay raw (9.2 rule 4)" },
+    { "text": "We moved the release train from monthly to weekly,\nand kept the change-failure rate flat.", "confidence": "exact", "strategy": "html-text", "why": "a run that spans a CRLF: parse5 gives LF in the value, so the decoded-to-raw table must drop the CR (rule 4)" },
+    { "text": "npm run build\nnpm run deploy -- --canary 5%\n", "confidence": "exact", "strategy": "html-text", "why": "<pre> followed by CRLF: the parser drops that one leading newline (both CR and LF), which stays outside the decoded value" },
+    { "text": "Every merge to main ships within the hour, or the train waits for the fix.", "confidence": "exact", "strategy": "script-literal", "why": "a backslash-CRLF line continuation inside a string literal cooks to nothing and is one atomic unit (Strategy 2 step 4)" },
+    { "text": "Weekly trains since March.\nTwo rollbacks, both under ten minutes.", "confidence": "exact", "strategy": "script-literal", "why": "a multi-line template literal: JS cooks CRLF to LF, so the cooked-to-raw table must drop the CR; a new line break would be written as CRLF" },
+    { "text": "Last 30 days", "confidence": "exact", "strategy": "json-literal", "why": "a JSON block formatted with CRLF between tokens" },
+    { "text": "Lead time", "confidence": "exact", "strategy": "html-text", "why": "table cell on a CRLF line" }
+  ]
+}

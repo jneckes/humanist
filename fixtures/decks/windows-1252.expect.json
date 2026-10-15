@@ -1,0 +1,17 @@
+{
+  "deck": "windows-1252.html",
+  "kind": "generic",
+  "slides": 3,
+  "navKind": "index",
+  "titles": ["“Quarterly review” – Q3", "Results at a glance", "What’s next"],
+  "utf8": false,
+  "readOnly": "windows-1252.html is not UTF-8; direct edits are off",
+  "expect": [
+    { "text": "“Quarterly review” – Q3", "confidence": "none", "strategy": null, "reason": "not-utf8", "why": "bytes 0x93 0x94 0x96 fail the fatal UTF-8 decode (9.2 rule 1): read-only, no stamps, every node none; the page itself shows them through <meta charset=\"windows-1252\"> because the copy is served with no charset (9.1 Charset)" },
+    { "text": "Sales & marketing · prepared for the board…", "confidence": "none", "strategy": null, "reason": "not-utf8", "why": "0xB7 and 0x85 (ellipsis); text that would be ASCII-clean elsewhere is still none" },
+    { "text": "Results at a glance", "confidence": "none", "strategy": null, "reason": "not-utf8", "why": "pure ASCII run: the whole file is read-only, not just the non-ASCII runs" },
+    { "text": "• Revenue: €4.8m, up 12% – ahead of plan", "confidence": "none", "strategy": null, "reason": "not-utf8", "why": "0x95 bullet and 0x80 euro sign" },
+    { "text": "• Brand™ awareness doubled in the DACH region", "confidence": "none", "strategy": null, "reason": "not-utf8", "why": "0x99 trade mark sign" },
+    { "text": "‘We’ll open Zürich in Q1 — and hire locally.’", "confidence": "none", "strategy": null, "reason": "not-utf8", "why": "0x91 0x92 quotes, 0x97 em dash and 0xFC (ü, a Latin-1 byte that is also invalid UTF-8 on its own)" }
+  ]
+}

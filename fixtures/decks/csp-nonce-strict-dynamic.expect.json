@@ -1,0 +1,22 @@
+{
+  "deck": "csp-nonce-strict-dynamic.html",
+  "kind": "generic",
+  "slides": 3,
+  "navKind": "index",
+  "titles": ["Design system adoption", "Adoption by team", "Next quarter"],
+  "csp": {
+    "policy": "script-src 'nonce-x' 'strict-dynamic'; object-src 'none'; base-uri 'none'",
+    "scriptsRan": "yes",
+    "dynamicScriptRan": "yes",
+    "unnoncedScriptRan": "absent",
+    "cspViolations": "script-src-elem inline",
+    "why": "scripts with nonce=\"x\" run; the script they insert (csp-nonce-strict-dynamic.js, served from the -files origin) runs under 'strict-dynamic'; the inline script without a nonce is blocked, which is the deck's own CSP being honoured (SPEC 11). That one inline violation is the only expected entry in data-csp-violations; the overlay must add none (9.1 Preload)."
+  },
+  "expect": [
+    { "text": "Design system adoption", "confidence": "exact", "strategy": "html-text", "why": "parsed text" },
+    { "text": "Checkout", "confidence": "exact", "strategy": "script-literal", "why": "literal from a nonce'd script; Strategy 2 parses inline scripts whatever their CSP status" },
+    { "text": "Blocked on icons", "confidence": "exact", "strategy": "script-literal", "why": "status literal rendered in a <b>" },
+    { "text": "Ship the icon set so Help centre can start in January", "confidence": "exact", "strategy": "script-literal", "why": "a property of a data object on window, rendered by a second nonce'd script" },
+    { "text": "Status pulled from the design-ops tracker every Monday", "confidence": "none", "strategy": null, "reason": "no-match", "why": "rendered by csp-nonce-strict-dynamic.js, an external script inserted under strict-dynamic: Strategy 2 parses only inline scripts, so this text has no run (pin-only); its presence also shows strict-dynamic worked" }
+  ]
+}

@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="script-src 'nonce-x' 'strict-dynamic'; object-src 'none'; base-uri 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design system adoption</title>
+<style>
+  :root { --bg: #f5f3ff; --ink: #2e1065; --muted: #6d28d9; --accent: #8b5cf6; --card: #ffffff; font-family: "Inter", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #2e1065; overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide { position: absolute; inset: 0; display: none; padding: 100px 128px; background: var(--bg); color: var(--ink); }
+  .slide.active { display: block; }
+  h1 { font-size: 96px; margin: 160px 0 24px; letter-spacing: -.02em; }
+  h2 { font-size: 62px; margin: 0 0 44px; }
+  .lede { font-size: 32px; color: var(--muted); }
+  .teams { display: grid; grid-template-columns: repeat(2, 1fr); gap: 24px; }
+  .team { background: var(--card); border-radius: 16px; padding: 28px 32px; font-size: 28px; display: flex; justify-content: space-between; }
+  .team b { color: var(--accent); }
+</style>
+<script nonce="x">
+  // Every CSP violation in this document, as "<effectiveDirective> <blockedURI>" joined by " | ", so a test can
+  // tell the deck's own expected violations from any the overlay would cause (SPEC 9.1, Preload).
+  (function () {
+    var seen = [];
+    document.addEventListener('securitypolicyviolation', function (e) {
+      seen.push(e.effectiveDirective + ' ' + (e.blockedURI || '-'));
+      document.documentElement.dataset.cspViolations = seen.join(' | ');
+    });
+  })();
+</script>
+</head>
+<body>
+<div class="deck" id="deck">
+  <section class="slide active">
+    <h1>Design system adoption</h1>
+    <p class="lede">Where each product team stands, and what blocks the rest</p>
+  </section>
+  <section class="slide">
+    <h2>Adoption by team</h2>
+    <div class="teams" id="teams"></div>
+  </section>
+  <section class="slide">
+    <h2>Next quarter</h2>
+    <p class="lede" id="next"></p>
+  </section>
+</div>
+
+<script nonce="x">
+  window.DS_DATA = {
+    teams: [
+      { name: 'Checkout', status: 'Migrated' },
+      { name: 'Search', status: 'In progress' },
+      { name: 'Accounts', status: 'Not started' },
+      { name: 'Help centre', status: 'Blocked on icons' },
+    ],
+    next: 'Ship the icon set so Help centre can start in January',
+  };
+</script>
+<script nonce="x">
+  (function () {
+    var data = window.DS_DATA;
+    var teams = document.getElementById('teams');
+    data.teams.forEach(function (t) {
+      var row = document.createElement('div');
+      row.className = 'team';
+      var name = document.createElement('span');
+      name.textContent = t.name;
+      var status = document.createElement('b');
+      status.textContent = t.status;
+      row.append(name, status);
+      teams.appendChild(row);
+    });
+    document.getElementById('next').textContent = data.next;
+
+    // 'strict-dynamic': a script this trusted script inserts is trusted too, even without a nonce.
+    var child = document.createElement('script');
+    child.src = 'csp-nonce-strict-dynamic.js';
+    document.head.appendChild(child);
+
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var i = 0;
+    function show(n) {
+      i = Math.max(0, Math.min(slides.length - 1, n));
+      slides.forEach(function (s, k) { s.classList.toggle('active', k === i); });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') show(i + 1);
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') show(i - 1);
+    });
+    function fit() {
+      var s = Math.min(innerWidth / 1600, innerHeight / 900);
+      document.getElementById('deck').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    addEventListener('resize', fit);
+    fit();
+
+    document.documentElement.dataset.scriptsRan = 'yes';
+  })();
+</script>
+<!-- No nonce: the deck's own CSP must block this (SPEC 11, "the deck's own CSP is honoured"). -->
+<script>
+  document.documentElement.dataset.unnoncedScriptRan = 'yes';
+</script>
+</body>
+</html>

@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Northwind Labs at a glance</title>
+<style>
+  :root { --bg: #0f172a; --panel: #1e293b; --ink: #f1f5f9; --muted: #94a3b8; --accent: #22d3ee; font-family: "Inter", system-ui, sans-serif; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); }
+  .page { max-width: 1360px; margin: 0 auto; padding: 56px 64px; }
+  .brand { font-weight: 800; letter-spacing: -.02em; font-size: 22px; color: var(--accent); }
+  .hero { display: grid; grid-template-columns: 1.2fr 1fr; gap: 64px; align-items: center; margin: 40px 0 48px; }
+  h1 { font-size: 64px; line-height: 1.05; margin: 0 0 20px; letter-spacing: -.03em; }
+  .lede { font-size: 22px; line-height: 1.5; color: var(--muted); margin: 0 0 28px; }
+  .cta { display: inline-block; background: var(--accent); color: var(--bg); font-weight: 700; padding: 14px 28px; border-radius: 10px; text-decoration: none; font-size: 18px; }
+  .digest { display: flex; align-items: center; gap: 12px; margin-top: 24px; font-size: 16px; color: var(--muted); }
+  .digest input { font: inherit; padding: 8px 12px; border-radius: 8px; border: 1px solid #334155; background: var(--panel); color: var(--ink); }
+  .digest button { font: inherit; font-weight: 600; padding: 8px 16px; border-radius: 8px; border: 0; background: var(--panel); color: var(--accent); }
+  .numbers { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+  .number { background: var(--panel); border-radius: 16px; padding: 24px; }
+  .number strong { display: block; font-size: 44px; color: var(--accent); }
+  .number span { font-size: 16px; color: var(--muted); }
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; }
+  .feature { background: var(--panel); border-radius: 16px; padding: 28px; }
+  .feature h3 { margin: 0 0 8px; font-size: 22px; }
+  .feature p { margin: 0; color: var(--muted); font-size: 17px; line-height: 1.5; }
+  .fine { margin-top: 32px; font-size: 14px; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="brand">Northwind Labs</div>
+  <div class="hero">
+    <div>
+      <h1>Analytics your whole team can read</h1>
+      <p class="lede">Northwind turns warehouse tables into dashboards that finance, sales and support use every day, without a data team in the loop.</p>
+      <a class="cta" href="mailto:hello@northwind.example">Book a demo</a>
+      <div class="digest">
+        <label for="digest-email">Get the monthly digest</label>
+        <input id="digest-email" name="email" type="email" placeholder="you@company.com">
+        <button type="button">Subscribe</button>
+      </div>
+    </div>
+    <div class="numbers">
+      <div class="number"><strong>212</strong><span>customers on annual plans</span></div>
+      <div class="number"><strong>11 min</strong><span>median time to first chart</span></div>
+      <div class="number"><strong>SOC 2</strong><span>Type II, renewed every year</span></div>
+      <div class="number"><strong>40+</strong><span>native connectors</span></div>
+    </div>
+  </div>
+  <div class="features">
+    <div class="feature"><h3>Plain-language metrics</h3><p>Define revenue once and every chart agrees with finance.</p></div>
+    <div class="feature"><h3>Alerts that explain</h3><p>When a number moves, the alert says which segment moved it.</p></div>
+    <div class="feature"><h3>Share without seats</h3><p>Send a live dashboard to anyone with a link that expires.</p></div>
+  </div>
+  <p class="fine">Figures as of 30 September 2026. Northwind Labs is a fictional company used in examples.</p>
+</div>
+</body>
+</html>

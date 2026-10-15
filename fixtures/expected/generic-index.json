@@ -1,0 +1,524 @@
+{
+  "deckSha": "23df873b25748869947682894b5b1f5c0a4b6f6a3c075b784e7979b55ab54203",
+  "coverage": {
+    "exact": 28,
+    "ambiguous": 2,
+    "none": 7,
+    "total": 37
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Q3 business review",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2927,
+      "end": 2945,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "Platform team · 15 October 2026",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 2970,
+      "end": 3001,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "01 / 06",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 1,
+      "text": "Agenda",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3051,
+      "end": 3057,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Highlights",
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "stamp-other"
+    },
+    {
+      "slide": 1,
+      "text": "Pipeline by stage",
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "stamp-other"
+    },
+    {
+      "slide": 1,
+      "text": "Customer voice",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "no-match"
+    },
+    {
+      "slide": 1,
+      "text": "02 / 06",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 2,
+      "text": "Highlights",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3134,
+      "end": 3144,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Latency halved",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3211,
+      "end": 3225,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "p95 API latency fell from 420 ms to 190 ms after the cache rollout.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3242,
+      "end": 3309,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Owner",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3342,
+      "end": 3347,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Dana Okafor",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3372,
+      "end": 3383,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Zero sev-1 incidents",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3441,
+      "end": 3461,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "The first quarter without a sev-1 since we started counting.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3478,
+      "end": 3538,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Owner",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3571,
+      "end": 3576,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Luis Ortega",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3601,
+      "end": 3612,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Self-serve SSO",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3670,
+      "end": 3684,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Admins can now connect their identity provider without a ticket.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3701,
+      "end": 3765,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Owner",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3798,
+      "end": 3803,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Mei Lin",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3828,
+      "end": 3835,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "03 / 06",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 3,
+      "text": "Pipeline by stage",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 3912,
+      "end": 3929,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Discovery",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4114,
+      "end": 4123,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "$2.1M",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4226,
+      "end": 4231,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Proposal",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4288,
+      "end": 4296,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "$1.4M",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4401,
+      "end": 4406,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Negotiation",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4463,
+      "end": 4474,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "$0.9M",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4579,
+      "end": 4584,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Open pipeline at quarter end, unweighted",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4627,
+      "end": 4667,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "04 / 06",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 4,
+      "text": "“The migration took a weekend, not a quarter.”",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4776,
+      "end": 4822,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "CTO, a 400-person logistics company",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4846,
+      "end": 4881,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "05 / 06",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 5,
+      "text": "Northwind Platform",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4948,
+      "end": 4966,
+      "probe": "pass"
+    },
+    {
+      "slide": 5,
+      "text": "platform@northwind.example",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 4993,
+      "end": 5019,
+      "probe": "pass"
+    },
+    {
+      "slide": 5,
+      "text": "06 / 06",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    }
+  ],
+  "report": {
+    "deck": "generic-index.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "index",
+      "count": 6,
+      "reached": 6,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Q3 business review",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      },
+      {
+        "slide": 1,
+        "title": "Agenda",
+        "reached": true,
+        "exact": 1,
+        "ambiguous": 2,
+        "none": 2,
+        "total": 5
+      },
+      {
+        "slide": 2,
+        "title": "Highlights",
+        "reached": true,
+        "exact": 13,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 14
+      },
+      {
+        "slide": 3,
+        "title": "Pipeline by stage",
+        "reached": true,
+        "exact": 8,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 9
+      },
+      {
+        "slide": 4,
+        "title": "Customer voice",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      },
+      {
+        "slide": 5,
+        "title": "Slide 6",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      }
+    ],
+    "totals": {
+      "exact": 28,
+      "ambiguous": 2,
+      "none": 7,
+      "total": 37
+    },
+    "coverage": {
+      "exact": 28,
+      "ambiguous": 2,
+      "none": 7,
+      "total": 37,
+      "share": 0.7567567567567568,
+      "probeFailed": 0,
+      "verified": true
+    },
+    "nonExact": [
+      {
+        "slide": 0,
+        "text": "01 / 06",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 1,
+        "text": "Highlights",
+        "confidence": "ambiguous",
+        "reason": "stamp-other",
+        "candidates": 1
+      },
+      {
+        "slide": 1,
+        "text": "Pipeline by stage",
+        "confidence": "ambiguous",
+        "reason": "stamp-other",
+        "candidates": 1
+      },
+      {
+        "slide": 1,
+        "text": "Customer voice",
+        "confidence": "none",
+        "reason": "no-match",
+        "candidates": 0
+      },
+      {
+        "slide": 1,
+        "text": "02 / 06",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "03 / 06",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 3,
+        "text": "04 / 06",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 4,
+        "text": "05 / 06",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 5,
+        "text": "06 / 06",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      }
+    ],
+    "inline": {
+      "blocks": 29,
+      "withInline": 3,
+      "allExact": 3,
+      "allPassed": 3,
+      "shareWithInline": 0.10344827586206896,
+      "shareAllExact": 1
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 28,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 28,
+      "passed": 28,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}
