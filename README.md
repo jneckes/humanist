@@ -52,6 +52,7 @@ blueline open deck.html --protected     # open in Protected view
 blueline map deck.html --report         # map the deck and probe every exact node (section 10)
 blueline map deck.html --report --json  # the same as JSON: the coverage baseline format (section 11)
 blueline map deck.html --min-coverage 0.95
+blueline map deck.html --reduced-motion # map it as prefers-reduced-motion: reduce shows it
 blueline check                          # the Diagnostics window (guided steps + automatic checks)
 blueline check --auto                   # automatic checks only; prints PASS/FAIL, writes check.json
 ```
@@ -61,7 +62,8 @@ trust state, walks every slide (reveal.js, generic key-driven decks, and scrolli
 down their whole height), and maps each visible text node to the source as `exact`, `ambiguous` or `none`.
 For every `exact` node it runs the **mutation probe**: it writes a sentinel into a hidden copy next to the
 deck (`.<name>.bl-probe.html`) through the real patcher, reloads, checks the sentinel shows up in that node
-and nowhere else, undoes, and requires the copy's bytes to equal the original's. The copy is removed when `map` ends or is interrupted,
+and nowhere else, undoes, and requires the copy's bytes to equal the original's (up to 24 runs share one load, each with its own
+sentinel; anything a batch cannot settle is probed again on its own). The copy is removed when `map` ends or is interrupted,
 and the deck itself is never written. Coverage counts only nodes that pass. `--report` lists each string that
 is not `exact` with its slide and reason. The exit code is 0 on success, and 1 when a probe failed, the
 original changed, the walk did not reach every detected slide (coverage `INCOMPLETE`), or `--min-coverage` was
@@ -98,13 +100,13 @@ it as root with `--no-sandbox`.
 `fixtures/decks/<name>.expect.json`, and fails when a deck's coverage drops more than 1 point below its
 baseline in `fixtures/expected/`.
 
-Phase 0 results after review round 1 (2026-10-16, Linux, Electron 44.7.2): 1012 unit tests pass (56
-files); 79 of 79 E2E tests pass, of which 1 is an expected failure for the note-card ordering limit described
-in SECURITY.md; the security suite passes 45 of 45, of which 2 are expected failures for the two DNS channels
+Phase 0 results (2026-10-16, Linux, Electron 44.7.2): 1022 unit tests pass (56 files); 81 of 81 E2E tests
+pass, of which 1 is an expected failure for the note-card ordering limit described in SECURITY.md; the security suite passes 45 of 45, of which 2 are expected failures for the two DNS channels
 described in SECURITY.md; `blueline check --auto` passes all 6 checks, as root and as `bltest`; `npm run
 package:smoke` passes; and across the 18 committed fixtures every `exact` node (411 of 411) passes the
-mutation probe with byte-exact undo. What the review found and fixed: `docs/PHASE0-FINDINGS.md`, Review
-round 1.
+mutation probe with byte-exact undo. On Josh's 12 real decks (kept local), every slide is reached and coverage
+is 89.0% with reduced motion and 71.3% with motion as the decks set it, against the 95% gate
+(`docs/PHASE0-FINDINGS.md`, F25–F30). What the review found and fixed: `docs/PHASE0-FINDINGS.md`, Review round 1.
 
 ## Fixtures
 

@@ -560,13 +560,14 @@ under Review round 1, at the end; its new entries, F18 to F24, sit in the sectio
 
 Josh sent 14 files on 2026-10-16: 12 distinct decks (two were byte-identical copies). They are kept in the
 gitignored `fixtures/local/`, with their baselines in `fixtures/local/expected/` (`<deck>.json` with motion as
-the deck sets it, `<deck>.reduced-motion.json` with `blueline map --reduced-motion`). All 12 use their own
+the deck sets it, `<deck>.reduced-motion.json` with `blueline map --reduced-motion`). Their file names and text
+identify clients, so this page calls them D1–D12; `fixtures/local/DECKS.md` (gitignored) holds the key. All 12 use their own
 slide engine (no reveal.js), update `location.hash`, and honour `prefers-reduced-motion`; five animate with GSAP
-(SplitText, ScrambleText). Six have more than 400 visible text nodes; the largest is 977 KB.
+(SplitText, ScrambleText). Eight have more than 400 visible text nodes; the largest file is 977 KB.
 
 ### F25. The walk must be patient with decks that build (6.7 Index replay; section 10 step 3)
 
-- **Check.** `blueline map` on `miller-ink-qbr.html`.
+- **Check.** `blueline map` on D4, a 16-slide GSAP deck.
 - **Result.** The walk stopped on slide 2 of 16. The deck's `next()` returns while a transition is busy and
   spends the first press on fast-forwarding a build that has more than 0.6 s left; read literally, 6.7's "If a
   key changes nothing, it stops" ends the walk there. The hash fallback did not help: the deck reads
@@ -602,12 +603,13 @@ slide engine (no reveal.js), update `location.hash`, and honour `prefers-reduced
 
   | | Motion as set | Reduced motion |
   |---|---|---|
-  | Visible text nodes | MOTION_TOTAL | 6,675 |
-  | Exact and probe-passed | MOTION_COVERAGE | 5,941 (89.0%) |
-  | Slides reached | MOTION_SLIDES | 193 of 193 |
-  | Probe failures | MOTION_PF | 1 |
+  | Visible text nodes | 7,023 | 6,676 |
+  | Exact and probe-passed | 5,007 (71.3%) | 5,942 (89.0%) |
+  | Slides reached | 193 of 193 | 193 of 193 |
+  | Probe failures | 0 | 1 (F30) |
 
-  The five GSAP decks fall to MOTION_GSAP with motion on; the seven others are within a few points either way.
+  The five GSAP decks fall to 54.0% with motion on (their split text counts as more, smaller nodes); the seven
+  others are within a few points either way.
 - **Code.** `blueline map --reduced-motion`. Edit mode (Phase 2) needs a decision: see Still open.
 
 ### F28. Deck engines rewrite their chrome (9.2 Matching DOM to source at runtime)
@@ -624,34 +626,49 @@ slide engine (no reveal.js), update `location.hash`, and honour `prefers-reduced
 ### F29. Split text and lone characters (9.2 Strategy 2 step 3)
 
 - **Check.** The probe on the motion-on maps.
-- **Result.** 22 wrong-place writes, all caught by the probe: GSAP split headings into one span per letter, and
-  a lone "A" or "T" matched some literal `'A'` elsewhere in the file (in the bundled library's own code).
-- **Code.** A node a script inserted whose text lies inside its nearest stamped ancestor's source text is
-  `ambiguous` (`split`), and a single character through a lone literal is `ambiguous` (`short`). Two-character
-  labels ("Q1", "EU") stay exact (`fixtures/matching/split-chars.html`).
+- **Result.** 23 wrong-place writes, all caught by the probe: GSAP split headings into one span per letter or
+  word, and a lone "A" or "T", or a word, matched a literal elsewhere in the file (in the bundled library's own
+  code, such as `"client"` in a property name). The words were missed at first because a mutation record
+  names only the element a script inserts, not the text built inside it.
+- **Code.** Text inside an element a script inserted counts as touched. A touched node whose text lies inside its
+  nearest stamped ancestor's source text is `ambiguous` (`split`), and a single character through a lone literal
+  is `ambiguous` (`short`). Two-character labels ("Q1", "EU") stay exact (`fixtures/matching/split-chars.html`).
+  With motion on, no probe failure remains on the 12 decks.
 
 ### F30. Coverage on the real decks, and what stops the rest
 
-| Deck | Nodes | Exact and probe-passed (reduced motion) |
-|---|---|---|
-DECK_ROWS
+| Deck | Animation | Nodes (reduced motion) | Exact and probe-passed, motion as set | Reduced motion |
+|---|---|---|---|---|
+| D1 | own | 716 | 88.8% | 89.7% |
+| D2 | own | 291 | 91.8% | 93.8% |
+| D3 | own | 483 | 79.3% | 80.1% |
+| D4 | GSAP | 343 | 57.6% | 90.4% |
+| D5 | own | 430 | 95.8% | 96.0% |
+| D6 | GSAP | 457 | 58.5% | 91.5% |
+| D7 | GSAP | 653 | 52.0% | 93.7% |
+| D8 | GSAP | 400 | 54.0% | 93.8% |
+| D9 | GSAP | 675 | 51.5% | 93.6% |
+| D10 | own | 970 | 83.4% | 80.6% |
+| D11 | own | 879 | 89.3% | 86.5% |
+| D12 | own | 379 | 89.2% | 89.2% |
+| **All 12** | | **6676** | **71.3%** | **89.0%** |
 
-Of the 734 nodes that are not exact on the reduced-motion maps (11.0% of all nodes): 4.6% of all nodes are
+Of the 734 nodes that are not exact on the reduced-motion maps (11.0% of all nodes): 4.7% of all nodes are
 numbers and counters (slide numbers, KPIs, dates: `computed`, or equal to several runs), 0.6% are glyphs and
 labels of up to three characters, and 5.8% are words. The words are mostly labels that several literals hold
-(the decks draw diagrams and tables from data arrays: "PracticeMaster" six times), kickers assembled from parts
-("01 · Fractional CPTO"), and chrome. Counting only words, 93.9% are exact.
+(the decks draw diagrams and tables from data arrays: one product name six times), kickers assembled from parts
+("01 · <section name>"), and chrome. Counting only words, 93.9% are exact.
 
-The one probe failure (`bobsled-landing-zone.html`, "Writing transfer job") is not a wrong-place write: the
-literal is the right source, and the deck also shows it in a hidden element on another slide, so an edit would
+The one probe failure (D3, a three-word status label) is not a wrong-place write: the literal is the right
+source, and the deck also shows it in a hidden element on another slide, so an edit would
 change that copy too. The probe does not count such a node; 6.3's "also changes N other places" is the Edit
 mode answer.
 
 **Measured, not adopted:** 176 of the 280 `duplicate` nodes are text that a stamped run and a literal both
 hold. 9.2 never prefers the stamped run, because a script may have replaced the element's text with the
 literal; F28's record of script changes now shows when that happened. With the own stamped run taking
-precedence for nodes no script touched, the three decks with the most duplicates rose from 80.7%, 80.1% and
-87.4% to 83.8%, 85.3% and 89.5%, with no new probe failure. Proposed in
+precedence for nodes no script touched, the three decks with the most duplicates (D10, D3, D11) rose from
+80.7%, 80.1% and 87.4% to 83.8%, 85.3% and 89.5%, with no new probe failure (measured before F29). Proposed in
 `docs/spec-amendments/README.md`; not in the code.
 
 ## Packaging and the `blueline` command
@@ -709,8 +726,7 @@ Not fixed, documented as limits:
 - The macOS and Windows parts of the command (Still open).
 
 SPEC.md is unchanged: it is Josh's document. Where a fix changed what it prescribes, the proposed wording is
-in [`spec-amendments/phase0-review1.patch`](spec-amendments/phase0-review1.patch), pending his review
-(`git apply docs/spec-amendments/phase0-review1.patch` applies it). The code already follows it:
+in [`spec-amendments/`](spec-amendments/README.md), pending his review. The code already follows it:
 
 - 9.1 Protocol: the `blueline-media` scheme for audio and video.
 - 9.2 Strategy 2 and Matching DOM to source: shadow values, the number rule, object keys that are not units,
@@ -723,8 +739,8 @@ in [`spec-amendments/phase0-review1.patch`](spec-amendments/phase0-review1.patch
 
 ## Still open
 
-- **The 95% coverage gate is not met** (F30): 89.0% on Josh's 12 decks with reduced motion, MOTION_COVERAGE with motion
-  as set. The navigation gate is met (193 of 193 slides). Two decisions for Josh: whether Edit and Review render
+- **The 95% coverage gate is not met** (F30): 89.0% on Josh's 12 decks with reduced motion, 71.3% with motion as
+  set. The navigation gate is met (193 of 193 slides). Two decisions for Josh: whether Edit and Review render
   animated decks with reduced motion (F27), and whether an untouched stamped node may take precedence over an
   equal literal (F30, `docs/spec-amendments/README.md`).
 - **Diagnostics on Josh's Mac.** The guided steps (Wispr Flow into the card and the heading, dictation in

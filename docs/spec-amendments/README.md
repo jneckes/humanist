@@ -35,13 +35,14 @@ looks in Chrome for a viewer who asks for reduced motion, and these decks are bu
 replaced the element's text with that literal. The preload now records every text node a script changes
 (F28), so for a node no script touched, the reason no longer applies.
 
-Measured on the three real decks with the most `duplicate` nodes, with the probe on:
+Measured on the three real decks with the most `duplicate` nodes (labels as in PHASE0-FINDINGS F30), with the
+probe on, on the build before the split and single-character rules (F29):
 
 | Deck | 9.2 as written | Untouched own stamp first | New probe failures |
 |---|---|---|---|
-| `substrate-x-cabanillas-proposal-v5` | 80.7% | 83.8% | 0 |
-| `bobsled-landing-zone` | 80.1% | 85.3% | 0 |
-| `substrate-x-press-on-fundos` | 87.4% | 89.5% | 0 |
+| D10 | 80.7% | 83.8% | 0 |
+| D3 | 80.1% | 85.3% | 0 |
+| D11 | 87.4% | 89.5% | 0 |
 
 Proposal: in "Matching DOM to source at runtime", replace "A stamped run is never preferred over a literal
 with the same text" with "A stamped run is preferred over a literal with the same text only when no script has
