@@ -3,13 +3,14 @@
 // A fixture under fixtures/security/ is a template. prepareFixtureFolder() copies the templates into a fresh
 // folder, replaces the placeholders with this run's values, inlines the shared probe runtime, and writes the
 // sibling and outside files the fixtures try to read (so none of them lives in the repo): sibling.css,
-// sibling.js, sibling-throws.js, sibling.png, sibling.svg, secret.txt, a fake .ssh/id_rsa, symlinks that lead
-// out of the folder, and an outside/ folder next to it.
+// sibling.js, sibling-throws.js, sibling.png, sibling.svg, the sibling media (fixtures/security/media/ and a
+// generated WAV), confidential.txt, a fake .ssh/id_rsa, symlinks that lead out of the folder, and an
+// outside/ folder next to it whose files carry a marker with the run's label.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { FIXTURES, launchApp, resolveDns, type BlApp, type DeckView, type DnsRouting, type Scratch } from './app';
-import { sharedDnsServer, TestNet, type DnsServer } from './servers';
+import { sharedDnsServer, TestNet, type DnsServer, type NetSummary } from './servers';
 
 const SECURITY = path.join(FIXTURES, 'security');
 
@@ -24,6 +25,10 @@ export interface NetConfig {
   udp: number;
   /** TCP listener (TURN over TCP). */
   tcp: number;
+  /** A TCP service on 127.0.0.1 (the loopback a Protected deck must not reach, finding 8). openFixture sets it. */
+  loopTcp?: number;
+  /** The same on [::1], or 0 when the machine has no IPv6. openFixture sets it. */
+  loopTcp6?: number;
   /** The non-loopback address the zone resolves to and the listeners bind to (the "test host" by address). */
   sink: string;
 }
@@ -55,6 +60,29 @@ export function renderFixture(html: string, cfg: NetConfig): string {
     .join(String(cfg.tcp));
 }
 
+/**
+ * A 1-second 440 Hz sine as a 16-bit mono WAV at 8 kHz: the sibling WAV of local-files.html (the other media
+ * files are committed under fixtures/security/media/, made with ffmpeg; see the fixtures README).
+ */
+export function sineWav(seconds = 1, rate = 8000, freq = 440): Buffer {
+  const n = Math.round(seconds * rate);
+  const b = Buffer.alloc(44 + n * 2);
+  b.write('RIFF', 0, 'latin1');
+  b.writeUInt32LE(36 + n * 2, 4);
+  b.write('WAVEfmt ', 8, 'latin1');
+  b.writeUInt32LE(16, 16); // fmt chunk size
+  b.writeUInt16LE(1, 20); // PCM
+  b.writeUInt16LE(1, 22); // mono
+  b.writeUInt32LE(rate, 24);
+  b.writeUInt32LE(rate * 2, 28); // byte rate
+  b.writeUInt16LE(2, 32); // block align
+  b.writeUInt16LE(16, 34); // bits per sample
+  b.write('data', 36, 'latin1');
+  b.writeUInt32LE(n * 2, 40);
+  for (let i = 0; i < n; i++) b.writeInt16LE(Math.round(Math.sin((2 * Math.PI * freq * i) / rate) * 12000), 44 + i * 2);
+  return b;
+}
+
 export interface FixtureFolder {
   dir: string;
   /** The absolute path of a prepared fixture by its base name (e.g. 'network.html'). */
@@ -80,6 +108,8 @@ export function prepareFixtureFolder(scratch: Scratch, cfg: NetConfig): FixtureF
 
   // Sibling display files (served from the -files origin; the page may show but not read them).
   fs.writeFileSync(path.join(dir, 'sibling.css'), '/* sibling stylesheet */\n#bl-sibling-css-probe { color: rgb(1, 2, 3) !important; }\n');
+  // protocol-fuzz.html's control for a crafted path that stays in the folder (sub/%2e%2e/fuzz-control.css).
+  fs.writeFileSync(path.join(dir, 'fuzz-control.css'), '#bl-fuzz-control { color: rgb(4, 5, 6) !important; }\n');
   fs.writeFileSync(path.join(dir, 'sibling.js'), 'window.__blSiblingScript = (window.__blSiblingScript || 0) + 1;\n');
   // A sibling module script, to confirm module loads from the -files origin fail (as on file://).
   fs.writeFileSync(path.join(dir, 'sibling.mjs'), 'window.__blSiblingModule = true;\nexport const x = 1;\n');
@@ -88,6 +118,11 @@ export function prepareFixtureFolder(scratch: Scratch, cfg: NetConfig): FixtureF
   fs.writeFileSync(path.join(dir, 'sibling-worker.js'), 'self.postMessage("worker-ran");\n');
   fs.writeFileSync(path.join(dir, 'sibling.png'), PNG_1X1);
   fs.writeFileSync(path.join(dir, 'sibling.svg'), SVG);
+  // Sibling media (finding 7): shown by plain <video>/<audio>, never readable by a crossorigin one.
+  for (const name of fs.readdirSync(path.join(SECURITY, 'media'))) {
+    if (/\.(webm|mp4|ogg|mp3)$/.test(name)) fs.copyFileSync(path.join(SECURITY, 'media', name), path.join(dir, name));
+  }
+  fs.writeFileSync(path.join(dir, 'tone.wav'), sineWav());
   // A file whose bytes the page must never read (SPEC: fetch('../secret.txt'), a sibling file).
   fs.writeFileSync(path.join(dir, 'confidential.txt'), 'CONFIDENTIAL-' + cfg.uniq + '\n');
   fs.writeFileSync(path.join(base, 'confidential.txt'), 'PARENT-CONFIDENTIAL-' + cfg.uniq + '\n');
@@ -99,13 +134,17 @@ export function prepareFixtureFolder(scratch: Scratch, cfg: NetConfig): FixtureF
   // Same bytes under an allowed extension, so only the dotfile rule (not the extension rule) refuses it.
   fs.writeFileSync(path.join(ssh, 'id_rsa.css'), fakeKey(cfg.uniq));
 
-  // An outside/ folder a `..` or symlink would reach.
+  // An outside/ folder a `..` or symlink would reach. Its files have extensions the -files host serves and
+  // carry OUTSIDE-<label> in their bytes, so a crafted path that escaped the folder would be served (not
+  // refused for its extension) and recognised (finding 42).
   const outside = path.join(base, 'outside');
   fs.mkdirSync(outside, { recursive: true });
-  fs.writeFileSync(path.join(outside, 'outside.css'), '#bl-outside { color: rgb(9, 9, 9) !important; }\n');
-  fs.writeFileSync(path.join(outside, 'outside.js'), 'window.__blOutsideScript = true;\n');
-  fs.writeFileSync(path.join(outside, 'outside.png'), PNG_1X1);
-  fs.writeFileSync(path.join(outside, 'outside.txt'), 'OUTSIDE-' + cfg.uniq + '\n');
+  const mark = outsideMarker(cfg.uniq);
+  fs.writeFileSync(path.join(outside, 'outside.css'), `/*${mark}*/\n#bl-outside { color: rgb(9, 9, 9) !important; }\n`);
+  fs.writeFileSync(path.join(outside, 'outside.js'), `/*${mark}*/\nwindow.__blOutsideScript = true;\n`);
+  // A PNG decoder ignores bytes after IEND, so the marker can follow the image.
+  fs.writeFileSync(path.join(outside, 'outside.png'), Buffer.concat([PNG_1X1, Buffer.from(mark, 'latin1')]));
+  fs.writeFileSync(path.join(outside, 'outside.txt'), mark + '\n');
 
   // Symlinks inside the folder that lead out of it (SPEC 9.1 Refusals step 3: a symlink out is refused).
   trySymlink(path.join(outside, 'outside.css'), path.join(dir, 'link-outside.css'));
@@ -119,6 +158,11 @@ export function prepareFixtureFolder(scratch: Scratch, cfg: NetConfig): FixtureF
       return path.join(dir, name);
     },
   };
+}
+
+/** The marker in every outside/ file's bytes. */
+export function outsideMarker(uniq: string): string {
+  return `OUTSIDE-${uniq}`;
 }
 
 function fakeKey(uniq: string): string {
@@ -164,8 +208,9 @@ export interface SecuritySession {
   results(): Promise<Record<string, ProbeResult>>;
   /** Waits for window.__bl.phases[phase] === true. */
   waitPhase(phase?: string, timeout?: number): Promise<void>;
-  /** Everything that reached the test servers for this run's label (http, dns, udp, tcp). */
-  summary(): ReturnType<TestNet['summary']>;
+  /** Everything that reached the test servers for this run's label (http, dns), and every packet or
+   * connection of this phase (udp, tcp, httpConns, loop). */
+  summary(): NetSummary;
   close(): Promise<void>;
 }
 
@@ -179,6 +224,11 @@ export interface OpenFixtureOptions {
   /** Reuse a userData folder (reopen tests). */
   userData?: string;
   extraArgs?: string[];
+  /**
+   * Extra environment for the app, e.g. BLUELINE_TEST_DISABLE_LAYER (test builds only; network-policy
+   * disabledProtectedLayers) for the layers spec.
+   */
+  env?: Record<string, string>;
 }
 
 /**
@@ -195,12 +245,16 @@ export async function openFixture(o: OpenFixtureOptions): Promise<SecuritySessio
     port: net.http.port,
     udp: net.udp.port,
     tcp: net.tcp.port,
+    loopTcp: net.loopTcp.port,
+    loopTcp6: net.loopTcp6.port,
     sink: dns.sinkIp,
   };
   // When the config is reused across a close/reopen, the ports changed: keep the label, refresh the ports.
   cfg.port = net.http.port;
   cfg.udp = net.udp.port;
   cfg.tcp = net.tcp.port;
+  cfg.loopTcp = net.loopTcp.port;
+  cfg.loopTcp6 = net.loopTcp6.port;
   cfg.sink = dns.sinkIp;
   const folder = o.folder ?? prepareFixtureFolder(o.scratch, cfg);
   const file = folder.file(o.fixture);
@@ -211,6 +265,7 @@ export async function openFixture(o: OpenFixtureOptions): Promise<SecuritySessio
     dns: dnsRouting,
     userData: o.userData,
     extraArgs: o.extraArgs,
+    env: o.env,
   });
   let deck: DeckView;
   try {

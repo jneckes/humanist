@@ -1,0 +1,10 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><title>First visit</title>
+<style>html,body{margin:0;font:28px/1.4 sans-serif}</style></head><body>
+<h1>Welcome to the plan</h1><p>Plain paragraph one.</p><p>Plain paragraph two.</p>
+<script>
+// Shows a one-time tip; a second load in the same tab trips over its own bookkeeping.
+var seen = sessionStorage.getItem('tip-seen');
+sessionStorage.setItem('tip-seen', '1');
+if (seen) { var tip = document.getElementById('tip'); tip.remove(); }
+</script>
+</body></html>

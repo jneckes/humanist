@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Protected network layers</title>
+<script>window.__BL_CFG = __BL_CFG__;</script>
+<script>/*__BL_PROBE__*/</script>
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; }</style>
+</head>
+<body>
+<h1 id="bl-layers-doc">Protected network layers</h1>
+<p>9.9 Network policy, Protected: three layers stop a Protected deck's network use. <code>connect-src 'none'</code>
+(the CSP) stops fetch, XHR, EventSource, WebSocket and sendBeacon for every origin, <code>blueline://</code>
+included; onBeforeRequest (the requests layer) cancels http(s) and ws(s) requests and <code>blueline://</code>
+fetch, XHR and beacons; the closed-port proxy stops connections that escape both. The security suite opens this
+page Protected with two layers turned off at a time (BLUELINE_TEST_DISABLE_LAYER), so each layer is checked on
+its own, and with all three off as the positive control.</p>
+<img id="img" width="1" height="1" alt="">
+
+<script>
+(function () {
+  var B = window.__bl;
+  var violations = [];
+  document.addEventListener('securitypolicyviolation', function (e) {
+    violations.push(e.violatedDirective + ' ' + String(e.blockedURI).slice(0, 120));
+  });
+  var pending = 0;
+  function settle() { if (--pending === 0) setTimeout(function () { B.set('csp-violations', 'csp', violations.length ? 'blocked' : 'ok', violations.join(' | ')); B.done('load'); }, 300); }
+  function attempt(name, kind, run) {
+    pending++;
+    var done = false;
+    function out(status, detail) { if (done) return; done = true; B.set(name, kind, status, detail); settle(); }
+    try { run(function (v) { out('leaked', v); }, function (e) { out('blocked', e && e.name ? B.errText(e) : String(e)); }); }
+    catch (e) { out('blocked', B.errText(e)); }
+    setTimeout(function () { out('blocked', 'timeout'); }, 5000);
+  }
+  function xhr(url, ok, fail) {
+    var x = new XMLHttpRequest();
+    x.open('GET', url);
+    x.onload = function () { ok('status ' + x.status + ' ' + String(x.responseText).slice(0, 60)); };
+    x.onerror = function () { fail(new Error('xhr error')); };
+    x.send();
+  }
+  function es(url, ok, fail) {
+    var s = new EventSource(url);
+    s.onmessage = function (e) { ok('message ' + String(e.data).slice(0, 40)); s.close(); };
+    s.onerror = function () { fail(new Error('eventsource error')); s.close(); };
+  }
+  function ws(url, ok, fail) {
+    var s = new WebSocket(url);
+    s.onopen = function () { ok('open'); s.close(); };
+    s.onerror = function () { fail(new Error('websocket error')); };
+  }
+
+  // blueline:// (the document's own origin): connect-src 'none' covers it, and the requests layer cancels
+  // its xhr (fetch, XHR, EventSource) and ping (sendBeacon) requests ('blueline-read'). The proxy does not
+  // see custom schemes. A read returns the document itself.
+  var self = location.href.split('#')[0];
+  attempt('bl-fetch', 'blueline', function (ok, fail) {
+    fetch(self, { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) { ok('read ' + t.length + (t.indexOf('bl-layers-doc') >= 0 ? ' (the document)' : '')); }, fail);
+  });
+  attempt('bl-xhr', 'blueline', function (ok, fail) { xhr(self, ok, fail); });
+  attempt('bl-eventsource', 'blueline', function (ok, fail) { es(self, ok, fail); });
+  try { B.set('bl-beacon', 'blueline', navigator.sendBeacon(self, 'b') ? 'pending' : 'blocked', 'sendBeacon queued?'); }
+  catch (e) { B.set('bl-beacon', 'blueline', 'blocked', B.errText(e)); }
+
+  // The test host (http and ws): the CSP blocks fetch, XHR, EventSource, WebSocket and sendBeacon but not
+  // images; the requests layer cancels all of them; the proxy refuses the connections. Each attempt has its
+  // own path, so the server names what arrived.
+  attempt('http-fetch', 'http', function (ok, fail) {
+    fetch(B.url('layer-fetch'), { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) { ok('read ' + t.slice(0, 20)); }, fail);
+  });
+  attempt('http-xhr', 'http', function (ok, fail) { xhr(B.url('layer-xhr'), ok, fail); });
+  attempt('http-eventsource', 'http', function (ok, fail) { es(B.url('layer-eventsource', 'http', '/events'), ok, fail); });
+  attempt('http-websocket', 'http', function (ok, fail) { ws(B.url('layer-websocket', 'ws'), ok, fail); });
+  try { B.set('http-beacon', 'http', navigator.sendBeacon(B.url('layer-beacon'), 'b') ? 'pending' : 'blocked', 'sendBeacon queued?'); }
+  catch (e) { B.set('http-beacon', 'http', 'blocked', B.errText(e)); }
+  attempt('http-img', 'http', function (ok, fail) {
+    var img = document.getElementById('img');
+    img.onload = function () { ok('loaded'); };
+    img.onerror = function () { fail(new Error('img error')); };
+    img.src = B.url('layer-img', 'http', '/i.png');
+  });
+})();
+</script>
+</body>
+</html>

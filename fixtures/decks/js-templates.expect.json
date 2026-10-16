@@ -13,7 +13,7 @@
     { "text": "42%", "confidence": "exact", "strategy": "script-literal", "why": "a text node of an HTML literal (the unit contains <, so it is parsed as one fragment and each text node is a run; step 2)" },
     { "text": " of new revenue now comes from ", "confidence": "exact", "strategy": "script-literal", "why": "HTML-fragment run between two inline elements, leading and trailing spaces included" },
     { "text": "self-serve", "confidence": "exact", "strategy": "script-literal", "why": "HTML-fragment run inside <em>" },
-    { "text": "14", "confidence": "exact", "strategy": "script-literal", "why": "digits that equal one HTML-fragment run are exact, not computed" },
+    { "text": "14", "confidence": "ambiguous", "strategy": null, "reason": "shadow", "why": "digits are exact through a lone literal only if they occur once in the file (review finding 3); \"14\" also occurs in the CSS (.14em), so the HTML-fragment run is not the only place it is" },
     { "text": " & ", "confidence": "exact", "strategy": "script-literal", "why": "&amp; inside an HTML literal: the character reference and the JS characters compose into one table (step 4: each reference is atomic)" },
     { "text": "Expand into two new regions", "confidence": "exact", "strategy": "script-literal", "why": "rendered through the template `<li>${b}</li>`: the visible text is the item literal, not the template, whose ${…} run is pin-only and never a candidate" },
     { "text": "$4.2M", "confidence": "exact", "strategy": "script-literal", "why": "metric value literal placed by `<b>${m.value}</b>`" },

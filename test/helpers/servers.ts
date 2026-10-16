@@ -1,15 +1,19 @@
 // Test servers for the security suite (SPEC 9.9, "The Phase 0 security fixtures run their own DNS server and
 // UDP listener"; section 10, Security fixtures: "the test server must receive nothing").
 //
-// - RecordingHttpServer: HTTP and WebSocket on 127.0.0.1, a random port. Records every request, every
+// - RecordingHttpServer: HTTP and WebSocket on the sink IP, a random port. Records every request, every
 //   WebSocket upgrade and every CONNECT, with the Host header, so each attempt can be attributed by the
-//   unique host label or path segment the fixture put in its URL.
+//   unique host label or path segment the fixture put in its URL. It also records every raw TCP connection,
+//   so a socket that never sends a request (a preconnect) is seen too.
 // - DnsServer: a minimal UDP (and TCP) DNS server for the `bl-attacker.test` zone. It answers A queries for
 //   `*.bl-attacker.test` with 127.0.0.1 and logs every query it sees, so a name a deck tried to look up is
 //   observable even when nothing connects afterwards (dns-prefetch, WebRTC ICE).
 // - UdpListener / TcpListener: log every datagram (STUN, TURN, QUIC) and every connection (TURN over TCP).
+//   A second TcpListener on 127.0.0.1 (and one on [::1] where the machine has IPv6) is the loopback service
+//   a Protected deck must not reach (finding 8: WebRTC TURN/TCP to loopback bypassed a PAC proxy).
 //
-// Everything listens on loopback only. Nothing here ever forwards a query or a request anywhere.
+// Everything listens on this machine only (the sink IP or loopback). Nothing here ever forwards a query or
+// a request anywhere.
 
 import * as crypto from 'node:crypto';
 import * as dgram from 'node:dgram';
@@ -20,11 +24,11 @@ import * as os from 'node:os';
 export const ATTACKER_ZONE = 'bl-attacker.test';
 
 /**
- * The address the attacker zone resolves to (the "test host"). It must be non-loopback, because Chromium
- * bypasses the Protected proxy for loopback, so a loopback test host could not tell a proxy escape from a
- * loopback bypass — and a real attacker host is never loopback. The first non-internal IPv4 of the machine
- * (e.g. 192.0.2.2 in the dev container), or null when the machine has only loopback. The suite's listeners
- * bind to 0.0.0.0, so they receive on this address and on loopback alike. BL_TEST_SINK_IP overrides it.
+ * The address the attacker zone resolves to (the "test host"). It is non-loopback, as a real attacker host
+ * is: the suite then checks the path an attack on a remote host takes. Loopback is checked on its own
+ * (TestNet.loopTcp: Chromium bypasses a PAC proxy for loopback, which is why the Protected proxy is
+ * fixed_servers with '<-loopback>', finding 8). The first non-internal IPv4 of the machine (e.g. 192.0.2.2
+ * in the dev container), or null when the machine has only loopback. BL_TEST_SINK_IP overrides it.
  */
 export function detectSinkIp(): string | null {
   const override = process.env.BL_TEST_SINK_IP;
@@ -113,14 +117,31 @@ function respond(req: http.IncomingMessage, res: http.ServerResponse): void {
   }
 }
 
+/** A raw TCP connection to the HTTP server, whether or not a request followed. */
+export interface ConnectionRecord {
+  at: number;
+  from: string;
+  /** Requests, upgrades and CONNECTs it carried; 0 for a socket that only connected (a preconnect). */
+  requests: number;
+}
+
 export class RecordingHttpServer {
   readonly records: HttpRecord[] = [];
+  /** Every TCP connection accepted (a preconnect opens one and may never send a request). */
+  readonly connections: ConnectionRecord[] = [];
   private server: http.Server | null = null;
   private sockets = new Set<net.Socket>();
+  private bySocket = new WeakMap<net.Socket, ConnectionRecord>();
   port = 0;
+
+  private used(socket: net.Socket): void {
+    const c = this.bySocket.get(socket);
+    if (c) c.requests++;
+  }
 
   async start(): Promise<this> {
     const server = http.createServer((req, res) => {
+      this.used(req.socket);
       let bytes = 0;
       req.on('data', (c: Buffer) => {
         bytes += c.length;
@@ -139,11 +160,15 @@ export class RecordingHttpServer {
       });
     });
     server.on('connection', (s) => {
+      const c: ConnectionRecord = { at: Date.now(), from: `${s.remoteAddress}:${s.remotePort}`, requests: 0 };
+      this.connections.push(c);
+      this.bySocket.set(s, c);
       this.sockets.add(s);
       s.on('close', () => this.sockets.delete(s));
     });
     // A WebSocket handshake (RFC 6455 4.2.2): accept it so a Trusted deck's WebSocket opens, and log it.
     server.on('upgrade', (req, socket: net.Socket) => {
+      this.used(socket);
       this.records.push({
         at: Date.now(),
         kind: 'ws-upgrade',
@@ -160,6 +185,7 @@ export class RecordingHttpServer {
     });
     // A request that reached us as a proxy would (CONNECT host:port): log it, never tunnel.
     server.on('connect', (req, socket: net.Socket) => {
+      this.used(socket);
       this.records.push({
         at: Date.now(),
         kind: 'connect',
@@ -440,8 +466,14 @@ export class TcpListener {
   private server: net.Server | null = null;
   private sockets = new Set<net.Socket>();
   port = 0;
+  /** Why the listener is not listening (null when it is): a machine without IPv6 has no [::1]. */
+  unavailable: string | null = null;
 
-  async start(): Promise<this> {
+  /** `host`: the sink IP by default; '127.0.0.1' or '::1' for the loopback service of the WebRTC fixture. */
+  constructor(readonly host: string = BIND_HOST) {}
+
+  /** Starts listening; when `optional`, a failure to bind is recorded in `unavailable` instead of thrown. */
+  async start(optional = false): Promise<this> {
     const server = net.createServer((s) => {
       this.sockets.add(s);
       s.on('error', () => undefined);
@@ -453,10 +485,16 @@ export class TcpListener {
       });
       setTimeout(() => s.destroy(), 1000);
     });
-    await new Promise<void>((resolve, reject) => {
-      server.once('error', reject);
-      server.listen({ host: BIND_HOST, port: 0 }, () => resolve());
-    });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once('error', reject);
+        server.listen({ host: this.host, port: 0 }, () => resolve());
+      });
+    } catch (e) {
+      if (!optional) throw e;
+      this.unavailable = `cannot listen on ${this.host} (${e instanceof Error ? e.message : String(e)})`;
+      return this;
+    }
     this.server = server;
     this.port = (server.address() as net.AddressInfo).port;
     return this;
@@ -472,36 +510,55 @@ export class TcpListener {
 
 // ------------------------------------------------------------------------------------------- one phase's network
 
+/** What reached the listeners of one phase (TestNet.summary). */
+export interface NetSummary {
+  http: HttpRecord[];
+  dns: DnsQuery[];
+  udp: UdpPacket[];
+  tcp: TcpConnection[];
+  /** Raw TCP connections to the HTTP server (all of this phase's; a connection carries no label). */
+  httpConns: ConnectionRecord[];
+  /** Connections to the loopback TCP listeners (127.0.0.1 and, where available, [::1]). */
+  loop: TcpConnection[];
+}
+
 /**
- * The listeners of one test phase: a fresh HTTP server, UDP listener and TCP listener (so anything they see
- * belongs to this phase), plus the worker's shared DNS server (port 53 can be bound once).
+ * The listeners of one test phase: a fresh HTTP server, UDP listener, TCP listener and loopback TCP
+ * listeners (so anything they see belongs to this phase), plus the worker's shared DNS server (port 53 can
+ * be bound once).
  */
 export class TestNet {
   readonly http = new RecordingHttpServer();
   readonly udp = new UdpListener();
   readonly tcp = new TcpListener();
+  /** A local TCP service on 127.0.0.1 (finding 8: a Protected deck must not reach loopback). */
+  readonly loopTcp = new TcpListener('127.0.0.1');
+  /** The same on [::1]; `unavailable` on a machine without IPv6 (the dev container has none). */
+  readonly loopTcp6 = new TcpListener('::1');
   startedAt = 0;
 
   constructor(readonly dns: DnsServer) {}
 
   async start(): Promise<this> {
-    await Promise.all([this.http.start(), this.udp.start(), this.tcp.start()]);
+    await Promise.all([this.http.start(), this.udp.start(), this.tcp.start(), this.loopTcp.start(), this.loopTcp6.start(true)]);
     this.startedAt = Date.now();
     return this;
   }
 
   /** Everything that reached a listener during this phase. */
-  summary(needle?: string): { http: HttpRecord[]; dns: DnsQuery[]; udp: UdpPacket[]; tcp: TcpConnection[] } {
+  summary(needle?: string): NetSummary {
     return {
       http: needle ? this.http.matching(needle) : this.http.records.slice(),
       dns: needle ? this.dns.matching(needle) : this.dns.inZoneSince(this.startedAt),
       udp: this.udp.packets.slice(),
       tcp: this.tcp.connections.slice(),
+      httpConns: this.http.connections.slice(),
+      loop: [...this.loopTcp.connections, ...this.loopTcp6.connections],
     };
   }
 
   async close(): Promise<void> {
-    await Promise.all([this.http.close(), this.udp.close(), this.tcp.close()]);
+    await Promise.all([this.http.close(), this.udp.close(), this.tcp.close(), this.loopTcp.close(), this.loopTcp6.close()]);
   }
 }
 

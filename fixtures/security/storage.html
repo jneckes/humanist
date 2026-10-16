@@ -27,9 +27,15 @@ file and reads __bl.found again.</p>
   try { found.local = localStorage.getItem('bl-store'); } catch (e) { found.local = 'ERR ' + B.errText(e); }
   try { found.session = sessionStorage.getItem('bl-store'); } catch (e) { found.session = 'ERR ' + B.errText(e); }
 
-  // Then write this run's value.
-  try { document.cookie = 'bl-store=' + token + '; path=/; max-age=86400'; markWritten('cookie', true, document.cookie); }
-  catch (e) { markWritten('cookie', false, B.errText(e)); }
+  // Then write this run's value. A write counts only if it reads back: on blueline:// document.cookie
+  // accepts the assignment and then reads '' (Chromium keeps no cookies for the scheme), so that channel is
+  // recorded as blocked, not as written (finding 39).
+  try {
+    document.cookie = 'bl-store=' + token + '; path=/; max-age=86400';
+    var back = document.cookie;
+    if (back.indexOf('bl-store=' + token) !== -1) markWritten('cookie', true, back);
+    else markWritten('cookie', false, 'document.cookie does not stick on ' + location.protocol + '//');
+  } catch (e) { markWritten('cookie', false, B.errText(e)); }
   try { localStorage.setItem('bl-store', token); markWritten('localStorage', true, token); }
   catch (e) { markWritten('localStorage', false, B.errText(e)); }
   try { sessionStorage.setItem('bl-store', token); markWritten('sessionStorage', true, token); }
@@ -55,7 +61,8 @@ file and reads __bl.found again.</p>
     open.onerror = function () { found.idb = 'ERR open'; markWritten('indexeddb', false, 'open'); };
   } catch (e) { found.idb = 'ERR ' + B.errText(e); markWritten('indexeddb', false, B.errText(e)); }
 
-  // Cache Storage (same-origin; a blueline:// Response cached and read back).
+  // Cache Storage (same-origin; a blueline:// Response cached and read back). Chromium refuses the scheme
+  // ("Request scheme 'blueline' is unsupported"); the error is recorded as blocked with its text.
   if (window.caches && caches.open) {
     caches.open('bl-cache').then(function (c) {
       return c.match('bl-key').then(function (m) {
@@ -67,6 +74,7 @@ file and reads __bl.found again.</p>
     }).catch(function (e) { found.cache = 'ERR ' + B.errText(e); markWritten('cache', false, B.errText(e)); });
   } else {
     found.cache = 'unavailable';
+    markWritten('cache', false, 'caches unavailable');
   }
 
   setTimeout(function () { B.done('load'); }, 1000);

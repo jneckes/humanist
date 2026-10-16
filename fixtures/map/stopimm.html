@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Stop immediate</title>
+<style>html,body{margin:0;height:100%;font:32px/1.4 sans-serif}.slide{position:absolute;inset:0;padding:60px;display:none}.slide.on{display:block}</style>
+<script>
+// A deck keyboard handler that owns every key: window capture, stopImmediatePropagation, trusted keys only.
+var cur=0;
+window.addEventListener('keydown',function(e){
+  e.stopImmediatePropagation();
+  if(!e.isTrusted) return;
+  var s=[].slice.call(document.querySelectorAll('.slide'));
+  if(e.key==='ArrowRight'&&cur<s.length-1){s[cur].classList.remove('on');cur++;s[cur].classList.add('on');}
+  else if(e.key==='ArrowLeft'&&cur>0){s[cur].classList.remove('on');cur--;s[cur].classList.add('on');}
+},true);
+</script></head>
+<body>
+<section class="slide on"><h1>First slide title</h1></section>
+<section class="slide"><h1>Second slide title</h1></section>
+<section class="slide"><h1>Third slide title</h1></section>
+<section class="slide"><h1>Fourth slide title</h1></section>
+<section class="slide"><h1>Fifth slide title</h1></section>
+</body></html>

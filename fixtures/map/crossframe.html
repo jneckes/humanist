@@ -1,0 +1,9 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Cross-origin frames</title>
+<style>html,body{margin:0;font:28px/1.4 sans-serif} iframe{width:600px;height:120px;border:1px solid #888}</style></head>
+<body>
+<h1>Frames from another origin</h1>
+<p>A data: frame has an opaque origin, so the page cannot read its text.</p>
+<iframe title="visible" src="data:text/html,%3Cp%3EText%20in%20a%20data%20frame%3C%2Fp%3E"></iframe>
+<iframe title="hidden" style="display:none" src="data:text/html,%3Cp%3EHidden%20frame%3C%2Fp%3E"></iframe>
+</body></html>

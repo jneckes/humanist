@@ -10,19 +10,25 @@
   /* If a crafted path resolves to outside/outside.css, it sets this to rgb(9, 9, 9): an escape. */
   #bl-fuzz-probe { color: rgb(0, 0, 0); }
   #bl-outside { color: rgb(0, 0, 0); }
+  /* Positive controls: in-folder stylesheets set these (sibling.css and fuzz-control.css). */
+  #bl-sibling-css-probe { color: rgb(0, 0, 0); }
+  #bl-fuzz-control { color: rgb(0, 0, 0); }
 </style>
 </head>
 <body>
 <h1>Protocol path fuzz</h1>
 <p id="bl-fuzz-probe">A crafted path must never reach a file outside the document's folder.</p>
 <p id="bl-outside">outside probe</p>
+<p id="bl-sibling-css-probe">in-folder control</p>
+<p id="bl-fuzz-control">in-folder control through a crafted path</p>
 
 <script>
 (function () {
   var B = window.__bl;
   // Each path is requested on the document's own host; the handler either serves the document (the exact
   // name), redirects to -files, or 404s. None may resolve to a file outside the folder. The CSS target is
-  // outside/outside.css, which would recolour #bl-outside if a path escaped.
+  // outside/outside.css, which would recolour #bl-outside if a path escaped. The suite also fetches the same
+  // kind of paths through the handler from main (test/security/local-files.spec.ts) and reads the bytes.
   var paths = [
     '../outside/outside.css',
     '..%2foutside%2foutside.css',
@@ -46,8 +52,27 @@
     'sub/%2e%2e/%2e%2e/outside/outside.css'
   ];
 
+  // Positive controls (finding 42): an in-folder stylesheet applies, directly and through a crafted path
+  // that stays in the folder, so the probe can see a stylesheet a crafted path reaches.
+  var controls = [
+    ['css-control', 'sibling.css', 'bl-sibling-css-probe', 'rgb(1, 2, 3)'],
+    ['css-control-dotdot', 'sub/%2e%2e/fuzz-control.css', 'bl-fuzz-control', 'rgb(4, 5, 6)']
+  ];
   var done = 0;
-  function finish() { if (++done >= paths.length) setTimeout(function () { B.done('load'); }, 600); }
+  var total = paths.length + controls.length;
+  function finish() { if (++done >= total) setTimeout(function () { B.done('load'); }, 600); }
+  controls.forEach(function (c) {
+    var l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = c[1];
+    l.onload = function () {
+      var got = getComputedStyle(document.getElementById(c[2])).color;
+      B.set(c[0], 'control', got === c[3] ? 'ok' : 'blocked', c[1] + ' (' + got + ')');
+      finish();
+    };
+    l.onerror = function () { B.set(c[0], 'control', 'blocked', c[1] + ' (error)'); finish(); };
+    document.head.appendChild(l);
+  });
 
   paths.forEach(function (p, i) {
     var name = 'css-' + i;
@@ -65,16 +90,6 @@
       document.head.appendChild(l);
     } catch (e) { B.set(name, 'fuzz', 'blocked', B.errText(e)); finish(); }
   });
-
-  // Also try to read a couple as bytes, which must fail outright even for an in-folder file (cross-origin).
-  function readBlocked(name, path) {
-    fetch(path).then(function (r) { return r.text(); }).then(
-      function (t) { B.set(name, 'fuzz-read', 'leaked', path + ' -> ' + t.slice(0, 20)); },
-      function (e) { B.set(name, 'fuzz-read', 'blocked', B.errText(e)); }
-    );
-  }
-  readBlocked('read-dotdot', '../outside/outside.txt');
-  readBlocked('read-enc-dotdot', '%2e%2e/outside/outside.txt');
 })();
 </script>
 </body>

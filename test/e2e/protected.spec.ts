@@ -64,6 +64,32 @@ test('--protected shows the trust bar, and Allow network flips the policy for th
   }
 });
 
+// Finding 22 (9.1 Shell view): every document window shares the one 'shell' session, and installShellPolicy
+// installs its session-level part (permission handlers, onBeforeRequest, will-download) once per session.
+// Before, each window added another will-download listener for the life of the process (and Node warned at
+// the 11th window). The test harness adds one listener of its own, so the count is compared with the first
+// window's, not with 1.
+test('the shell session keeps one will-download listener however many windows open', async () => {
+  const s = scratch();
+  const session = await openFixture({ scratch: s, fixture: 'ipc.html', trust: 'protected' });
+  try {
+    const count = () =>
+      session.app.electronApp.evaluate(({ session: ses }) => (ses.fromPartition('shell') as unknown as NodeJS.EventEmitter).listenerCount('will-download'));
+    const first = await count();
+    expect(first, 'the app and the harness each listen once').toBeLessThanOrEqual(2);
+    for (const name of ['sibling-page.html', 'storage.html']) {
+      const id = await session.app.open(session.folder.file(name), true);
+      expect(id, `opened ${name}`).toBeTruthy();
+      await session.app.waitForDeck(name, { timeout: 20_000 });
+    }
+    expect((await session.app.windows()).length).toBe(3);
+    expect(await count(), 'three windows, still one app listener on the shared shell session').toBe(first);
+  } finally {
+    await session.close();
+    s.cleanup();
+  }
+});
+
 function httpUrl(session: { cfg: { uniq: string; zone: string; port: number } }): string {
   return `http://after-allow.${session.cfg.uniq}.${session.cfg.zone}:${session.cfg.port}/${session.cfg.uniq}/after-allow`;
 }

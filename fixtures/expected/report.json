@@ -4,7 +4,11 @@
     "exact": 63,
     "ambiguous": 0,
     "none": 0,
-    "total": 63
+    "total": 63,
+    "slides": {
+      "count": 5,
+      "reached": 5
+    }
   },
   "runs": [
     {
@@ -170,7 +174,7 @@
       "probe": "pass"
     },
     {
-      "slide": 0,
+      "slide": 1,
       "text": "Method",
       "strategy": "html-text",
       "confidence": "exact",
@@ -179,7 +183,7 @@
       "probe": "pass"
     },
     {
-      "slide": 0,
+      "slide": 1,
       "text": "We interviewed admins and first users at 24 accounts that signed between April and July, and matched their answers to product telemetry.",
       "strategy": "html-text",
       "confidence": "exact",
@@ -260,7 +264,7 @@
       "probe": "pass"
     },
     {
-      "slide": 1,
+      "slide": 2,
       "text": "Findings",
       "strategy": "html-text",
       "confidence": "exact",
@@ -440,7 +444,7 @@
       "probe": "pass"
     },
     {
-      "slide": 2,
+      "slide": 3,
       "text": "Recommendations",
       "strategy": "html-text",
       "confidence": "exact",
@@ -449,7 +453,7 @@
       "probe": "pass"
     },
     {
-      "slide": 2,
+      "slide": 3,
       "text": "Send the security pack with the order form, not after it.",
       "strategy": "html-text",
       "confidence": "exact",
@@ -503,7 +507,7 @@
       "probe": "pass"
     },
     {
-      "slide": 3,
+      "slide": 4,
       "text": "Appendix",
       "strategy": "html-text",
       "confidence": "exact",
@@ -602,46 +606,46 @@
         "slide": 0,
         "title": "Summary",
         "reached": true,
+        "exact": 18,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 18
+      },
+      {
+        "slide": 1,
+        "title": "Method",
+        "reached": true,
+        "exact": 10,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 10
+      },
+      {
+        "slide": 2,
+        "title": "Findings",
+        "reached": true,
         "exact": 20,
         "ambiguous": 0,
         "none": 0,
         "total": 20
       },
       {
-        "slide": 1,
-        "title": "Method",
-        "reached": true,
-        "exact": 9,
-        "ambiguous": 0,
-        "none": 0,
-        "total": 9
-      },
-      {
-        "slide": 2,
-        "title": "Findings",
-        "reached": true,
-        "exact": 21,
-        "ambiguous": 0,
-        "none": 0,
-        "total": 21
-      },
-      {
         "slide": 3,
         "title": "Recommendations",
-        "reached": true,
-        "exact": 6,
-        "ambiguous": 0,
-        "none": 0,
-        "total": 6
-      },
-      {
-        "slide": 4,
-        "title": "Appendix",
         "reached": true,
         "exact": 7,
         "ambiguous": 0,
         "none": 0,
         "total": 7
+      },
+      {
+        "slide": 4,
+        "title": "Appendix",
+        "reached": true,
+        "exact": 8,
+        "ambiguous": 0,
+        "none": 0,
+        "total": 8
       }
     ],
     "totals": {
@@ -657,7 +661,11 @@
       "total": 63,
       "share": 1,
       "probeFailed": 0,
-      "verified": true
+      "verified": true,
+      "complete": true
+    },
+    "uncounted": {
+      "crossOriginFrames": 0
     },
     "nonExact": [],
     "inline": {

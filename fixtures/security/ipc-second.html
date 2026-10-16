@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Forged IPC: the other document</title>
+<style>body { font: 16px system-ui, sans-serif; margin: 24px; }</style>
+</head>
+<body>
+<!-- The second document of the forged-IPC test (9.1 Preload: main "never ... reads another document's
+     data", and the fixture asserts that no "other document changes"). The suite opens it next to ipc.html in
+     the same app, gives it a real note, then sends note operations naming that note from ipc.html's deck: the
+     note and this document's session.json must not change. -->
+<h1 id="heading">The other document</h1>
+<p id="para">Its notes belong to it alone.</p>
+</body>
+</html>

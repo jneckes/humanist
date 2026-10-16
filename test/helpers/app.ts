@@ -159,6 +159,9 @@ export interface LaunchInfo {
   dns: DnsMode;
   dnsReason: string;
   electron: string;
+  /** The app's HOME and TMPDIR (the env it was launched with; LaunchOptions.env may override TMPDIR). */
+  home: string;
+  tmpDir: string;
 }
 
 /** What `__blTest.windows()` returns for each document window (packages/app/src/main/index.ts). */
@@ -261,9 +264,9 @@ export async function launchApp(o: LaunchOptions): Promise<BlApp> {
     fs.writeFileSync(resolv, RESOLV_CONF, { mode: 0o644 });
     env.BL_WRAP_RESOLV = resolv;
   } else if (dns.mode === 'rules') {
-    // Map the attacker zone to the non-loopback sink IP, so the Protected proxy applies to it (loopback is
-    // proxy-bypassed). SINK_IP is null only on a loopback-only machine, where this falls back to loopback
-    // and the WebRTC proxy assertion is skipped with a reason.
+    // Map the attacker zone to the non-loopback sink IP: a real attacker host is not loopback (loopback has
+    // its own listener, finding 8). SINK_IP is null only on a loopback-only machine, where this falls back to
+    // loopback and the WebRTC proxy assertion is skipped with a reason.
     args.push(`--host-resolver-rules=MAP *.bl-attacker.test ${SINK_IP ?? '127.0.0.1'}`);
   }
   args.push(APP_DIR);
@@ -294,6 +297,8 @@ export async function launchApp(o: LaunchOptions): Promise<BlApp> {
     dns: dns.mode,
     dnsReason: dns.reason,
     electron: ELECTRON_BIN,
+    home: env.HOME,
+    tmpDir: env.TMPDIR,
   };
   const bl = new BlApp(app, info, userData, logs);
   await bl.installHarness();
@@ -310,14 +315,33 @@ export interface DialogRecord {
   title?: string;
 }
 
+/**
+ * One will-download, as the harness saw it. Everything is first read synchronously inside will-download,
+ * then again 300 ms later (after every listener, the app's included, has run). Electron destroys an item
+ * whose will-download was prevented (Protected), and any read of a destroyed item throws "DownloadItem used
+ * after being destroyed"; every later read is guarded, so the item is marked `destroyed` instead of an
+ * uncaught exception reaching main's error dialog (finding 46).
+ */
 export interface DownloadRecord {
   url: string;
   filename: string;
-  /** Final state a moment after will-download (cancelled in Protected, progressing while the save dialog waits in Trusted). */
+  /** getState() inside will-download. */
+  stateAtStart?: string;
+  /** getSavePath() inside will-download. */
+  savePathAtStart?: string;
+  /** getState() 300 ms later: 'progressing' while a Trusted download waits for its save dialog. Absent when destroyed. */
   stateAfter?: string;
-  prevented?: boolean;
+  /** getSavePath() 300 ms later (else the last value read): '' while no place was chosen. */
   savePath?: string;
-  dialogTitle?: string;
+  /** The save dialog's title (getSaveDialogOptions().title, or the title the app passed to setSaveDialogOptions). */
+  dialogTitle?: string | null;
+  /** Paths the app passed to item.setSavePath (recorded by wrapping the item's method). */
+  setSavePath?: string[];
+  /** will-download was event-prevented (read after every listener ran). */
+  prevented?: boolean;
+  /** A later read found the item destroyed (expected after a prevented will-download). */
+  destroyed?: boolean;
+  /** The item's 'done' state: 'cancelled', 'interrupted' or 'completed'. */
   done?: string;
 }
 
@@ -325,6 +349,8 @@ export interface DeviceRecord {
   event: string;
   prevented?: boolean;
   devices?: number;
+  /** The webContents the chooser was for (select-bluetooth-device only). */
+  webContentsId?: number | null;
 }
 
 export interface HarnessState {
@@ -360,6 +386,8 @@ export class BlApp {
         devices: [] as Record<string, unknown>[],
         items: [] as Electron.DownloadItem[],
         windowsOpened: 0,
+        /** The button message boxes answer: null = their cancelId (the default), or a button index. */
+        answer: null as number | null,
       };
       g.__blHarness = H;
       const d = dialog as unknown as Record<string, unknown>;
@@ -368,14 +396,14 @@ export class BlApp {
         H.dialogs.push({ kind, message: o?.message, detail: o?.detail, buttons: o?.buttons, title: o?.title });
         return o;
       };
+      const response = (o: Record<string, unknown> | undefined) => (H.answer !== null ? H.answer : typeof o?.cancelId === 'number' ? o.cancelId : 1);
       d.showMessageBox = async (...a: unknown[]) => {
         const o = record('messageBox', a);
-        const cancelId = typeof o?.cancelId === 'number' ? o.cancelId : 1;
-        return { response: cancelId, checkboxChecked: false };
+        return { response: response(o), checkboxChecked: false };
       };
       d.showMessageBoxSync = (...a: unknown[]) => {
         const o = record('messageBoxSync', a);
-        return typeof o?.cancelId === 'number' ? o.cancelId : 1;
+        return response(o);
       };
       d.showOpenDialog = async (...a: unknown[]) => {
         record('open', a);
@@ -404,27 +432,58 @@ export class BlApp {
         if (watchedSessions.has(ses)) return;
         watchedSessions.add(ses);
         ses.on('will-download', (e, item) => {
-          const rec: Record<string, unknown> = { url: item.getURL().slice(0, 300), filename: item.getFilename() };
+          const rec: Record<string, unknown> = { url: '', filename: '' };
           H.downloads.push(rec);
           H.items.push(item);
+          // Every read is guarded: a read of a destroyed item throws (see DownloadRecord).
+          const read = (key: string, fn: () => unknown): boolean => {
+            try {
+              rec[key] = fn();
+              return true;
+            } catch {
+              rec.destroyed = true;
+              return false;
+            }
+          };
+          read('url', () => item.getURL().slice(0, 300));
+          read('filename', () => item.getFilename());
+          read('stateAtStart', () => item.getState());
+          read('savePathAtStart', () => item.getSavePath());
+          read('savePath', () => item.getSavePath());
+          read('dialogTitle', () => item.getSaveDialogOptions().title ?? null);
+          // When this listener runs before the app's, record what the app then sets on the item.
+          try {
+            const it = item as unknown as Record<string, (...a: unknown[]) => unknown>;
+            const setSavePath = it.setSavePath;
+            const setOpts = it.setSaveDialogOptions;
+            it.setSavePath = function (this: unknown, p: unknown) {
+              ((rec.setSavePath as string[] | undefined) ?? (rec.setSavePath = [])).push(String(p));
+              return setSavePath.call(this, p);
+            };
+            it.setSaveDialogOptions = function (this: unknown, o: unknown) {
+              rec.dialogTitle = ((o ?? {}) as { title?: string }).title ?? null;
+              return setOpts.call(this, o);
+            };
+          } catch {
+            // a non-extensible item: the reads above and below still apply
+          }
           item.once('done', (_e, st) => {
             rec.done = st;
           });
-          // Read the outcome after every will-download listener (the app's included) has run.
+          // Read the outcome again after every will-download listener (the app's included) has run.
           setTimeout(() => {
             rec.prevented = e.defaultPrevented;
-            rec.stateAfter = item.getState();
-            rec.savePath = item.getSavePath();
-            try {
-              rec.dialogTitle = item.getSaveDialogOptions().title ?? null;
-            } catch {
-              rec.dialogTitle = null;
+            if (read('stateAfter', () => item.getState())) {
+              read('savePath', () => item.getSavePath());
+              read('dialogTitle', () => item.getSaveDialogOptions().title ?? rec.dialogTitle ?? null);
             }
           }, 300);
         });
         for (const ev of ['select-hid-device', 'select-serial-port', 'select-usb-device'] as const) {
-          (ses as unknown as NodeJS.EventEmitter).on(ev, (e: Electron.Event) => {
-            const rec: Record<string, unknown> = { event: ev };
+          (ses as unknown as NodeJS.EventEmitter).on(ev, (e: Electron.Event, details: unknown) => {
+            // select-serial-port passes the port list itself; HID and USB pass { deviceList }.
+            const list = Array.isArray(details) ? details : ((details ?? {}) as { deviceList?: unknown[] }).deviceList;
+            const rec: Record<string, unknown> = { event: ev, devices: Array.isArray(list) ? list.length : -1 };
             H.devices.push(rec);
             setImmediate(() => {
               rec.prevented = e.defaultPrevented;
@@ -438,7 +497,7 @@ export class BlApp {
         watchedWcs.add(wc);
         watchSession(wc.session);
         wc.on('select-bluetooth-device', (e, list) => {
-          const rec: Record<string, unknown> = { event: 'select-bluetooth-device', devices: list.length };
+          const rec: Record<string, unknown> = { event: 'select-bluetooth-device', devices: list.length, webContentsId: wc.isDestroyed() ? null : wc.id };
           H.devices.push(rec);
           setImmediate(() => {
             rec.prevented = e.defaultPrevented;
@@ -469,13 +528,39 @@ export class BlApp {
       const H = (globalThis as unknown as { __blHarness: { items: Electron.DownloadItem[] } }).__blHarness;
       let n = 0;
       for (const i of H.items) {
-        if (i.getState() === 'progressing') {
-          i.cancel();
-          n++;
+        try {
+          if (i.getState() === 'progressing') {
+            i.cancel();
+            n++;
+          }
+        } catch {
+          // destroyed (a prevented Protected download): nothing to cancel
         }
       }
       return n;
     });
+  }
+
+  /**
+   * How the harness answers message boxes from now on: 'cancel' (the default: each box's cancelId) or a
+   * button index (e.g. 0, "Open in Browser" of the link dialog, for a positive control that the
+   * openExternal spy records what a confirmed link opens).
+   */
+  async answerDialogs(answer: 'cancel' | number): Promise<void> {
+    await this.electronApp.evaluate((_e, a) => {
+      const H = (globalThis as unknown as { __blHarness: { answer: number | null } }).__blHarness;
+      H.answer = a === 'cancel' ? null : a;
+    }, answer);
+  }
+
+  /** Main's own idea of the user's folders (app.getPath), e.g. where a download would land by default. */
+  async paths(): Promise<{ home: string; temp: string; downloads: string; userData: string }> {
+    return await this.electronApp.evaluate(({ app }) => ({
+      home: app.getPath('home'),
+      temp: app.getPath('temp'),
+      downloads: app.getPath('downloads'),
+      userData: app.getPath('userData'),
+    }));
   }
 
   async windows(): Promise<WinInfo[]> {
@@ -487,8 +572,8 @@ export class BlApp {
 
   /**
    * The document ids of every open window, read without touching the deck webContents, so it is safe while
-   * a window is closing. __blTest.windows() throws then (it reads w.deck.webContents.id of a destroyed deck;
-   * see the forged-IPC/E2E contract notes), so closeDoc and waitForGone use this instead.
+   * a window is closing. __blTest.windows() no longer lists a closing window (finding 23), so it does not throw
+   * then; the catch below stays as a guard for closeDoc and waitForGone.
    */
   async docIds(): Promise<string[]> {
     return await this.electronApp.evaluate(() => {

@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Card snoop</title>
+<style>
+  body { margin: 0; font: 26px system-ui, sans-serif; }
+  h1 { margin: 160px 120px 40px; display: inline-block; }
+  p, label { margin: 0 120px; display: block; }
+  input { font: inherit; width: 400px; }
+</style>
+</head>
+<body>
+<h1 id="title">Quarterly margins</h1>
+<p id="body">Our real margin is in the appendix.</p>
+<label>Page field <input id="field" type="text" autocomplete="off"></label>
+<script>
+  // Security fixture (SPEC 9.1 Preload, 6.2 step 2, 6.5, SPEC 4 principle 1; findings 9 and 13). The deck
+  // listens on window and document, in the capture and the bubble phase, to every key and input-family event,
+  // and records each one with its real target (composedPath()[0]) and its data (e.data, the clipboard text,
+  // e.key) in data-snoop. Nothing typed, pasted or dictated into a note card may appear there: every event
+  // from the card reaches window retargeted to <blueline-overlay>, so the log must name no such target. The
+  // page's own <input> is the positive control: typing into it is logged.
+  // It also cancels, in the capture phase, any paste whose target is not a text field (a realistic deck
+  // paste handler): the card's textarea is retargeted to the host, so this would silently drop a Wispr Flow
+  // dictation into the card if it ever saw that paste.
+  (function () {
+    var log = [];
+    var types = ['keydown', 'keypress', 'keyup', 'beforeinput', 'input', 'textInput', 'compositionstart', 'compositionupdate',
+      'compositionend', 'paste', 'cut', 'copy', 'select', 'selectionchange', 'dragstart', 'drop'];
+    function nameOf(t) {
+      if (t === window) return 'window';
+      if (t === document) return 'document';
+      return t && t.localName ? t.localName : String(t);
+    }
+    function dataOf(e) {
+      if (typeof e.data === 'string') return e.data;
+      if (e.clipboardData) return e.clipboardData.getData('text/plain');
+      if (typeof e.key === 'string') return e.key;
+      return '';
+    }
+    function rec(where, e) {
+      var path = e.composedPath ? e.composedPath() : [];
+      log.push(where + ':' + e.type + ':' + nameOf(path.length ? path[0] : e.target) + ':' + dataOf(e));
+      if (log.length > 2000) log.shift();
+      document.documentElement.dataset.snoop = JSON.stringify(log);
+    }
+    types.forEach(function (t) {
+      window.addEventListener(t, function (e) { rec('wcap', e); }, true);
+      document.addEventListener(t, function (e) { rec('dcap', e); }, true);
+      window.addEventListener(t, function (e) { rec('wbub', e); });
+      document.addEventListener(t, function (e) { rec('dbub', e); });
+    });
+    document.addEventListener('paste', function (e) {
+      var t = e.target;
+      if (!(t && t.closest && t.closest('input, textarea, [contenteditable]'))) {
+        e.preventDefault();
+        rec('blocked', e);
+      }
+    }, true);
+    window.__snoopClear = function () {
+      log.length = 0;
+      document.documentElement.dataset.snoop = '[]';
+    };
+  })();
+</script>
+</body>
+</html>

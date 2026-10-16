@@ -178,11 +178,73 @@ test('the Diagnostics deck: the heading logs beforeinput, the card takes text, s
   await expect.poll(async () => (await events('mark-added')).filter((e) => e.data.noteId === 'n-0001').length).toBe(2);
   const notes = (await events('note')).filter((e) => e.data.ok === true);
   expect(new Set(notes.map((e) => e.data.id))).toEqual(new Set(['n-0001']));
-  expect(notes.at(-1)!.data).toMatchObject({ id: 'n-0001', text: 5, marks: 3 });
+  // The pin N placed is only the note's anchor: the first stroke takes its place, so the two strokes are
+  // marks 1 and 2, as the dictate-strokes step says (6.4).
+  expect(notes.at(-1)!.data).toMatchObject({ id: 'n-0001', text: 5, marks: 2 });
 
   const step = shell.locator('li[data-step="dictate-strokes"]');
   await step.locator('button[data-result="pass"]').click();
-  await expect(step.locator('.step-detail')).toContainText('newest note: 5 characters, 3 mark(s)');
+  await expect(step.locator('.step-detail')).toContainText('newest note: 5 characters, 2 mark(s)');
+
+  await app.evaluate(({ BrowserWindow }) => {
+    for (const w of BrowserWindow.getAllWindows()) w.close();
+  });
+  await exited;
+  expect(JSON.parse(fs.readFileSync(out, 'utf8'))).toMatchObject({ command: 'check', exitCode: 0 });
+});
+
+test('the Diagnostics card logs a real paste: the wispr-card evidence says 1 paste (section 10; finding 17)', async () => {
+  test.setTimeout(180_000);
+  const userData = path.join(base, 'wispr-card');
+  const out = path.join(base, 'wispr-card-result.json');
+  const app = await electron.launch({
+    executablePath: ELECTRON_BIN,
+    args: [...(ROOT_USER ? ['--no-sandbox'] : []), APP_DIR, '--bl-cmd=check', `--bl-out=${out}`],
+    env: { ...process.env, BLUELINE_USER_DATA: userData },
+    timeout: 60_000,
+  });
+  const exited = new Promise<void>((r) => app.process().once('exit', () => r()));
+  const find = async (prefix: string) => {
+    for (let i = 0; i < 300; i++) {
+      const p = app.windows().find((w) => w.url().startsWith(prefix));
+      if (p) return p;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`no page at ${prefix}`);
+  };
+  const shell = await find('app://shell/diagnostics.html');
+  const deck = await find('blueline://');
+  await deck.waitForLoadState('load');
+  await deck.waitForTimeout(800);
+  const events = async (name: string) => (await shell.evaluate(() => window.blueline.diag.getState())).log.filter((e) => e.event === name);
+
+  // Review, then N on the slide: the card opens with focus (the step's own instructions).
+  await app.evaluate(({ webContents }, mac) => {
+    const wc = webContents.getAllWebContents().find((w) => w.getURL().startsWith('blueline://'))!;
+    wc.focus();
+    const modifiers = [mac ? 'meta' : 'control'] as ('meta' | 'control')[];
+    wc.sendInputEvent({ type: 'keyDown', keyCode: '2', modifiers });
+    wc.sendInputEvent({ type: 'keyUp', keyCode: '2', modifiers });
+  }, process.platform === 'darwin');
+  await expect(shell.locator('#mode')).toHaveText('Review');
+  await deck.mouse.move(400, 400);
+  await deck.waitForTimeout(150);
+  await deck.keyboard.press('n');
+  await expect.poll(async () => (await events('note')).some((e) => e.data.op === 'create' && e.data.ok === true)).toBe(true);
+
+  // A real clipboard paste into the card, as Wispr Flow does (main writes the clipboard, then pastes).
+  await app.evaluate(({ webContents, clipboard }) => {
+    const wc = webContents.getAllWebContents().find((w) => w.getURL().startsWith('blueline://'))!;
+    clipboard.writeText('dictated by wispr');
+    wc.paste();
+  });
+  await expect.poll(async () => (await events('card-input')).at(-1)?.data.value).toBe('dictated by wispr');
+  expect((await events('paste')).map((e) => e.data)).toEqual([{ length: 17, field: 'card' }]);
+  expect((await events('beforeinput')).map((e) => [e.data.inputType, e.data.field])).toEqual([['insertFromPaste', 'card']]);
+
+  const step = shell.locator('li[data-step="wispr-card"]');
+  await step.locator('button[data-result="pass"]').click();
+  await expect(step.locator('.step-detail')).toContainText('1 paste, 1 card-input event(s)');
 
   await app.evaluate(({ BrowserWindow }) => {
     for (const w of BrowserWindow.getAllWindows()) w.close();

@@ -2,14 +2,23 @@
 // written by the page"; section 10; work item 4). From a Protected deck, send forged payloads on every
 // DeckToMain channel through __blTestIpc (the ipcRenderer the preload puts on its isolated world in test
 // builds). Assert that no file is written, and no trust state, setting, app mode or other document changes,
-// and that main survives floods and prototype-pollution attempts.
+// and that main survives floods and prototype-pollution attempts. A renderer exploit has the same
+// ipcRenderer as the shell's preload, so the deck also invokes every ShellToMain channel (9.1 Shell view:
+// "Main accepts trust changes only from the shell's trust-bar buttons and Settings"), and a second document
+// is open while the deck sends note operations naming its notes.
+//
+// Positive controls (9.9): the guard logs each dropped message; the same shell calls from the shell succeed
+// and visibly change the state these tests read; a valid note operation from a deck changes its own
+// document's notes and session.json.
 
 import { expect, test } from '@playwright/test';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Scratch, resolveRunAs, sleep, type DeckView } from '../helpers/app';
-import { openFixture } from '../helpers/security';
+import { ShellToMain } from '../../packages/core/src/ipc';
+import { Scratch, launchApp, resolveRunAs, sleep, type BlApp, type DeckView, type WinInfo } from '../helpers/app';
+import { openFixture, prepareFixtureFolder, uniqLabel, type NetConfig } from '../helpers/security';
+import { sharedDnsServer } from '../helpers/servers';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -130,6 +139,94 @@ async function forge(deck: DeckView, channel: string, payload: unknown): Promise
   );
 }
 
+/** Polls a window until its notes satisfy `ok`, and returns it. */
+async function waitNotes(app: BlApp, docId: string, ok: (notes: WinInfo['state']['notes']) => boolean, timeout = 10_000): Promise<WinInfo> {
+  const end = Date.now() + timeout;
+  let w = await app.win(docId);
+  while (!ok(w.state.notes) && Date.now() < end) {
+    await sleep(100);
+    w = await app.win(docId);
+  }
+  expect(ok(w.state.notes), `notes of ${docId}: ${JSON.stringify(w.state.notes)}`).toBe(true);
+  return w;
+}
+
+/** Waits until `file` exists and contains `text` (session.json is written asynchronously). */
+async function waitFileContains(file: string, text: string, timeout = 10_000): Promise<string> {
+  const end = Date.now() + timeout;
+  let body = '';
+  while (Date.now() < end) {
+    try {
+      body = fs.readFileSync(file, 'utf8');
+      if (body.includes(text)) return body;
+    } catch {
+      // not written yet
+    }
+    await sleep(100);
+  }
+  throw new Error(`${file} never contained ${JSON.stringify(text)}; last: ${body.slice(0, 500)}`);
+}
+
+/**
+ * Valid arguments for every ShellToMain channel (what the shell's contextBridge API sends). A channel added
+ * to ShellToMain without an entry here fails the test, so the deck is always tried on every shell channel.
+ */
+const SHELL_ARGS: Record<string, unknown[]> = {
+  [ShellToMain.getState]: [],
+  [ShellToMain.setMode]: ['edit'],
+  [ShellToMain.allowNetwork]: [],
+  [ShellToMain.enableEditing]: [],
+  [ShellToMain.dismissTrustBar]: [],
+  [ShellToMain.openInBrowser]: [],
+  [ShellToMain.revealFile]: [],
+  [ShellToMain.diagState]: [],
+  [ShellToMain.diagRecord]: ['bl-forged-step', 'pass', 'forged from a deck'],
+  [ShellToMain.diagRunAuto]: [],
+  [ShellToMain.diagSave]: [],
+  [ShellToMain.dismissBanner]: [],
+  [ShellToMain.popupMenu]: ['trust-overflow', 10, 10],
+};
+
+/**
+ * Invokes `channel` from the deck's isolated world (world 999) as a compromised renderer would, and returns
+ * 'ok' or 'refused: <message>'. Bounded in time: an accepted call can reload the deck under the script (then
+ * the answer is 'no answer'), and nothing may hang the test.
+ */
+async function invokeFromDeck(deck: DeckView, channel: string, args: unknown[], timeoutMs = 5_000): Promise<string> {
+  const code = `(async function(){
+    var ipc = globalThis.__blTestIpc;
+    if (!ipc || typeof ipc.invoke !== 'function') return 'no-ipc';
+    try { await ipc.invoke.apply(ipc, ${JSON.stringify([channel, ...args])}); return 'ok'; }
+    catch (e) { return 'refused: ' + (e && e.message ? e.message : String(e)); }
+  })()`;
+  return await deck.app.electronApp.evaluate(
+    async ({ webContents }, a) => {
+      const wc = webContents.fromId(a.id);
+      if (!wc || wc.isDestroyed()) return 'no deck';
+      const run = wc.executeJavaScriptInIsolatedWorld(999, [{ code: a.code }]).then(
+        (v) => String(v),
+        (e) => `script error: ${String(e)}`,
+      );
+      return await Promise.race([run, new Promise<string>((r) => setTimeout(() => r('no answer'), a.timeoutMs))]);
+    },
+    { id: deck.wcId, code, timeoutMs },
+  );
+}
+
+/** The trust state, settings and mode a forged call could change. */
+function trustView(w: WinInfo) {
+  return {
+    trust: w.trust,
+    networkAllowed: w.networkAllowed,
+    editingAllowed: w.editingAllowed,
+    appMode: w.appMode,
+    trustBarVisible: w.state.trustBarVisible,
+    stateTrust: w.state.trust,
+    stateNetwork: w.state.networkAllowed,
+    stateEditing: w.state.editingAllowed,
+  };
+}
+
 test('the preload exposes __blTestIpc only in its isolated world (test build)', async () => {
   const s = scratch();
   const session = await openFixture({ scratch: s, fixture: 'ipc.html', trust: 'protected' });
@@ -214,6 +311,14 @@ test('forged payloads on every deck channel write no file and change no state', 
     // The forged note floods and oversized payloads were dropped silently (the test build logs drops).
     const drops = session.app.logsMatching(/ipc drop/);
     expect(drops.length, 'expected the guard to drop the forged payloads').toBeGreaterThan(0);
+
+    // Positive control: a valid note operation from the same deck is accepted, and both the state read and
+    // the userData snapshot above see it (a note in session.json), so they would have seen a forged change.
+    expect(await forge(session.deck, DECK_CHANNELS.note, { op: 'create', clientId: 'control', text: 'control note', marks: [], slide: 0 })).toBe('sent');
+    const created = await waitNotes(session.app, session.docId, (n) => n.length === 1);
+    expect(created.state.notes.map((n) => n.text)).toEqual(['control note']);
+    await waitFileContains(created.sessionFile, 'control note');
+    expect(diff(userDataSnap, snapshot(session.app.userData)).join('\n'), 'the snapshot must see a session.json write').toContain('session.json');
   } finally {
     await session.close();
     s.cleanup();
@@ -249,11 +354,128 @@ test('a flood is rate-limited, main stays responsive, and the document is never 
     // Far fewer than the 5,000 note creates got through (the token bucket is ~1,000/s, shared with the
     // focus flood): the flood was throttled, not accepted wholesale.
     expect(w.state.notes.length, `flood not throttled: ${w.state.notes.length} notes`).toBeLessThan(2000);
+    // Positive control: the flood did reach main (some creates got through before the limiter dropped the rest).
+    expect(w.state.notes.length, 'no flood message reached main').toBeGreaterThan(0);
     // The document file and its siblings were never written.
     expect(diff(folderSnap, snapshot(session.folder.dir)), 'the document folder changed under a flood').toHaveLength(0);
     expect(session.app.logsMatching(/ipc drop .*rate/).length, 'expected rate-limit drops').toBeGreaterThan(0);
   } finally {
     await session.close();
+    s.cleanup();
+  }
+});
+
+test('every shell channel invoked from a deck is refused and changes nothing (the shell itself is the positive control)', async () => {
+  const s = scratch();
+  const session = await openFixture({ scratch: s, fixture: 'ipc.html', trust: 'protected' });
+  try {
+    await sleep(600);
+    const channels = Object.values(ShellToMain) as string[];
+    const missing = channels.filter((c) => !(c in SHELL_ARGS));
+    expect(missing, 'a ShellToMain channel has no forged call in this test').toHaveLength(0);
+    const before = await session.app.win(session.docId);
+    expect(before.trust).toBe('protected');
+    expect(before.state.trustBarVisible).toBe(true);
+    const folderSnap = snapshot(session.folder.dir);
+
+    // From the deck's isolated world, with the arguments the shell would send. allow-network goes last: if it
+    // were accepted, the deck would reload under the call.
+    const order = [...channels.filter((c) => c !== ShellToMain.allowNetwork), ShellToMain.allowNetwork];
+    const outcome: Record<string, string> = {};
+    for (const c of order) outcome[c] = await invokeFromDeck(session.deck, c, SHELL_ARGS[c]);
+    // Channels declared at startup reject with the router's bare "Refused"; the Diagnostics window's channels
+    // exist only while it is open, and otherwise have no handler at all.
+    const accepted = channels.filter((c) => !(c.includes(':diag-') ? /Refused|No handler registered/ : /Error: Refused$/).test(outcome[c]));
+    expect(
+      accepted.map((c) => `${c}: ${outcome[c]}`),
+      `shell channels a deck could call: ${JSON.stringify(outcome)}`,
+    ).toHaveLength(0);
+    await sleep(500);
+    // The router saw the calls (test builds log each drop) ...
+    for (const c of [ShellToMain.allowNetwork, ShellToMain.enableEditing, ShellToMain.setMode, ShellToMain.revealFile]) {
+      expect(session.app.logsMatching(new RegExp(`ipc drop ${c} `)).length, `no drop logged for ${c}`).toBeGreaterThan(0);
+    }
+    // ... and nothing changed: trust, network, editing, mode, trust bar; nothing opened or revealed; no file.
+    const after = await session.app.win(session.docId);
+    expect(trustView(after)).toEqual(trustView(before));
+    const h = await session.app.harness();
+    expect(h.external, `a forged shell call opened something: ${JSON.stringify(h.external)}`).toHaveLength(0);
+    expect(diff(folderSnap, snapshot(session.folder.dir)), 'the document folder changed').toHaveLength(0);
+
+    // Positive control: the same calls from the shell (its contextBridge API) are accepted and change exactly
+    // what the checks above read, so a deck call that got through would have been seen.
+    const shell = await session.app.electronApp.evaluate(async ({ webContents }, id) => {
+      const wc = webContents.fromId(id);
+      if (!wc) throw new Error('no shell');
+      return (await wc.executeJavaScript(`(async function(){
+        var b = window.blueline;
+        var st = await b.getState();
+        await b.setMode('review');
+        await b.dismissTrustBar();
+        await b.enableEditing();
+        await b.allowNetwork();
+        return { docName: st.docName };
+      })()`)) as { docName: string };
+    }, before.shellWebContentsId);
+    expect(shell.docName).toBe('ipc.html');
+    await sleep(500);
+    const changed = await session.app.win(session.docId);
+    expect(changed.appMode).toBe('review');
+    expect(changed.state.trustBarVisible).toBe(false);
+    expect(changed.editingAllowed).toBe(true);
+    expect(changed.networkAllowed).toBe(true);
+  } finally {
+    await session.close();
+    s.cleanup();
+  }
+});
+
+test("note operations naming another open document's notes change nothing there", async () => {
+  const s = scratch();
+  const dns = await sharedDnsServer();
+  const cfg: NetConfig = { uniq: uniqLabel('protected'), zone: dns.zone, port: 0, udp: 0, tcp: 0, sink: dns.sinkIp };
+  const folder = prepareFixtureFolder(s, cfg);
+  // Two documents in one app (9.1: main "never ... reads another document's data").
+  const app = await launchApp({ files: [folder.file('ipc.html'), folder.file('ipc-second.html')], protected: true, scratch: s });
+  try {
+    const deck = await app.waitForDeck('ipc.html');
+    const other = await app.waitForDeck('ipc-second.html');
+    expect(other.docId).not.toBe(deck.docId);
+
+    // A real note in the second document, created the way its own card does (its deck's note channel).
+    expect(await forge(other, DECK_CHANNELS.note, { op: 'create', clientId: 'second-real', text: 'the second document note', marks: [], slide: 0 })).toBe('sent');
+    const w2 = await waitNotes(app, other.docId, (n) => n.length === 1);
+    const note = w2.state.notes[0];
+    const sessionBefore = await waitFileContains(w2.sessionFile, 'the second document note');
+    const notesBefore = JSON.stringify(w2.state.notes);
+
+    // From the FIRST deck: every author transition on that note id, plain and with fields naming the other
+    // document (main takes the document from the sender, never from a field).
+    const ops: Record<string, unknown>[] = [];
+    for (const extra of [{}, { docId: other.docId }, { doc: other.docId, documentId: other.docId, path: w2.realpath }]) {
+      ops.push({ op: 'update', id: note.id, text: 'forged from the first document', ...extra });
+      ops.push({ op: 'update', id: note.id, marks: [], ...extra });
+      ops.push({ op: 'close', id: note.id, ...extra });
+      ops.push({ op: 'delete', id: note.id, ...extra });
+    }
+    for (const op of ops) expect(await forge(deck, DECK_CHANNELS.note, op)).toBe('sent');
+    await sleep(1000);
+
+    // The other document's notes and session.json are unchanged; the first document gained nothing either.
+    const w2After = await app.win(other.docId);
+    expect(JSON.stringify(w2After.state.notes), "a forged op changed the other document's notes").toBe(notesBefore);
+    expect(fs.readFileSync(w2.sessionFile, 'utf8'), "the other document's session.json changed").toBe(sessionBefore);
+    expect((await app.win(deck.docId)).state.notes, 'the first document gained a note').toHaveLength(0);
+    // The ops did reach main, which refused them for the sender's own document (test builds log the refusal).
+    expect(app.logsMatching(/note op refused: (update|close|delete) \(no such note\)/).length, 'main never saw the forged note ops').toBeGreaterThan(0);
+
+    // Positive control: the same update from the note's own deck changes the note and its session.json.
+    expect(await forge(other, DECK_CHANNELS.note, { op: 'update', id: note.id, text: 'changed by its own deck' })).toBe('sent');
+    const changed = await waitNotes(app, other.docId, (n) => n.length === 1 && n[0].text === 'changed by its own deck');
+    expect(changed.state.notes[0].id).toBe(note.id);
+    await waitFileContains(w2.sessionFile, 'changed by its own deck');
+  } finally {
+    await app.close();
     s.cleanup();
   }
 });

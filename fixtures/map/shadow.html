@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Shadow and frames</title>
+<style>html,body{margin:0;font:28px/1.4 sans-serif} iframe{width:800px;height:200px;border:1px solid #888}</style></head>
+<body>
+<h1>Light DOM heading</h1>
+<p>Light DOM paragraph.</p>
+<stat-card label="Annual recurring revenue" value="$48M"></stat-card>
+<iframe srcdoc="<p>Text inside a srcdoc iframe, visible to the reader.</p><p>Second iframe paragraph.</p>"></iframe>
+<script>
+customElements.define('stat-card', class extends HTMLElement {
+  connectedCallback() {
+    const r = this.attachShadow({mode: 'open'});
+    const b = document.createElement('strong'); b.textContent = this.getAttribute('value');
+    const s = document.createElement('span'); s.textContent = this.getAttribute('label');
+    const p = document.createElement('p'); p.textContent = 'Shadow paragraph written by a component';
+    r.append(b, s, p);
+  }
+});
+</script>
+</body></html>

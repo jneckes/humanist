@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sentinel shadow</title>
+<style>html,body{margin:0;font:28px/1.4 sans-serif}</style></head>
+<body>
+<h1>Static heading</h1>
+<p id="a"></p>
+<stat-card></stat-card>
+<script>
+const LABEL = 'Quarterly revenue grew';
+document.getElementById('a').textContent = LABEL;
+customElements.define('stat-card', class extends HTMLElement {
+  connectedCallback() {
+    const r = this.attachShadow({mode: 'open'});
+    const s = document.createElement('span'); s.textContent = LABEL + ' this year';
+    r.append(s);
+  }
+});
+</script>
+</body></html>

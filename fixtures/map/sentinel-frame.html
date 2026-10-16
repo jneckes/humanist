@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Sentinel frame</title>
+<style>html,body{margin:0;font:28px/1.4 sans-serif} iframe{width:800px;height:120px;border:1px solid #888}</style></head>
+<body>
+<h1>Static heading</h1>
+<p id="a"></p>
+<iframe id="f"></iframe>
+<script>
+const LABEL = 'Quarterly revenue grew';
+document.getElementById('a').textContent = LABEL;
+const d = document.getElementById('f').contentDocument;
+const s = d.createElement('p'); s.textContent = LABEL + ' this year';
+d.body.append(s);
+</script>
+</body></html>

@@ -12,7 +12,8 @@
 <p>This page opens peer connections with STUN and TURN servers on the test host. In Protected view the DNS
 server must see no query, and the UDP and TCP listeners no packet or connection (9.9: WebRTC ICE opens
 sockets with no request onBeforeRequest can cancel; disable_non_proxied_udp plus the closed-port proxy must
-stop it).</p>
+stop it). A second connection uses TURN over TCP to a TCP service on this computer (127.0.0.1, localhost
+and [::1]): Chromium bypassed a PAC proxy for loopback, so a Protected deck reached it (finding 8).</p>
 
 <script>
 (function () {
@@ -33,6 +34,30 @@ stop it).</p>
     { urls: 'turn:' + B.cfg.sink + ':' + B.cfg.tcp + '?transport=tcp', username: 'u', credential: 'p' },
     { urls: 'turns:turn-tls.' + z + ':' + B.cfg.tcp + '?transport=tcp', username: 'u', credential: 'p' }
   ];
+  // TURN over TCP to the loopback service (finding 8). Ports are ephemeral (>= 1024: WebRTC refuses TURN
+  // to lower ports other than 53, 80 and 443). In Trusted view the service receives a TURN Allocate (the
+  // positive control); in Protected view the proxy must send every attempt to its closed port.
+  var loopErrors = [];
+  try {
+    var loopServers = [
+      { urls: 'turn:127.0.0.1:' + B.cfg.loopTcp + '?transport=tcp', username: 'loop-v4', credential: 'p' },
+      { urls: 'turn:localhost:' + B.cfg.loopTcp + '?transport=tcp', username: 'loop-name', credential: 'p' }
+    ];
+    if (B.cfg.loopTcp6) loopServers.push({ urls: 'turn:[::1]:' + B.cfg.loopTcp6 + '?transport=tcp', username: 'loop-v6', credential: 'p' });
+    var lpc = new RTCPeerConnection({ iceServers: loopServers, iceTransportPolicy: 'relay' });
+    lpc.onicecandidateerror = function (e) { loopErrors.push(e.errorCode + ' ' + (e.url || '')); };
+    lpc.createDataChannel('loop');
+    lpc.createOffer().then(function (o) { return lpc.setLocalDescription(o); }).then(function () {
+      B.set('rtc-loopback', 'webrtc', 'pending', 'gathering');
+    }).catch(function (e) { B.set('rtc-loopback', 'webrtc', 'blocked', B.errText(e)); });
+    setTimeout(function () {
+      if (B.results['rtc-loopback'] && B.results['rtc-loopback'].status === 'pending') B.set('rtc-loopback', 'webrtc', 'pending', 'errors: ' + loopErrors.join('; '));
+      try { lpc.close(); } catch (e) {}
+    }, 4800);
+  } catch (e) {
+    B.set('rtc-loopback', 'webrtc', 'blocked', B.errText(e));
+  }
+
   var candidates = [];
   try {
     var pc = new RTCPeerConnection({ iceServers: iceServers, iceCandidatePoolSize: 2 });

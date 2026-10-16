@@ -75,7 +75,7 @@ test('entities.html: every exact node passes the probe, the copy is removed and 
   expect(r.code, r.stderr.slice(-2000)).toBe(0);
   const j = JSON.parse(r.stdout);
   expect(j.deckSha).toBe(before);
-  expect(j.coverage).toEqual({ exact: 38, ambiguous: 0, none: 6, total: 44 });
+  expect(j.coverage).toEqual({ exact: 38, ambiguous: 0, none: 6, total: 44, slides: { count: 6, reached: 6 } });
   expect(j.runs).toHaveLength(44);
   expect(j.runs[0]).toEqual(expect.objectContaining({ slide: 0, confidence: 'exact', strategy: 'html-text', probe: 'pass' }));
   expect(typeof j.runs[0].start).toBe('number');
@@ -138,7 +138,8 @@ test('Ctrl+C during the probe removes the probe copy and leaves the original unt
   const deck = copyDeck('reveal-hash');
   const dir = path.dirname(deck);
   const before = sha256(deck);
-  // Its own process group, as a terminal's foreground job: Ctrl+C reaches every process in it.
+  // Its own process group, as a terminal's foreground job: Ctrl+C reaches the command, which passes it on to
+  // the app (the app runs in its own process group).
   const child = spawn(process.execPath, [CLI, 'map', deck, '--report'], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
   let out = '';
   child.stdout.on('data', (b: Buffer) => (out += b.toString('utf8')));
@@ -286,6 +287,6 @@ test('a deck that calls alert() and confirm() and holds beforeunload neither han
   expect(r.code, r.stderr.slice(-2000)).toBe(0);
   expect(Date.now() - t0).toBeLessThan(60_000);
   const j = JSON.parse(r.stdout);
-  expect(j.coverage).toEqual({ exact: 2, ambiguous: 0, none: 0, total: 2 });
+  expect(j.coverage).toEqual({ exact: 2, ambiguous: 0, none: 0, total: 2, slides: { count: 1, reached: 1 } });
   expect(j.report.probe).toMatchObject({ passed: 2, failed: 0, originalUnchanged: true, copyRemoved: true });
 });

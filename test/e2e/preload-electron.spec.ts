@@ -5,7 +5,8 @@
 // (webContents.sendInputEvent).
 //
 // Run under a display: `xvfb-run -a -s "-screen 0 3840x2160x24" npx playwright test test/e2e/preload-electron.spec.ts`
-// (as root the harness passes --no-sandbox).
+// (as root the harness passes --no-sandbox). BL_E2E_PRELOAD_ENTRY builds the preload from another entry file
+// (for example an older copy of packages/app/src/preload/deck.ts, to see a regression test fail before a fix).
 
 import { _electron as electron, expect, test, type ElectronApplication } from '@playwright/test';
 import * as esbuild from 'esbuild';
@@ -133,6 +134,10 @@ for (const ch of ['bl:deck:ready', 'bl:deck:focus', 'bl:deck:link', 'bl:deck:sli
       const i = h.notes.findIndex((x) => x.id === p.id);
       if (i >= 0) { const n = h.notes[i]; if (!n.text && n.marks.length === 0) h.notes.splice(i, 1); else n.status = 'open'; }
       setTimeout(() => h.pushNotes(), 10);
+    } else if (p.op === 'delete') {
+      const i = h.notes.findIndex((x) => x.id === p.id);
+      if (i >= 0) h.notes.splice(i, 1);
+      setTimeout(() => h.pushNotes(), 10);
     }
   });
 }
@@ -228,8 +233,9 @@ test.beforeAll(async () => {
     charset: 'ascii',
     logLevel: 'warning',
     legalComments: 'none',
-    entryPoints: [join(ROOT, 'packages/app/src/preload/deck.ts')],
+    entryPoints: [process.env.BL_E2E_PRELOAD_ENTRY || join(ROOT, 'packages/app/src/preload/deck.ts')],
     outfile: join(scratch, 'preload-deck.cjs'),
+    nodePaths: [join(ROOT, 'node_modules')],
     platform: 'browser',
     format: 'cjs',
     target: 'chrome152',
@@ -342,6 +348,26 @@ test('diagnostics: the reveal fixture key log shows the preload first and the pa
   expect(r.log).toBe('2:ArrowLeft:true');
 });
 
+test('diagnostics: Ctrl+V sent with no gap reports the preload first for both keys (section 10; finding 15)', async () => {
+  const r = await H(async (h, f) => {
+    await h.load(f, { mode: 'diagnostics', appMode: 'read', settle: 900 });
+    h.wc.focus();
+    // Wispr Flow's simulated Cmd+V: two keydowns back to back, before any timer of the first can run.
+    h.wc.sendInputEvent({ type: 'keyDown', keyCode: 'Control', modifiers: ['control'] });
+    h.wc.sendInputEvent({ type: 'keyDown', keyCode: 'V', modifiers: ['control'] });
+    h.wc.sendInputEvent({ type: 'keyUp', keyCode: 'V', modifiers: ['control'] });
+    h.wc.sendInputEvent({ type: 'keyUp', keyCode: 'Control', modifiers: [] });
+    h.wc.sendInputEvent({ type: 'keyDown', keyCode: 'Shift', modifiers: ['shift'] });
+    h.wc.sendInputEvent({ type: 'keyDown', keyCode: 'X', modifiers: ['shift'] });
+    h.wc.sendInputEvent({ type: 'keyUp', keyCode: 'X', modifiers: ['shift'] });
+    h.wc.sendInputEvent({ type: 'keyUp', keyCode: 'Shift', modifiers: [] });
+    await h.wait(400);
+    return { ko: h.msgs('bl:deck:diag').filter((d: Any) => d.event === 'key-order').map((d: Any) => d.data.code + ':' + d.data.first), trace: await h.main('document.documentElement.dataset.blKeyTrace') };
+  }, join(DECKS, 'reveal-hash/index.html'));
+  // The deck's own trace shows its listeners ran after the router for each key (seq goes up once per key).
+  expect(r.ko, r.trace).toEqual(['ControlLeft:preload', 'KeyV:preload', 'ShiftLeft:preload', 'KeyX:preload']);
+});
+
 // ------------------------------------------------------------------------------------------- card and ink
 
 test('two strokes with a card open make two marks on one note; Shift starts a separate note (6.4)', async () => {
@@ -403,6 +429,121 @@ test('after document.open() the router is reinstalled and the overlay remounted 
     return { host: await h.main(`!!document.querySelector('blueline-overlay')`), order: await h.main('order.join()'), shortcuts: h.msgs('bl:deck:diag').filter((d: Any) => d.event === 'shortcut').map((d: Any) => d.data.action) };
   }, join(scratch, 'pages/early.html'));
   expect(r).toEqual({ host: true, order: '', shortcuts: ['tool-select'] });
+});
+
+test('after document.open() with a page capture listener registered synchronously, the card saves its text and ink draws (finding 12)', async () => {
+  const r = await H(async (h, f) => {
+    await h.load(f, { mode: 'diagnostics', appMode: 'review' });
+    h.notes.length = 0;
+    // The rewritten page adds its capture keydown listener while document.write runs, not in a timer.
+    await h.main(
+      `document.open(); document.write('<!DOCTYPE html><html><head><script>var order=[];window.addEventListener("keydown",function(e){order.push(e.code)},true);<\\/script></head><body style="margin:0"><h1 style="margin:200px 300px;display:inline-block">Rewritten</h1><p style="margin:0 300px">Body text</p></body></html>'); document.close();`,
+    );
+    await h.wait(200);
+    const t = await h.rect('h1');
+    h.wc.sendInputEvent({ type: 'mouseMove', x: Math.round(t[0] + t[2] / 2), y: Math.round(t[1] + t[3] / 2) });
+    await h.wait(50);
+    await h.key('n');
+    await h.wait(100);
+    await h.type('abc');
+    h.electron.clipboard.writeText(' pasted');
+    h.wc.paste();
+    await h.wait(450);
+    const card = JSON.parse(JSON.stringify(h.notes));
+    await h.key('Escape');
+    await h.wait(100);
+    await h.key('1');
+    const p = await h.rect('p');
+    await h.drag(h.loop(p, 16));
+    await h.wait(300);
+    const blue = await h.bluePixels(p[0] + p[2] + 16 - 6, p[1] + p[3] / 2 - 6, 12);
+    return { card: card.map((n: Any) => [n.text, n.marks.length]), all: h.notes.map((n: Any) => [n.text, n.marks.map((m: Any) => m.tool)]), blue, focus: h.msgs('bl:deck:focus').at(-1) };
+  }, join(scratch, 'pages/early.html'));
+  expect(r.card).toEqual([['abc pasted', 1]]);
+  expect(r.all).toEqual([
+    ['abc pasted', ['pin']],
+    ['', ['pen']],
+  ]);
+  expect(r.blue).toBeGreaterThan(0); // the stroke is drawn
+  expect(r.focus).toEqual({ textField: true }); // the stroke's card took focus
+});
+
+test('the card refuses document.execCommand, and native undo and redo cannot bring the refused text back (finding 11)', async () => {
+  const r = await H(async (h, f) => {
+    await h.load(f, { appMode: 'review' });
+    h.notes.length = 0;
+    const t = await h.rect('h1');
+    h.wc.sendInputEvent({ type: 'mouseMove', x: Math.round(t[0] + t[2] / 2), y: Math.round(t[1] + t[3] / 2) });
+    await h.wait(50);
+    await h.key('n');
+    await h.wait(100);
+    await h.type('abc');
+    await h.wait(100);
+    const ran = await h.main(`[document.activeElement && document.activeElement.localName, document.execCommand('insertText', false, ' FORGED'), document.execCommand('selectAll'), document.execCommand('delete'), document.execCommand('insertText', false, 'REPLACED')]`);
+    await h.wait(400);
+    const afterForgery = h.notes.map((n: Any) => n.text);
+    for (const m of [['control'], ['control'], ['control', 'shift'], ['control', 'shift'], ['control', 'shift']]) {
+      h.wc.sendInputEvent({ type: 'keyDown', keyCode: 'Z', modifiers: m });
+      h.wc.sendInputEvent({ type: 'keyUp', keyCode: 'Z', modifiers: m });
+      await h.wait(60);
+    }
+    await h.type('d');
+    await h.wait(450);
+    return { ran, afterForgery, final: h.notes.map((n: Any) => n.text) };
+  }, join(scratch, 'pages/early.html'));
+  expect(r.ran).toEqual(['blueline-overlay', true, true, true, true]); // the forgery ran with focus in the card
+  expect(r.afterForgery).toEqual(['abc']);
+  expect(r.final).toEqual(['abcd']);
+});
+
+test('diagnostics: the card logs beforeinput and paste as the heading does (section 10; finding 17)', async () => {
+  const r = await H(async (h, f) => {
+    await h.load(f, { mode: 'diagnostics', appMode: 'review', settle: 900 });
+    h.notes.length = 0;
+    h.wc.sendInputEvent({ type: 'mouseMove', x: 400, y: 400 });
+    await h.wait(50);
+    await h.key('n');
+    await h.wait(100);
+    h.electron.clipboard.writeText('dictated by wispr');
+    h.wc.paste();
+    await h.wait(450);
+    const d = h.msgs('bl:deck:diag').filter((x: Any) => ['beforeinput', 'paste', 'card-input'].includes(x.event));
+    return { d, notes: h.notes.map((n: Any) => n.text) };
+  }, join(DECKS, 'reveal-hash/index.html'));
+  expect(r.d).toEqual([
+    { event: 'paste', data: { length: 17, field: 'card' } },
+    { event: 'beforeinput', data: { inputType: 'insertFromPaste', data: 'dictated by wispr', trusted: true, field: 'card' } },
+    { event: 'card-input', data: { length: 17, value: 'dictated by wispr' } },
+  ]);
+  expect(r.notes).toEqual(['dictated by wispr']);
+});
+
+test('N then Esc leaves no note; N then two strokes: marks 1 and 2 on one note (6.4; finding 18)', async () => {
+  const r = await H(async (h, f) => {
+    await h.load(f, { appMode: 'review' });
+    h.notes.length = 0;
+    const t = await h.rect('h1');
+    h.wc.sendInputEvent({ type: 'mouseMove', x: Math.round(t[0] + t[2] / 2), y: Math.round(t[1] + t[3] / 2) });
+    await h.wait(50);
+    await h.key('n');
+    await h.wait(150);
+    await h.key('Escape');
+    await h.wait(150);
+    const afterEsc = h.notes.length;
+    const ops = h.msgs('bl:deck:note').map((o: Any) => o.op);
+    await h.key('1');
+    h.wc.sendInputEvent({ type: 'mouseMove', x: Math.round(t[0] + t[2] / 2), y: Math.round(t[1] + t[3] / 2) });
+    await h.wait(50);
+    await h.key('n');
+    await h.wait(150);
+    await h.drag(h.loop([1000, 500, 150, 80]));
+    await h.drag(h.loop([1000, 700, 150, 80]));
+    await h.wait(150);
+    return { afterEsc, ops, marks: h.notes.map((n: Any) => n.marks.map((m: Any) => m.n + ':' + m.tool)) };
+  }, join(scratch, 'pages/early.html'));
+  expect(r.afterEsc).toBe(0);
+  expect(r.ops).toEqual(['create', 'delete']);
+  expect(r.marks).toEqual([['1:pen', '2:pen']]);
 });
 
 test('the overlay works under every CSP fixture and adds no violation (section 10 Exit gate, 9.1)', async () => {

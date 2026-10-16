@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Card forgery</title>
+<style>
+  body { margin: 0; font: 26px system-ui, sans-serif; }
+  h1 { margin: 160px 120px 40px; display: inline-block; }
+  p { margin: 0 120px; }
+</style>
+</head>
+<body>
+<h1 id="title">Pricing</h1>
+<p id="body">Our plans start at ten dollars a month.</p>
+<script>
+  // Security fixture (SPEC 9.1 Preload: "page scripts cannot drive the key router, ink or cards"; 6.5; finding
+  // 11). The card's textarea is in the overlay's closed shadow root, but document.execCommand edits the
+  // focused text control wherever it is, and Chromium fires a trusted `input` (with no beforeinput) for it.
+  // Each time focus enters the overlay (a new card, or a card J reopened), this page waits until it is there,
+  // then tries to write into the note: insertText, selectAll + delete, insertText, undo. Every attempt is
+  // recorded in data-exec-log with what execCommand returned and whether focus was still in the card (the
+  // positive control: the attack ran while the card had focus). The saved note must not change.
+  (function () {
+    var log = [];
+    var inside = false;
+    var entries = 0;
+    function note(s) {
+      log.push(s);
+      document.documentElement.dataset.execLog = JSON.stringify(log);
+    }
+    function inCard() {
+      var a = document.activeElement;
+      return !!(a && a.localName === 'blueline-overlay');
+    }
+    setInterval(function () {
+      var now = inCard();
+      if (now && !inside) {
+        entries += 1;
+        var n = entries;
+        var r = {
+          entry: n,
+          focusInCard: inCard(),
+          insertText: document.execCommand('insertText', false, ' FORGED-INSERT-' + n),
+          selectAll: document.execCommand('selectAll'),
+          del: document.execCommand('delete'),
+          replace: document.execCommand('insertText', false, 'FORGED-REPLACE-' + n),
+          undo: document.execCommand('undo'),
+          focusAfter: inCard(),
+        };
+        note(r);
+      }
+      inside = now;
+    }, 50);
+  })();
+</script>
+</body>
+</html>

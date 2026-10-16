@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>Reveal fragment duplicate</title>
+<link rel="stylesheet" href="vendor/reset.css"><link rel="stylesheet" href="vendor/reveal.css"><link rel="stylesheet" href="vendor/theme/white.css">
+</head><body>
+<div class="reveal"><div class="slides">
+<section><h2 id="h"></h2><p class="fragment" id="f"></p></section>
+<section><h2>Second slide</h2><p>Plain text here.</p></section>
+</div></div>
+<script>
+const DATA = { goal: "Grow revenue by forty percent" };
+document.getElementById('h').textContent = DATA.goal;
+document.getElementById('f').textContent = 'Recap: ' + DATA.goal;
+</script>
+<script src="vendor/reveal.js"></script>
+<script>Reveal.initialize({ hash: true, width: 1600, height: 900, transition: 'none' });</script>
+</body></html>

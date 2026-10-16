@@ -109,5 +109,136 @@ them, never read them, in Protected and Trusted alike.</p>
   readBlocked('app-scheme', 'scheme', fetch('app://shell/index.html').then(function (r) { return r.text(); }));
 })();
 </script>
+
+<script>
+// Sibling media (finding 7; 9.1 Serving: "a canvas that draws one is tainted"). A plain <video>/<audio> must
+// play the file (shown) with its canvas tainted and its Web Audio output silent; a crossorigin one (a
+// CORS-mode load, which Electron does not CORS-check on a custom scheme) must not load at all, whichever
+// URL it uses: the document host (307), the -files host, or blueline-media:// directly. Results:
+//   media-<ext>-plain        ok = played and unreadable; leaked = readable; blocked = did not play
+//   media-<ext>-<how>        blocked = did not load or unreadable; leaked = frames or samples read
+//   canvas-control, webaudio-control   ok = the read method itself works (so "tainted"/"silent" mean it)
+// Phase "media" is set when every check has a result (or after 12 s).
+(function () {
+  var B = window.__bl;
+  var host = location.host;
+  var urls = {
+    rel: function (f) { return f; },
+    files: function (f) { return 'blueline://' + host + '-files/' + f; },
+    media: function (f) { return 'blueline-media://' + host + '/' + f; }
+  };
+  var pending = {};
+  var mediaDone = false;
+  function finishMedia() { if (!mediaDone) { mediaDone = true; B.done('media'); } }
+  function start(name) { pending[name] = true; B.set(name, 'media', 'pending', 'started'); }
+  function result(name, status, detail) {
+    if (!pending[name]) return;
+    delete pending[name];
+    B.set(name, 'media', status, detail);
+    if (Object.keys(pending).length === 0) setTimeout(finishMedia, 50);
+  }
+
+  // Controls: the canvas read and the analyser read both work on content the page may read.
+  (function () {
+    var c = document.createElement('canvas'); c.width = 4; c.height = 4;
+    var x = c.getContext('2d'); x.fillStyle = 'rgb(10, 200, 30)'; x.fillRect(0, 0, 4, 4);
+    try { var d = x.getImageData(1, 1, 1, 1).data; B.set('canvas-control', 'control', d[1] === 200 ? 'ok' : 'blocked', 'rgb=' + d[0] + ',' + d[1] + ',' + d[2]); }
+    catch (e) { B.set('canvas-control', 'control', 'blocked', B.errText(e)); }
+  })();
+  var ctx = null;
+  try { ctx = new AudioContext(); } catch (e) { B.set('webaudio-control', 'control', 'blocked', B.errText(e)); }
+  function peakOf(an) {
+    var buf = new Float32Array(an.fftSize); an.getFloatTimeDomainData(buf);
+    var m = 0; for (var i = 0; i < buf.length; i++) m = Math.max(m, Math.abs(buf[i]));
+    return m;
+  }
+  if (ctx) {
+    start('webaudio-control');
+    var osc = ctx.createOscillator(); var g = ctx.createGain(); g.gain.value = 0.5;
+    var an0 = ctx.createAnalyser(); an0.fftSize = 2048;
+    osc.connect(g); g.connect(an0);
+    osc.start();
+    setTimeout(function () {
+      var m = peakOf(an0);
+      result('webaudio-control', m > 0.01 ? 'ok' : 'blocked', 'peak=' + m.toFixed(3) + ' ctx=' + ctx.state);
+      try { osc.stop(); } catch (e) {}
+    }, 700);
+  }
+
+  function video(name, src, cors) {
+    start(name);
+    var v = document.createElement('video');
+    if (cors) v.crossOrigin = cors;
+    v.muted = true; v.preload = 'auto'; v.width = 8; v.height = 8; v.src = src;
+    var seen = false;
+    v.addEventListener('loadeddata', function () {
+      if (seen) return; seen = true;
+      setTimeout(function () {
+        var c = document.createElement('canvas'); c.width = 8; c.height = 8; var x = c.getContext('2d');
+        var readable = [];
+        var detail = 'loadeddata';
+        try { x.drawImage(v, 0, 0, 8, 8); } catch (e) { detail += ' draw=' + e.name; }
+        try { var d = x.getImageData(4, 4, 1, 1).data; readable.push('getImageData rgb=' + d[0] + ',' + d[1] + ',' + d[2]); } catch (e) { detail += ' getImageData=' + e.name; }
+        try { c.toDataURL(); readable.push('toDataURL'); } catch (e) { detail += ' toDataURL=' + e.name; }
+        try { v.captureStream(); readable.push('captureStream'); } catch (e) { detail += ' captureStream=' + e.name; }
+        if (readable.length) result(name, 'leaked', detail + ' READ ' + readable.join(' '));
+        else result(name, cors ? 'blocked' : 'ok', detail + ' (tainted)');
+      }, 150);
+    });
+    v.addEventListener('error', function () {
+      result(name, 'blocked', 'error ' + (v.error ? v.error.code + ' ' + v.error.message : ''));
+    });
+    document.body.appendChild(v);
+  }
+
+  function audio(name, src, cors) {
+    start(name);
+    if (!ctx) { result(name, cors ? 'blocked' : 'pending', 'no AudioContext'); return; }
+    var a = document.createElement('audio');
+    if (cors) a.crossOrigin = cors;
+    a.preload = 'auto'; a.loop = true; a.src = src;
+    var an = ctx.createAnalyser(); an.fftSize = 2048;
+    try { var srcNode = ctx.createMediaElementSource(a); srcNode.connect(an); } catch (e) { result(name, 'blocked', 'source ' + B.errText(e)); return; }
+    var seen = false;
+    a.addEventListener('canplay', function () {
+      if (seen) return; seen = true;
+      a.play().then(function () {
+        setTimeout(function () {
+          var m = peakOf(an);
+          try { a.pause(); } catch (e) {}
+          if (m > 0.01) result(name, 'leaked', 'canplay READ samples peak=' + m.toFixed(3));
+          else result(name, cors ? 'blocked' : 'ok', 'canplay played, samples silent peak=' + m.toFixed(3));
+        }, 700);
+      }, function (e) { result(name, cors ? 'blocked' : 'pending', 'canplay, play() ' + B.errText(e)); });
+    });
+    a.addEventListener('error', function () {
+      result(name, 'blocked', 'error ' + (a.error ? a.error.code + ' ' + a.error.message : ''));
+    });
+    document.body.appendChild(a);
+  }
+
+  ['webm', 'mp4'].forEach(function (e) {
+    var f = 'clip.' + e;
+    video('media-' + e + '-plain', urls.rel(f), null);
+    video('media-' + e + '-cors-rel', urls.rel(f), 'anonymous');
+    video('media-' + e + '-cors-files', urls.files(f), 'anonymous');
+    video('media-' + e + '-cors-media', urls.media(f), 'anonymous');
+    video('media-' + e + '-cors-credentials', urls.rel(f), 'use-credentials');
+  });
+  ['wav', 'ogg', 'mp3'].forEach(function (e) {
+    var f = 'tone.' + e;
+    audio('media-' + e + '-plain', urls.rel(f), null);
+    audio('media-' + e + '-cors-rel', urls.rel(f), 'anonymous');
+    audio('media-' + e + '-cors-files', urls.files(f), 'anonymous');
+    audio('media-' + e + '-cors-media', urls.media(f), 'anonymous');
+  });
+  // fetch() of the media scheme: not fetch-capable, and cancelled by onBeforeRequest ('media-only').
+  fetch(urls.media('tone.wav')).then(function (r) { return r.arrayBuffer(); }).then(
+    function (b) { B.set('fetch-media-scheme', 'file', 'leaked', 'read ' + b.byteLength); },
+    function (e) { B.set('fetch-media-scheme', 'file', 'blocked', B.errText(e)); }
+  );
+  setTimeout(finishMedia, 12000);
+})();
+</script>
 </body>
 </html>

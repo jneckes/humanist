@@ -1,12 +1,10 @@
 // Local-file confinement (SPEC 9.1 Serving and Refusals; section 10 Security fixtures). In both trust states
-// the page may show sibling files but never read their bytes, and no path may reach a file outside the
-// document's folder. The protocol fuzz (crafted paths) runs here too, from the page and from main.
+// the page may show sibling files, media included, but never read their bytes, and no path may reach a file
+// outside the document's folder. The protocol fuzz (crafted paths) runs here too, from the page and from main.
 
 import { expect, test } from '@playwright/test';
-import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { Scratch, resolveRunAs, sleep } from '../helpers/app';
-import { openFixture, type ProbeResult } from '../helpers/security';
+import { openFixture, outsideMarker, type ProbeResult } from '../helpers/security';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -30,6 +28,14 @@ const READ_CHECKS = [
   'app-scheme',
 ];
 
+// local-files.html, sibling media (finding 7).
+const MEDIA_CONTROLS = ['canvas-control', 'webaudio-control'];
+const MEDIA_PLAIN = ['webm', 'mp4', 'wav', 'ogg', 'mp3'].map((e) => `media-${e}-plain`);
+const MEDIA_CORS = [
+  ...['webm', 'mp4'].flatMap((e) => ['rel', 'files', 'media', 'credentials'].map((how) => `media-${e}-cors-${how}`)),
+  ...['wav', 'ogg', 'mp3'].flatMap((e) => ['rel', 'files', 'media'].map((how) => `media-${e}-cors-${how}`)),
+];
+
 for (const trust of ['protected', 'trusted'] as const) {
   test(`${trust}: sibling and outside files are never readable`, async () => {
     const s = scratch();
@@ -50,6 +56,19 @@ for (const trust of ['protected', 'trusted'] as const) {
       // Positive control: a sibling image is shown (served, cross-origin), proving "show, not read".
       expect(results['sibling-img-show']?.status, JSON.stringify(results['sibling-img-show'])).toBe('ok');
 
+      // Sibling media (finding 7): every crossorigin (CORS-mode) load fails, whichever URL it uses, while the
+      // plain loads play with a tainted canvas and silent Web Audio output (the positive control that the
+      // files are served and shown). The controls prove the canvas and analyser reads work at all, so a
+      // "tainted" or "silent" result means the browser withheld the content.
+      await session.waitPhase('media', 20_000);
+      const media = (await session.results()) as Record<string, ProbeResult>;
+      for (const key of MEDIA_CONTROLS) expect(media[key]?.status, `${key}: ${JSON.stringify(media[key])}`).toBe('ok');
+      for (const key of MEDIA_PLAIN) expect(media[key]?.status, `${key} should play and stay unreadable: ${JSON.stringify(media[key])}`).toBe('ok');
+      for (const key of MEDIA_CORS) expect(media[key]?.status, `${key} must not load: ${JSON.stringify(media[key])}`).toBe('blocked');
+      expect(media['fetch-media-scheme']?.status, JSON.stringify(media['fetch-media-scheme'])).toBe('blocked');
+      const mediaLeaks = Object.entries(media).filter(([, r]) => r.status === 'leaked');
+      expect(mediaLeaks, `page read sibling media: ${JSON.stringify(mediaLeaks)}`).toHaveLength(0);
+
       // The .ssh dotfile and the confidential files must never be fetchable; also confirm from main that the
       // -files host 404s the dotfile and any ../ escape.
       const bad = Object.entries(results).filter(([, r]) => r.status === 'leaked');
@@ -61,34 +80,48 @@ for (const trust of ['protected', 'trusted'] as const) {
   });
 }
 
-// Protocol fuzz in real Electron (work item 5): request many crafted paths and assert none returns a file
-// outside the folder. The page probes with stylesheet/image loads; this test also drives fetch() from the
-// page over many crafted paths and reads status/bytes directly.
+// Protocol fuzz in real Electron (work item 5; 9.1 Refusals). The crafted paths aim at outside/, whose files
+// have extensions the -files host serves and carry OUTSIDE-<label> in their bytes (test/helpers/security.ts),
+// so an escape would be served and recognised rather than refused for its extension (finding 42). The page
+// loads them as stylesheets (protocol-fuzz.html: an outside.css that applied would recolour a probe, with an
+// in-folder stylesheet as the positive control), and main requests every one through the deck partition's
+// own handler with session.fetch and reads status and bytes.
 const CRAFTED = [
+  '../outside/outside.css',
+  '..%2foutside%2foutside.css',
+  '%2e%2e/outside/outside.css',
+  '%2e%2e%2foutside%2foutside.css',
+  '..%252foutside%252foutside.css',
+  '..%5coutside%5coutside.css',
+  '%2e%2e%5coutside%5coutside.css',
+  '....//outside/outside.css',
+  '..%c0%afoutside/outside.css',
+  '．．/outside/outside.css',
+  '․․/outside/outside.css',
+  '.%2e/outside/outside.css',
+  'foo/../../outside/outside.css',
+  'sub/%2e%2e/%2e%2e/outside/outside.css',
+  '/outside/outside.css',
+  '//outside/outside.css',
+  '../outside/outside.js',
+  '../outside/outside.png',
   '../outside/outside.txt',
-  '..%2foutside%2foutside.txt',
-  '%2e%2e/outside/outside.txt',
-  '%2e%2e%2foutside%2foutside.txt',
-  '..%252foutside%252foutside.txt',
-  '..%5coutside%5coutside.txt',
-  '....//outside/outside.txt',
-  '..%c0%afoutside/outside.txt',
-  '．．/outside/outside.txt',
-  'foo/../../outside/outside.txt',
-  '/outside/outside.txt',
-  '//outside/outside.txt',
   '.ssh/id_rsa',
   '.ssh/id_rsa.css',
-  '%2essh/id_rsa',
+  '%2essh/id_rsa.css',
   'confidential.txt',
   '../confidential.txt',
   'link-outside.css',
-  'link-outside-dir/outside.txt',
+  'link-outside-dir/outside.css',
+  'link-outside-dir/outside.js',
   'link-etc.css',
-  'sub/%2e%2e/%2e%2e/outside/outside.txt',
-  '.%2e/outside/outside.txt',
-  '․․/outside/outside.txt',
 ];
+// Media paths are not fetched here: the handler sends them to blueline-media://, which onBeforeRequest
+// opens to media elements only ('media-only'), so a main-process fetch of one is cancelled whatever the
+// path. Their confinement is the same resolveConfined, covered with real folders in protocol.test.ts.
+// In-folder paths the handler must serve (status 200): the positive control that session.fetch reaches the
+// handler and that a 404 above is a refusal, not a broken probe.
+const IN_FOLDER = ['sibling.css', '%73ibling.css', 'sub/%2e%2e/sibling.css', 'sibling.png'];
 
 for (const trust of ['protected', 'trusted'] as const) {
   test(`${trust}: protocol fuzz returns no file outside the folder`, async () => {
@@ -97,70 +130,47 @@ for (const trust of ['protected', 'trusted'] as const) {
     try {
       await session.waitPhase('load');
       await sleep(600);
-      // The page's own CSS-escape probe: no crafted stylesheet may recolour the probe (an escape).
       const results = (await session.results()) as Record<string, ProbeResult>;
+      // Positive controls: an in-folder stylesheet applies, also through a crafted in-folder path, so the
+      // stylesheet probe can see a crafted path that resolves.
+      for (const key of ['css-control', 'css-control-dotdot']) {
+        expect(results[key]?.status, `${key}: ${JSON.stringify(results[key])}`).toBe('ok');
+      }
+      // No crafted stylesheet may recolour the outside probe (an escape).
       const escaped = Object.entries(results).filter(([, r]) => r.status === 'leaked');
       expect(escaped, `a crafted path escaped the folder: ${JSON.stringify(escaped)}`).toHaveLength(0);
 
-      // Drive crafted fetches from the page and read what came back. A sibling file is cross-origin (fetch
-      // fails); an outside file must 404 or fail. The marker strings must never appear in a response body.
-      const outsideMark = `OUTSIDE-${session.cfg.uniq}`;
-      const parentMark = `PARENT-CONFIDENTIAL-${session.cfg.uniq}`;
-      const probe = await session.deck.eval<{ path: string; ok: boolean; status: number; body: string }[]>(
-        `(async () => {
-          const paths = ${JSON.stringify(CRAFTED)};
-          const out = [];
-          for (const p of paths) {
-            try {
-              const r = await fetch(p, { cache: 'no-store' });
-              const t = await r.text().catch(() => '');
-              out.push({ path: p, ok: r.ok, status: r.status, body: t.slice(0, 80) });
-            } catch (e) {
-              out.push({ path: p, ok: false, status: -1, body: 'ERR:' + (e && e.name) });
-            }
-          }
-          return out;
-        })()`,
-      );
-      for (const r of probe) {
-        expect(r.body.includes(outsideMark), `crafted path ${r.path} returned an outside file: ${r.body}`).toBe(false);
-        expect(r.body.includes(parentMark), `crafted path ${r.path} returned a parent file: ${r.body}`).toBe(false);
-        expect(r.body.includes('OPENSSH PRIVATE KEY'), `crafted path ${r.path} returned a key file: ${r.body}`).toBe(false);
-        expect(r.body.includes('CONFIDENTIAL'), `crafted path ${r.path} returned a confidential file: ${r.body}`).toBe(false);
-      }
-
-      // And drive the same crafted paths through Electron's session.fetch against the deck's own handler,
-      // confirming the handler (not the renderer) refuses them: every one is a 404, a redirect to -files, or
-      // a cross-origin body the page could not have read.
-      const folderReal = fs.realpathSync.native(session.folder.dir);
-      const outsideReal = fs.realpathSync.native(path.dirname(folderReal));
+      // The handler itself, through Electron's session.fetch on the deck partition (redirects followed):
+      // every crafted path is a bare 404; every in-folder control is a 200 with its own bytes.
+      const mark = outsideMarker(session.cfg.uniq);
       const handlerProbe = await session.app.electronApp.evaluate(
-        async ({ session: ses, webContents }, a) => {
+        async ({ webContents }, a) => {
           const wc = webContents.fromId(a.wcId);
-          const part = wc ? wc.session : ses.defaultSession;
+          if (!wc) throw new Error('no deck webContents');
           const base = 'blueline://' + a.docId + '/';
-          const out: { path: string; status: number; body: string }[] = [];
+          const out: { path: string; status: number; url: string; body: string }[] = [];
           for (const p of a.paths) {
             try {
-              const r = await part.fetch(base + p, { cache: 'no-store' });
+              const r = await wc.session.fetch(base + p, { cache: 'no-store' });
               const t = await r.text().catch(() => '');
-              out.push({ path: p, status: r.status, body: t.slice(0, 120) });
+              out.push({ path: p, status: r.status, url: r.url, body: t.slice(0, 200) });
             } catch (e) {
-              out.push({ path: p, status: -1, body: 'ERR:' + (e && (e as Error).name) });
+              out.push({ path: p, status: -1, url: '', body: 'ERR:' + (e && (e as Error).message) });
             }
           }
           return out;
         },
-        { docId: session.docId, wcId: session.deck.wcId, paths: CRAFTED },
+        { docId: session.docId, wcId: session.deck.wcId, paths: [...CRAFTED, ...IN_FOLDER] },
       );
       for (const r of handlerProbe) {
-        expect(r.body.includes(session.cfg.uniq) && r.body.includes('OUTSIDE'), `handler served an outside file for ${r.path}: ${r.body}`).toBe(false);
-        expect(r.body.includes('OPENSSH PRIVATE KEY'), `handler served a key for ${r.path}: ${r.body}`).toBe(false);
-        // confidential.txt lives in the folder but is not the document and has a .txt extension not in the
-        // -files allowlist, so it must 404 (never 200 with its bytes).
-        expect(r.body.includes('CONFIDENTIAL'), `handler served confidential bytes for ${r.path}: ${r.body}`).toBe(false);
+        expect(r.body.includes(mark), `handler served an outside file for ${r.path}: ${JSON.stringify(r)}`).toBe(false);
+        expect(r.body.includes('OPENSSH PRIVATE KEY'), `handler served a key for ${r.path}`).toBe(false);
+        expect(r.body.includes('CONFIDENTIAL'), `handler served confidential bytes for ${r.path}`).toBe(false);
+        if (IN_FOLDER.includes(r.path)) expect(r.status, `in-folder control ${r.path}: ${JSON.stringify(r)}`).toBe(200);
+        else expect(r.status, `crafted path ${r.path} must be refused: ${JSON.stringify(r)}`).toBe(404);
       }
-      void outsideReal;
+      const css = handlerProbe.find((r) => r.path === 'sibling.css');
+      expect(css?.body, 'the in-folder control returns its own bytes').toContain('#bl-sibling-css-probe');
     } finally {
       await session.close();
       s.cleanup();

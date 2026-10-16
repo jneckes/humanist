@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Hidden duplicate</title>
+<style>html,body{margin:0;font:28px/1.4 sans-serif} .print-only{display:none} .later{position:absolute;top:2000px}</style></head>
+<body>
+<h1 id="t"></h1>
+<p>Static paragraph one.</p>
+<div class="print-only"><span id="pt"></span></div>
+<script>
+const DATA = { title: "Quarterly results for the board" };
+document.getElementById('t').textContent = DATA.title;
+document.getElementById('pt').textContent = DATA.title;
+</script>
+</body></html>

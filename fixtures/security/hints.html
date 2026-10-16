@@ -5,12 +5,19 @@
 <title>Resource hints and DNS prefetch</title>
 <script>window.__BL_CFG = __BL_CFG__;</script>
 <script>/*__BL_PROBE__*/</script>
-<!-- 9.9 "Channels that onBeforeRequest does not see": resource hints look up names with no request the
-     listener can cancel. In Protected view the served copy must have these removed and the PAC proxy must
-     keep any lookup from leaving, so the suite's DNS server must see no query for these unique names. -->
+<!-- 9.9 "Channels that onBeforeRequest does not see": resource hints look up names and open sockets with no
+     request the listener can cancel. In Protected view the served copy has the static ones removed,
+     onBeforeRequest cancels a script-inserted prefetch, and the closed-port proxy is there for any socket
+     that escapes, so the suite's servers must see nothing for these unique names (the script-inserted
+     dns-prefetch is a known gap). The suite also opens this page in Trusted view: there only dns-prefetch
+     and prefetch make traffic in Electron 44; preconnect (by name or address), prerender, speculation rules
+     and links make none, and the suite fails if that changes (finding 43). -->
 <meta http-equiv="x-dns-prefetch-control" content="on">
 <link rel="dns-prefetch" href="//static-dns-prefetch.__BL_UNIQ__.__BL_ZONE__">
 <link rel="preconnect" href="http://static-preconnect.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__">
+<!-- A preconnect by address needs no lookup, so only a connection could show it: the HTTP server logs raw
+     connections that carry no request. -->
+<link rel="preconnect" href="http://__BL_SINK__:__BL_PORT__">
 <link rel="prefetch" href="http://static-prefetch.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/static-prefetch/p">
 <link rel="prerender" href="http://static-prerender.__BL_UNIQ__.__BL_ZONE__:__BL_PORT__/__BL_UNIQ__/static-prerender/p">
 <style>body { font: 16px system-ui, sans-serif; margin: 24px; }</style>
@@ -45,6 +52,13 @@
   // Several dns-prefetch links, so a leak is deterministic (dns-prefetch is best-effort and may be deduped).
   for (var i = 0; i < 4; i++) hint('dns-prefetch', 'js-dns-prefetch-' + i);
   hint('preconnect', 'js-preconnect');
+  try {
+    var ip = document.createElement('link');
+    ip.rel = 'preconnect';
+    ip.href = 'http://' + B.cfg.sink + ':' + B.cfg.port + '/';
+    document.head.appendChild(ip);
+    B.set('js-preconnect-ip', 'hint', 'pending', 'preconnect by address');
+  } catch (e) { B.set('js-preconnect-ip', 'hint', 'blocked', B.errText(e)); }
   hint('prefetch', 'js-prefetch', 'fetch');
   hint('prerender', 'js-prerender');
   // Programmatic DNS prefetch via an inserted anchor the page then focuses.

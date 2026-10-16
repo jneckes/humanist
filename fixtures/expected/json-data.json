@@ -1,20 +1,24 @@
 {
   "deckSha": "3221503f3eb5131235231771429886831c4bb591c53d3f4a7274112f1773ef8a",
   "coverage": {
-    "exact": 31,
-    "ambiguous": 8,
+    "exact": 30,
+    "ambiguous": 9,
     "none": 9,
-    "total": 48
+    "total": 48,
+    "slides": {
+      "count": 4,
+      "reached": 4
+    }
   },
   "runs": [
     {
       "slide": 0,
       "text": "Checkout redesign — results",
-      "strategy": "json-literal",
-      "confidence": "exact",
-      "start": 2633,
-      "end": 2665,
-      "probe": "pass"
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "shadow"
     },
     {
       "slide": 0,
@@ -467,8 +471,8 @@
         "slide": 0,
         "title": "A calmer checkout",
         "reached": true,
-        "exact": 9,
-        "ambiguous": 1,
+        "exact": 8,
+        "ambiguous": 2,
         "none": 1,
         "total": 11
       },
@@ -501,21 +505,32 @@
       }
     ],
     "totals": {
-      "exact": 31,
-      "ambiguous": 8,
+      "exact": 30,
+      "ambiguous": 9,
       "none": 9,
       "total": 48
     },
     "coverage": {
-      "exact": 31,
-      "ambiguous": 8,
+      "exact": 30,
+      "ambiguous": 9,
       "none": 9,
       "total": 48,
-      "share": 0.6458333333333334,
+      "share": 0.625,
       "probeFailed": 0,
-      "verified": true
+      "verified": true,
+      "complete": true
+    },
+    "uncounted": {
+      "crossOriginFrames": 0
     },
     "nonExact": [
+      {
+        "slide": 0,
+        "text": "Checkout redesign — results",
+        "confidence": "ambiguous",
+        "reason": "shadow",
+        "candidates": 1
+      },
       {
         "slide": 0,
         "text": "Harbor & Pine",
@@ -647,11 +662,11 @@
     "probe": {
       "ran": true,
       "why": null,
-      "runs": 28,
+      "runs": 27,
       "originalUnchanged": true,
       "copyRemoved": true,
-      "nodes": 31,
-      "passed": 31,
+      "nodes": 30,
+      "passed": 30,
       "failed": 0,
       "failures": []
     },

@@ -4,7 +4,11 @@
     "exact": 28,
     "ambiguous": 0,
     "none": 0,
-    "total": 28
+    "total": 28,
+    "slides": {
+      "count": 5,
+      "reached": 5
+    }
   },
   "runs": [
     {
@@ -342,7 +346,11 @@
       "total": 28,
       "share": 1,
       "probeFailed": 0,
-      "verified": true
+      "verified": true,
+      "complete": true
+    },
+    "uncounted": {
+      "crossOriginFrames": 0
     },
     "nonExact": [],
     "inline": {

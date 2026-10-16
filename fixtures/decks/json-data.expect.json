@@ -6,7 +6,7 @@
   "titles": ["A calmer checkout", "Shoppers wanted fewer surprises", "The numbers after launch", "Roll out in three waves"],
   "expect": [
     { "text": "A calmer checkout", "confidence": "exact", "strategy": "json-literal", "why": "a JSON string value in <script type=\"application/json\"> rendered with textContent (section 7 rule 3; 9.2 Strategy 2 step 2, JSON blocks)" },
-    { "text": "Checkout redesign — results", "confidence": "exact", "strategy": "json-literal", "why": "the JSON escape \\u2014 is one atomic unit of the cooked-to-raw table" },
+    { "text": "Checkout redesign — results", "confidence": "ambiguous", "strategy": null, "reason": "shadow", "why": "the <title> holds the same text and a script may show document.title, so the JSON value is not the only source of the text (review finding 0, shadow value)" },
     { "text": "\"Where's my order?\" was the top support question", "confidence": "exact", "strategy": "json-literal", "why": "\\\" escapes at the start of the value; ' is never escaped in JSON (step 5.3)" },
     { "text": "Cart abandonment fell from 71% to 58% after the redesign.", "confidence": "exact", "strategy": "json-literal", "why": "digits inside one string value are not computed" },
     { "text": "Phase 1", "confidence": "exact", "strategy": "json-literal", "why": "a text node of an HTML string value (the value contains <, so it is one HTML fragment and each text node is a run)" },

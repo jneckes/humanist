@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Self-rewriting deck</title>
+</head>
+<body>
+<h1>Loading</h1>
+<script>
+  // Input fixture (SPEC 6.2, 6.4, 6.5, 9.1 Preload; finding 12). A deck that renders itself with
+  // document.open()/write()/close() in its load handler, as some bundled or self-extracting decks do.
+  // document.open() erases every event listener on the window and on every node of the document, the
+  // overlay's closed shadow tree included; the preload must re-add all of them (listeners.ts).
+  // The written page registers capture-phase listeners on window synchronously, while document.write runs:
+  // they come before the preload's re-added key router and input guard (the documented ordering limit), and
+  // record every key and input event with its real target in data-page-log. They never cancel anything.
+  window.addEventListener('load', function () {
+    var page =
+      '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Self-rewriting deck</title>' +
+      '<style>body{margin:0;font:28px system-ui,sans-serif} h1{margin:140px 120px 40px;display:inline-block} p{margin:0 120px;width:700px}</style>' +
+      '<script>(function(){var log=[];' +
+      'function rec(e){var p=e.composedPath();var t=p.length?p[0]:e.target;log.push(e.type+":"+(t&&t.localName?t.localName:String(t)));' +
+      'document.documentElement.dataset.pageLog=JSON.stringify(log.slice(-200));}' +
+      '["keydown","keyup","beforeinput","input","paste"].forEach(function(t){window.addEventListener(t,rec,true);});' +
+      'document.documentElement.dataset.rewritten="yes";})();<\/script>' +
+      '</head><body><h1 id="title">Rewritten heading</h1>' +
+      '<p id="body">This deck rewrote itself with document.open() after it loaded, and still takes notes.</p></body></html>';
+    document.open();
+    document.write(page);
+    document.close();
+  });
+</script>
+</body>
+</html>

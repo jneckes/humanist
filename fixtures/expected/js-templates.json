@@ -1,10 +1,14 @@
 {
   "deckSha": "527fabc22c5018ffeb72c48e80799d8fb968962d03d2be84a96ce6f51fb5fb12",
   "coverage": {
-    "exact": 31,
-    "ambiguous": 18,
+    "exact": 30,
+    "ambiguous": 19,
     "none": 14,
-    "total": 63
+    "total": 63,
+    "slides": {
+      "count": 4,
+      "reached": 4
+    }
   },
   "runs": [
     {
@@ -181,11 +185,11 @@
     {
       "slide": 1,
       "text": "14",
-      "strategy": "script-literal",
-      "confidence": "exact",
-      "start": 4399,
-      "end": 4401,
-      "probe": "pass"
+      "strategy": null,
+      "confidence": "ambiguous",
+      "start": null,
+      "end": null,
+      "reason": "shadow"
     },
     {
       "slide": 1,
@@ -611,8 +615,8 @@
         "slide": 1,
         "title": "Margins held while support doubled",
         "reached": true,
-        "exact": 9,
-        "ambiguous": 5,
+        "exact": 8,
+        "ambiguous": 6,
         "none": 3,
         "total": 17
       },
@@ -636,19 +640,23 @@
       }
     ],
     "totals": {
-      "exact": 31,
-      "ambiguous": 18,
+      "exact": 30,
+      "ambiguous": 19,
       "none": 14,
       "total": 63
     },
     "coverage": {
-      "exact": 31,
-      "ambiguous": 18,
+      "exact": 30,
+      "ambiguous": 19,
       "none": 14,
       "total": 63,
-      "share": 0.49206349206349204,
+      "share": 0.47619047619047616,
       "probeFailed": 0,
-      "verified": true
+      "verified": true,
+      "complete": true
+    },
+    "uncounted": {
+      "crossOriginFrames": 0
     },
     "nonExact": [
       {
@@ -699,6 +707,13 @@
         "confidence": "none",
         "reason": "multi-literal",
         "candidates": 0
+      },
+      {
+        "slide": 1,
+        "text": "14",
+        "confidence": "ambiguous",
+        "reason": "shadow",
+        "candidates": 1
       },
       {
         "slide": 1,
@@ -879,19 +894,19 @@
     "inline": {
       "blocks": 48,
       "withInline": 7,
-      "allExact": 2,
-      "allPassed": 2,
+      "allExact": 1,
+      "allPassed": 1,
       "shareWithInline": 0.14583333333333334,
-      "shareAllExact": 0.2857142857142857
+      "shareAllExact": 0.14285714285714285
     },
     "probe": {
       "ran": true,
       "why": null,
-      "runs": 31,
+      "runs": 30,
       "originalUnchanged": true,
       "copyRemoved": true,
-      "nodes": 31,
-      "passed": 31,
+      "nodes": 30,
+      "passed": 30,
       "failed": 0,
       "failures": []
     },
