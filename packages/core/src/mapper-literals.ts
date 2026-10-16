@@ -12,12 +12,21 @@
 // destructuring keys written as strings ARE units, because acorn-walk's default walker skips them and a
 // key that is also shown as text must make a same-valued literal ambiguous rather than silently unique.
 //
-// Object keys that are not units (JSON object keys, and identifier keys of JS object literals and class
-// fields) are returned as `keys`: a deck can render a key as text (Object.entries), so a literal with the
-// same text is not the only source of that text, and the matcher treats it like an attribute value used
-// as a key (9.2 Strategy 2 step 3: ambiguous, `key`). Without this, an edit of a label rendered from the
-// key `"Retention"` was written into the value `"Retention"` elsewhere (the mutation probe on
-// fixtures/decks/json-data.html showed it).
+// Object keys that are not units (JSON object keys, identifier keys of JS object literals and class fields,
+// non-computed member names, read or written, and identifier keys of object patterns) are returned as `keys`:
+// a deck can render a key as text (Object.entries), so a literal with the same text is not the only source
+// of that text, and the matcher treats it like an attribute value used as a key (9.2 Strategy 2 step 3:
+// ambiguous, `key`). Without this, an edit of a label rendered from the key `"Retention"` was written into
+// the value `"Retention"` elsewhere (the mutation probe on fixtures/decks/json-data.html showed it). Member
+// names count because `totals.Bookings = 120` makes a key just as `{ Bookings: 120 }` does, and because a
+// quoted key that code reads by name (`KPI.Retention`, `const { Retention } = KPI`) must not be renamed by a
+// label edit (review finding 4, decision D-c).
+//
+// Shadow values (review findings 0 and 3, decision D-a; DeckMap.shadows) found here: the quasis of tagged
+// templates and the text nodes of their fragments, and every number (numeric literals and keys in JS,
+// number tokens in JSON). The page may show them, Blueline never writes them, and a literal equal to one is
+// never `exact`. jsShadowStrings and fragmentTextValues give the Strategy 1 walk the same for event-handler
+// attributes and script data blocks.
 
 import { parse as acornParse, type AnyNode, type Node as AcornNode, type Program } from 'acorn';
 import { fullAncestor, make, type RecursiveVisitors } from 'acorn-walk';
@@ -26,7 +35,7 @@ import { decodeHtmlText, htmlTextTable, type HtmlTextOptions } from './html-tabl
 import { jsLiteralTable, PLACEHOLDER, type LiteralKind, type LiteralQuote } from './js-literals';
 import { composeTables, type OffsetTable } from './offset-table';
 import { isWhitespaceOnly, type LineIndex } from './text';
-import type { LiteralRun, LiteralUnit, ScriptInfo } from './types';
+import type { LiteralRun, LiteralUnit, ScriptInfo, ShadowKind } from './types';
 
 /** A literal found in one script, before it is numbered. Offsets are relative to the script's content. */
 export interface FoundLiteral {
@@ -46,22 +55,33 @@ export interface ExtractedLiterals {
   /** The input scripts with `parsed` set for every classic, module and JSON script. */
   scripts: ScriptInfo[];
   /**
-   * Object keys that are not units, in source order: JSON object keys (`attr: 'json key'`) and identifier
-   * keys of JS object literals and class fields (`attr: 'object key'`). Merged into DeckMap.keys.
+   * Object keys that are not units, in source order: JSON object keys (`attr: 'json key'`), identifier keys
+   * of JS object literals and class fields (`attr: 'object key'`), non-computed member names (`'member name'`)
+   * and identifier keys of object patterns (`'destructuring key'`). Merged into DeckMap.keys.
    */
   keys: { value: string; attr: string; line: number }[];
+  /** Shadow values found in the scripts (tagged templates, numbers), in source order; `start` indexes src. */
+  shadows: FoundShadow[];
 }
 
 /** An object key found in one script; `start` is relative to the script's content. */
-interface FoundKey {
+export interface FoundKey {
   value: string;
   start: number;
-  attr: 'json key' | 'object key';
+  attr: 'json key' | 'object key' | 'member name' | 'destructuring key';
 }
 
-interface Scanned {
+/** A shadow value (DeckMap.shadows): text the page may show that is never a unit. */
+export interface FoundShadow {
+  value: string;
+  kind: ShadowKind;
+  start: number;
+}
+
+export interface Scanned {
   literals: FoundLiteral[];
   keys: FoundKey[];
+  shadows: FoundShadow[];
 }
 
 /**
@@ -73,6 +93,7 @@ export function extractLiterals(src: string, scripts: ScriptInfo[], lines: LineI
   const outScripts = scripts.map((s) => ({ ...s }));
   const found: (FoundLiteral & { scriptIndex: number })[] = [];
   const foundKeys: { value: string; start: number; attr: string }[] = [];
+  const shadows: FoundShadow[] = [];
   for (const s of outScripts) {
     if (s.hasSrc) continue; // a script with src never runs its inline text
     if (s.kind !== 'classic' && s.kind !== 'module' && s.kind !== 'json') continue;
@@ -85,6 +106,7 @@ export function extractLiterals(src: string, scripts: ScriptInfo[], lines: LineI
     s.parsed = scanned !== null;
     if (scanned === null) continue;
     for (const k of scanned.keys) foundKeys.push({ value: k.value, start: k.start + s.contentStart, attr: k.attr });
+    for (const sh of scanned.shadows) shadows.push({ ...sh, start: sh.start + s.contentStart });
     for (const l of scanned.literals) {
       found.push({
         ...l,
@@ -109,7 +131,7 @@ export function extractLiterals(src: string, scripts: ScriptInfo[], lines: LineI
       end: f.end,
       cooked: f.cooked,
       scriptIndex: f.scriptIndex,
-      html: f.cooked.includes('<'),
+      html: isHtmlLiteral(f.cooked),
       aligned: false,
     };
     if (f.placeholders && f.placeholders.length > 0) unit.placeholders = f.placeholders;
@@ -137,7 +159,20 @@ export function extractLiterals(src: string, scripts: ScriptInfo[], lines: LineI
   }
   foundKeys.sort((a, b) => a.start - b.start);
   const keys = foundKeys.map((k) => ({ value: k.value, attr: k.attr, line: lines.at(k.start).line }));
-  return { units, literals, scripts: outScripts, keys };
+  shadows.sort((a, b) => a.start - b.start);
+  return { units, literals, scripts: outScripts, keys, shadows };
+}
+
+/**
+ * True if a literal's cooked value holds markup, so the page shows its fragment's text nodes when it is set
+ * with innerHTML and its runs are those text nodes (9.2 Strategy 2 step 2). A `<` that starts no tag,
+ * comment or other markup, with no character reference, CR or NUL in the value, parses to one text node equal
+ * to the whole value: such a literal reads the same through textContent and innerHTML, and is a plain
+ * literal (an edit that adds `<` or `&` becomes verbatim, step 5.1; review finding 5, decision D-d).
+ * decodeHtmlText reproduces parse5's data-state decoding and returns null where `<` starts markup.
+ */
+export function isHtmlLiteral(cooked: string): boolean {
+  return cooked.includes('<') && decodeHtmlText(cooked) !== cooked;
 }
 
 /** Rebuilds a unit's cooked-to-raw table from src and checks that it cooks to the unit's value. */
@@ -282,6 +317,17 @@ interface FragmentText {
   firstChild: boolean;
 }
 
+/**
+ * The values of the text nodes of `html` parsed as one fragment that are not whitespace-only, in document
+ * order (script and style text excluded; template content included). Empty when parse5 throws. For shadow
+ * values: markup in raw text, data blocks, attributes and tagged templates that a page may parse.
+ */
+export function fragmentTextValues(html: string): string[] {
+  const nodes = fragmentTextNodes(html);
+  if (nodes === null) return [];
+  return nodes.filter((n) => !isWhitespaceOnly(n.value)).map((n) => n.value);
+}
+
 /** Text nodes of `html` parsed as one fragment (9.2 Strategy 2 step 2), in document order. Null if parse5 throws. */
 function fragmentTextNodes(html: string): FragmentText[] | null {
   let frag: DefaultTreeAdapterTypes.DocumentFragment;
@@ -374,13 +420,90 @@ function isExcludedString(node: AnyNode, parent: AnyNode | undefined): boolean {
 /**
  * A non-computed identifier key that becomes an own enumerable property name, so a deck can render it as
  * text: a key of an object literal (`{ Retention: 41 }`, shorthand and methods included) or a class field.
- * Destructuring keys only read a property, and class methods are not enumerable, so neither counts.
+ * Class methods are not enumerable, so they do not count. Member names and destructuring keys are found by
+ * scanJs itself (keysOf).
  */
 function isIdentifierKey(node: AnyNode, parent: AnyNode | undefined, grand: AnyNode | undefined): boolean {
   if (node.type !== 'Identifier' || !parent) return false;
   if (parent.type === 'Property') return parent.key === node && !parent.computed && grand?.type === 'ObjectExpression';
   if (parent.type === 'PropertyDefinition') return parent.key === node && !parent.computed;
   return false;
+}
+
+/**
+ * Member names and destructuring keys of one node (review finding 4, decision D-c): the property name of a
+ * non-computed member expression (`o.X`, `o?.X`, `this.X`, `super.X`; read or written) and each identifier key
+ * of an object pattern (`const { X } = o`, `({ X: y } = o)`, parameters). Private names (`#x`) are skipped.
+ */
+function keysOf(node: AnyNode): FoundKey[] {
+  if (node.type === 'MemberExpression') {
+    if (!node.computed && node.property.type === 'Identifier') return [{ value: node.property.name, start: node.property.start, attr: 'member name' }];
+    return [];
+  }
+  if (node.type === 'ObjectPattern') {
+    const out: FoundKey[] = [];
+    for (const p of node.properties) {
+      if (p.type === 'Property' && !p.computed && p.key.type === 'Identifier') out.push({ value: p.key.name, start: p.key.start, attr: 'destructuring key' });
+    }
+    return out;
+  }
+  return [];
+}
+
+/**
+ * The texts a page may show for one number (D-a, `number`): String(n), and n.toLocaleString('en-US') (what
+ * Intl.NumberFormat and toLocaleString give by default: "1,234") when it differs.
+ */
+function numberTexts(n: number | bigint): string[] {
+  const plain = String(n);
+  let grouped: string | null = null;
+  try {
+    grouped = n.toLocaleString('en-US');
+  } catch {
+    grouped = null;
+  }
+  return grouped !== null && grouped !== plain ? [plain, grouped] : [plain];
+}
+
+/** Number shadows of a numeric Literal (numbers, bigints, numeric keys), negated too when written `-n`. */
+function numberShadows(node: AnyNode, parent: AnyNode | undefined, out: FoundShadow[]): void {
+  if (node.type !== 'Literal') return;
+  let n: number | bigint;
+  if (typeof node.value === 'number' || typeof node.value === 'bigint') n = node.value;
+  else if (typeof node.bigint === 'string') {
+    try {
+      n = BigInt(node.bigint);
+    } catch {
+      return;
+    }
+  } else return;
+  for (const v of numberTexts(n)) out.push({ value: v, kind: 'number', start: node.start });
+  if (parent && parent.type === 'UnaryExpression' && parent.operator === '-' && parent.argument === node) {
+    for (const v of numberTexts(-n)) out.push({ value: v, kind: 'number', start: parent.start });
+  }
+}
+
+/**
+ * Shadows of a template that is never a unit (a tagged template, or any template in code that is never
+ * mapped): each quasi, cooked and raw (String.raw shows the raw text), and, when the template holds `<`, the
+ * pieces of its fragment's text nodes between substitutions (lit-html and htm keep them as separate text
+ * nodes).
+ */
+function templateShadows(node: AnyNode, kind: ShadowKind, out: FoundShadow[]): void {
+  if (node.type !== 'TemplateLiteral') return;
+  const joined: string[] = [];
+  for (const q of node.quasis) {
+    const cooked = q.value.cooked;
+    const raw = q.value.raw;
+    if (typeof cooked === 'string' && !isWhitespaceOnly(cooked)) out.push({ value: cooked, kind, start: q.start });
+    if (raw !== cooked && !isWhitespaceOnly(raw)) out.push({ value: raw, kind, start: q.start });
+    joined.push(typeof cooked === 'string' ? cooked : raw);
+  }
+  const all = joined.join(PLACEHOLDER);
+  if (!all.includes('<')) return;
+  for (const t of fragmentTextValues(all)) {
+    for (const piece of t.split(PLACEHOLDER)) if (!isWhitespaceOnly(piece)) out.push({ value: piece, kind, start: node.start });
+  }
 }
 
 /** acorn parse + walk of one script's raw text (9.2 Strategy 2 step 1). Null when either fails. */
@@ -393,21 +516,41 @@ function scanJs(content: string, sourceType: 'script' | 'module'): Scanned | nul
   }
   const out: FoundLiteral[] = [];
   const keys: FoundKey[] = [];
+  const shadows: FoundShadow[] = [];
+  // Member names and destructuring keys are listed once per script, and not when the value is already a key
+  // here: keyValues lists each value once, and a deck reads the same names many times.
+  const keyNames = new Set<string>();
   try {
     fullAncestor<unknown>(
       ast,
       (node, _st, ancestors) => {
         const parent = ancestors[ancestors.length - 2];
         if (isIdentifierKey(node, parent, ancestors[ancestors.length - 3])) {
-          keys.push({ value: (node as unknown as { name: string }).name, start: node.start, attr: 'object key' });
+          const name = (node as unknown as { name: string }).name;
+          keyNames.add(name);
+          keys.push({ value: name, start: node.start, attr: 'object key' });
+        } else if (node.type === 'MemberExpression' || node.type === 'ObjectPattern') {
+          for (const k of keysOf(node)) {
+            if (keyNames.has(k.value)) continue;
+            keyNames.add(k.value);
+            keys.push(k);
+          }
         } else if (node.type === 'Literal') {
-          if (typeof node.value !== 'string' || isExcludedString(node, parent)) return;
+          if (typeof node.value !== 'string') {
+            numberShadows(node, parent, shadows);
+            return;
+          }
+          if (isExcludedString(node, parent)) return;
           const quote = content[node.start];
           if (quote !== "'" && quote !== '"') return;
           out.push({ kind: 'string', quote, start: node.start + 1, end: node.end - 1, cooked: node.value });
         } else if (node.type === 'TemplateLiteral') {
-          // A tagged template (String.raw included) is not a unit (9.2 Strategy 2 step 2).
-          if (parent && parent.type === 'TaggedTemplateExpression' && parent.quasi === node) return;
+          // A tagged template (String.raw included) is not a unit (9.2 Strategy 2 step 2), but the page may
+          // show its text (lit-html, htm): a shadow value (D-a).
+          if (parent && parent.type === 'TaggedTemplateExpression' && parent.quasi === node) {
+            templateShadows(node, 'tagged-template', shadows);
+            return;
+          }
           const cookedParts: string[] = [];
           for (const q of node.quasis) {
             if (typeof q.value.cooked !== 'string') return; // only possible when tagged
@@ -433,7 +576,46 @@ function scanJs(content: string, sourceType: 'script' | 'module'): Scanned | nul
     // acorn-walk throws on a node type it does not know: refuse the whole script rather than miss literals.
     return null;
   }
-  return { literals: out, keys };
+  return { literals: out, keys, shadows };
+}
+
+/**
+ * Shadow values of JS code that Blueline never maps (D-a): every string literal and template quasi (with
+ * `kind`), and every number (`number`). For inline event-handler attributes (`functionBody`: the value is a
+ * function body, so `return` is allowed) and script data blocks that parse as JS (SVG scripts and the like).
+ * Offsets are relative to `code`. Null when acorn cannot parse it (the caller keeps the raw text alone).
+ */
+export function jsShadowValues(code: string, kind: ShadowKind, opts: { functionBody?: boolean } = {}): FoundShadow[] | null {
+  let ast: Program | null = null;
+  for (const sourceType of opts.functionBody ? (['script'] as const) : (['script', 'module'] as const)) {
+    try {
+      ast = acornParse(code, { ecmaVersion: 'latest', sourceType, allowReturnOutsideFunction: !!opts.functionBody });
+      break;
+    } catch {
+      ast = null;
+    }
+  }
+  if (ast === null) return null;
+  const out: FoundShadow[] = [];
+  try {
+    fullAncestor<unknown>(
+      ast,
+      (node, _st, ancestors) => {
+        const parent = ancestors[ancestors.length - 2];
+        if (node.type === 'Literal') {
+          if (typeof node.value === 'string') {
+            if (!isWhitespaceOnly(node.value)) out.push({ value: node.value, kind, start: node.start });
+          } else numberShadows(node, parent, out);
+        } else if (node.type === 'TemplateLiteral') {
+          templateShadows(node, kind, out);
+        }
+      },
+      WALKER,
+    );
+  } catch {
+    return null;
+  }
+  return out;
 }
 
 // ----------------------------------------------------------------------------------------- JSON blocks
@@ -449,10 +631,16 @@ export function scanJsonLiterals(text: string): FoundLiteral[] | null {
   return scanJson(text)?.literals ?? null;
 }
 
-/** scanJsonLiterals plus the object keys (cooked), which the matcher treats as keys (module comment). */
-function scanJson(text: string): Scanned | null {
+/**
+ * scanJsonLiterals plus the object keys (cooked), which the matcher treats as keys (module comment), and the
+ * numbers as shadow values (D-a: String(n), the token as written when it differs, and the en-US grouped form).
+ * Exported for script data blocks that hold JSON (application/ld+json, importmap): their strings and keys are
+ * shadow values too.
+ */
+export function scanJson(text: string): Scanned | null {
   const out: FoundLiteral[] = [];
   const keys: FoundKey[] = [];
+  const shadows: FoundShadow[] = [];
   const n = text.length;
   const stack: number[] = []; // 0 = array, 1 = object
   const ARR = 0;
@@ -580,6 +768,10 @@ function scanJson(text: string): Scanned | null {
     } else {
       NUMBER.lastIndex = i;
       if (!NUMBER.test(text)) return null;
+      const token = text.slice(i, NUMBER.lastIndex);
+      const values = numberTexts(Number(token));
+      if (!values.includes(token)) values.push(token);
+      for (const v of values) shadows.push({ value: v, kind: 'number', start: i });
       i = NUMBER.lastIndex;
       state = 'after';
     }
@@ -590,7 +782,7 @@ function scanJson(text: string): Scanned | null {
   } catch {
     return null;
   }
-  return { literals: out, keys };
+  return { literals: out, keys, shadows };
 }
 
 // --------------------------------------------------------------------------------- for the patcher

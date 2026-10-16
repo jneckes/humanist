@@ -13,8 +13,9 @@
 //   - html-text: the run is aligned; map the changed span through its decoded-to-raw table, widen over
 //     references, CRLF and surrogate pairs, encode `&`, `<` and (only where the run already did) U+00A0,
 //     splice only that range (Strategy 1 step 5, via html-tables' planHtmlTextEdit);
-//   - literals: placeholder runs are pin-only (7); a literal without `<` may reach the page through innerHTML,
-//     so adding `<` or `&` to it is refused (Strategy 2 step 5.1); HTML-fragment runs are HTML-encoded first,
+//   - literals: placeholder runs are pin-only (7); a plain literal (no markup: no `<`, or a `<` that starts no
+//     tag, with no reference; LiteralUnit.html, decision D-d) may reach the page through textContent or
+//     innerHTML, so adding `<` or `&` to it is refused (Strategy 2 step 5.1); HTML-fragment runs are HTML-encoded first,
 //     then JS- or JSON-escaped (5.2, 5.3); the span is widened through the HTML table and the unit's escape
 //     table, so no reference, escape or `${…}` is ever cut (step 4); `${…}` is never touched;
 //   - the splice is checked against the unit's own cooked-to-raw parser before anything is written
@@ -164,10 +165,11 @@ function planLiteral(src: string, map: DeckMap, run: LiteralRun, before: string,
   let newCooked: (a: number, b: number) => string; // new cooked text for a widened range [a, b) ⊇ [from0, to0)
   let expectedCooked: string;
   if (!unit.html) {
-    // 9.2 Strategy 2 step 5.1: a literal without `<` may reach the page through textContent or innerHTML.
+    // 9.2 Strategy 2 step 5.1: a plain literal (no markup, so it reads the same through textContent and
+    // innerHTML; 'Latency <5 ms' is one, D-d) may reach the page through either.
     if (/[<&]/.test(inserted)) return refuse('verbatim: the edit adds `<` or `&` to a literal that may be set with innerHTML (9.2 Strategy 2 step 5.1)');
-    // A deletion can also make HTML out of what was plain text (`&am p` → `&amp`): what innerHTML would show
-    // must stay what textContent shows, if it did before.
+    // A deletion can also make HTML out of what was plain text (`&am p` → `&amp`, `<5 ms` → `<ms`): what
+    // innerHTML would show must stay what textContent shows, if it did before.
     if (decodeHtmlText(cooked) === cooked && decodeHtmlText(after) !== after) {
       return refuse('verbatim: the edit makes the literal read differently through innerHTML (9.2 Strategy 2 step 5.1)');
     }

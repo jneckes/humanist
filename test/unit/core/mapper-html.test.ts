@@ -155,6 +155,22 @@ describe('mapHtmlText: stamps and runs', () => {
     checkServed(src, r);
   });
 
+  it('marks a run whose raw range lies inside another run unaligned (foster-parented text merged before a <table>; finding 6)', () => {
+    // parse5 merges "Foster text" into the newline before <table>, and that text node's range then spans the
+    // first row: "Cell one" lies inside it. Every write there would be refused by verify ("the splice reaches
+    // into another run"), so the run is none (unaligned) rather than an exact claim that can never be written.
+    const src = '<!doctype html><body><section>\n<table><tr><td>Cell one</td></tr>Foster text<tr><td>Cell two</td></tr></table>\n<p>After</p></section></body>';
+    const r = map(src);
+    expect(r.runs.map((x) => [x.tagName, x.value, x.aligned])).toEqual([
+      ['section', '\nFoster text', false],
+      ['td', 'Cell one', false],
+      ['td', 'Cell two', true],
+      ['p', 'After', true],
+    ]);
+    checkServed(src, r);
+    checkRuns(src, r);
+  });
+
   it('maps foster-parented text only when its raw range is plain text', () => {
     const merged = '<body><table>a<tr>b</table>';
     const r1 = map(merged);

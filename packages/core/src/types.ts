@@ -203,7 +203,13 @@ export interface LiteralUnit {
   cooked: string;
   /** Index into DeckMap.scripts of the <script> that holds this literal. */
   scriptIndex: number;
-  /** True if the cooked value contains `<`: its runs are text nodes of an HTML fragment. */
+  /**
+   * True if the cooked value holds markup: it contains `<` and its parse5 fragment parse is not one text node
+   * equal to the whole value (an element, a character reference, a comment or another tag is in it). Its runs
+   * are then the fragment's text nodes. A `<` that starts no markup ('Latency <5 ms') leaves the unit a plain
+   * literal, which the page may show through textContent, so an edit that adds `<` or `&` to it is verbatim
+   * (9.2 Strategy 2 step 5.1; review finding 5, decision D-d).
+   */
   html: boolean;
   /** False if a cooked-to-raw table could not be built (then all its runs are `none`). */
   aligned: boolean;
@@ -274,19 +280,74 @@ export interface DeckMap {
   scripts: ScriptInfo[];
   /**
    * Attribute values of id, class (whole value and each token), name, for, href and data-* attributes (9.2,
-   * ambiguity by key), then object keys that are not units: JSON object keys and identifier keys of JS object
-   * literals and class fields (mapper-literals: a deck can render a key as text). Each value once.
+   * ambiguity by key), then object keys that are not units: JSON object keys, identifier keys of JS object
+   * literals and class fields, non-computed member names (`o.X`, `o?.X`, `this.X`, read or written) and
+   * identifier keys of object patterns (`const { X } = o`) (mapper-literals: a deck can render a key as text,
+   * and code that reads a key by name breaks when it is renamed). Each value once.
    */
   keyValues: string[];
   /**
    * The same values with where they occur, for the key warning "also used as a key at deck.html:<line>".
-   * `attr` is the attribute name, or 'json key' / 'object key'.
+   * `attr` is the attribute name, or 'json key' / 'object key' / 'member name' / 'destructuring key'.
    */
   keys: { value: string; attr: string; line: number }[];
   /** parse5 parse errors of the source (code and raw offset), for "no new parse errors" (9.2 Verify). */
   parseErrors: { code: string; offset: number }[];
   /** Added by core-mapper: the served copy's edits (stamps, stripped `data-bl-e`, resource hints). buildMap always sets it. */
   served?: ServedPlan;
+  /**
+   * Shadow values (review findings 0, 1 and 3, decision D-a): text the page may show that Blueline never
+   * writes. A literal equal to one is not the only source of its text, so it is never `exact` (9.2 Strategy 2
+   * step 3, "that run occurs once in the file"); shadows are never candidates and never written. In source
+   * order where there is one; buildMap always sets it (empty for a deck that is not UTF-8). Never taken from
+   * the notes block.
+   */
+  shadows?: ShadowValue[];
+}
+
+/**
+ * Where a shadow value comes from (DeckMap.shadows):
+ *   - `template`: a text node of document `<template>` content (nested templates too);
+ *   - `raw-text`: the text of a SKIP_TEXT element (title, textarea, style, noscript, xmp, iframe, noembed,
+ *     noframes, plaintext; SVG/MathML title too) and, when it holds `<`, its fragment's text nodes;
+ *   - `dropped-run`: Strategy 1 text the walk does not record as a run (a text index held by two parser
+ *     clones, Noah's Ark groups, groups that cannot be stamped, every text of a deck with a stripped stamp on
+ *     a Noah's Ark element, text after the notes block);
+ *   - `invented-parent`: text directly under an element the parser invented (no location, 9.2 Strategy 1 step 4);
+ *   - `script-data`: the text of an inline script that is neither JS nor JSON (text/x-template, text/babel,
+ *     application/ld+json, SVG script, …), its fragment's text nodes when it holds `<`, and the strings and
+ *     numbers in it when it parses as JS;
+ *   - `tagged-template`: the quasis of a tagged template (cooked, and raw when different), and the pieces of
+ *     its fragment's text nodes between substitutions when it holds `<`;
+ *   - `attribute`: the value of every attribute of every element (not only key attributes), and the text
+ *     nodes of its fragment parse when it holds `<` (iframe srcdoc, HTML tooltips);
+ *   - `event-handler`: string literals and template quasis inside an inline `on*` attribute;
+ *   - `number`: String(n), the negated form when written `-n`, and n.toLocaleString('en-US') of every numeric
+ *     literal and numeric key in inline JS and event handlers, and of every number in JSON blocks;
+ *   - `repeated-number`: the value of a literal run made only of digits and number punctuation that does not
+ *     occur exactly once in the decoded file (notes block excluded): such text is exact only if the literal is
+ *     the only place it occurs (review finding 3). It depends on the whole file, so verify ignores it.
+ */
+export type ShadowKind =
+  | 'template'
+  | 'raw-text'
+  | 'dropped-run'
+  | 'invented-parent'
+  | 'script-data'
+  | 'tagged-template'
+  | 'attribute'
+  | 'event-handler'
+  | 'number'
+  | 'repeated-number';
+
+export interface ShadowValue {
+  value: string;
+  /** A ShadowKind. */
+  kind: string;
+  /** Raw offset in src where the text (or the attribute, script or literal that holds it) starts, when cheap. */
+  start?: number;
+  /** 1-based line of `start`. */
+  line?: number;
 }
 
 /** What the overlay needs from the map (sent over IPC; 9.2 Matching DOM to source at runtime). */
@@ -301,6 +362,11 @@ export interface ClientMap {
    */
   literals: (Pick<LiteralRun, 'id' | 'value' | 'placeholder' | 'html'> & Partial<Pick<LiteralRun, 'strategy' | 'aligned'>>)[];
   keyValues: string[];
+  /**
+   * DeckMap.shadows' values, each once (D-a): a literal equal to one is never `exact`. toClientMap always
+   * sets it; absent is read as empty (hand-built maps).
+   */
+  shadowValues?: string[];
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -315,12 +381,22 @@ export interface DomTextNode {
   textIndex: number;
   /** The node's `data`. */
   data: string;
+  /**
+   * The `data` of every direct child text node of the node's parent element that is not whitespace-only (9.2
+   * Strategy 1 step 2: U+0020, tab, LF, CR and FF; NBSP is not), in document order, as the DOM holds them now,
+   * so `texts[textIndex] === data` (review finding 2, decision D-b). The matcher trusts the own stamped run
+   * only while these agree with the stamp's source runs: a script that adds or removes a direct text node
+   * shifts textIndex. Absent or malformed: the element cannot be checked, and matching falls through to the
+   * candidate set (9.2 Matching DOM to source at runtime, step 2).
+   */
+  texts?: string[];
 }
 
 /**
  * Why a node is not `exact`. The first six are the spec's report reasons (section 10, Phase 0);
- * `duplicate` (several equal runs) and `key` (text also used as a key) are the remaining
- * ambiguity reasons, and `placeholder` marks template runs with `${…}` (pin-only).
+ * `duplicate` (several equal runs), `key` (text also used as a key) and `shadow` (the text equals a value
+ * from a source Blueline never writes, DeckMap.shadows) are the remaining ambiguity reasons, and
+ * `placeholder` marks template runs with `${…}` (pin-only).
  */
 export type MatchReason =
   | 'computed'
@@ -331,6 +407,7 @@ export type MatchReason =
   | 'not-utf8'
   | 'duplicate'
   | 'key'
+  | 'shadow'
   | 'stamp-other'
   | 'unaligned'
   | 'placeholder';

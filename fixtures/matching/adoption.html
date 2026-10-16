@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Adoption agency clone</title>
+</head>
+<body>
+<section class="slide">
+<p id="note"></p>
+<ul><li><em>Ship the beta<li>Next step</ul>
+<button id="b"></button>
+</section>
+<script>
+// The unclosed <em> is reconstructed in the next <li>: both texts are index 0 of the same stamp, so the walk
+// drops them (review finding 1). The button shows the same text from a literal.
+document.getElementById('b').textContent = 'Ship the beta';
+// Control: text only this literal holds stays exact and passes the probe.
+document.getElementById('note').textContent = 'Only the script says this';
+</script>
+</body>
+</html>

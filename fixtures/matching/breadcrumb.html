@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Breadcrumb</title>
+</head>
+<body>
+<section class="slide">
+<p id="crumb"><a href="#h">Home</a> / <a href="#g">Guide</a> / <a href="#a">API</a></p>
+<p id="note"></p>
+</section>
+<script>
+// A text node added in front shifts the live textIndex of both separators (review finding 2).
+document.getElementById('crumb').prepend('You are here: ');
+document.getElementById('note').textContent = 'Only the script says this';
+</script>
+</body>
+</html>

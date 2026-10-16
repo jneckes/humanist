@@ -5,7 +5,7 @@
 
 import { isWhitespaceOnly } from './text';
 import type { DomTextNode } from './types';
-import type { CollectResult, FindResult, LocateResult, NodeLocator, WalkBlock, WalkNode } from './ipc';
+import type { CollectResult, FindResult, LocateResult, NodeLocator, WalkBlock, WalkNode, WalkTree } from './ipc';
 
 /** Elements whose text is never page text (section 10 step 4; 8 TextPositionSelector). */
 const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template']);
@@ -18,6 +18,23 @@ const STAMP_RE = /^bl-[0-9]{1,9}$/;
 
 /** Most matches `find` returns; the rest is reported as truncated. */
 export const FIND_LIMIT = 500;
+
+/**
+ * DomTextNode.texts (decision D-b) is omitted for a parent with more non-whitespace text nodes than this, or
+ * more text (UTF-16 code units) than TEXTS_MAX_CHARS: the matcher's step 1 then falls through to step 2, which
+ * is safe. The render service applies the same caps to what it accepts.
+ */
+export const TEXTS_MAX_NODES = 256;
+export const TEXTS_MAX_CHARS = 256 * 1024;
+/**
+ * Each node carries its own copy of its parent's texts in a reply, so one reply carries at most this much
+ * texts in all (UTF-16 code units); later nodes omit texts. Keeps a page with many long sibling text nodes
+ * from pushing a collect reply past the IPC limits (ipc-guard sanitizeJson).
+ */
+const TEXTS_REPLY_BUDGET = 8 * 1024 * 1024;
+
+/** Per collect/find call: each parent's texts (and their size), or null when over the caps. */
+export type TextsCache = Map<object, { texts: string[]; chars: number } | null>;
 
 const TEXT_NODE = 3;
 const ELEMENT_NODE = 1;
@@ -50,9 +67,43 @@ export function stampOf(el: Element | null): string | null {
   return v !== null && STAMP_RE.test(v) ? v : null;
 }
 
-/** The DomTextNode the matcher takes (core/types.ts). */
-export function describeTextNode(node: Text): DomTextNode {
-  return { stamp: stampOf(node.parentElement), textIndex: textIndexOf(node), data: node.data };
+/**
+ * The data of every non-whitespace-only direct child text node of `parent`, in document order (the mapper's
+ * textIndex order), or null when the parent has more than TEXTS_MAX_NODES of them or more than
+ * TEXTS_MAX_CHARS of text. Computed once per parent per call when a cache is given.
+ */
+function parentTexts(parent: Node, cache?: TextsCache): { texts: string[]; chars: number } | null {
+  const hit = cache?.get(parent);
+  if (hit !== undefined) return hit;
+  let out: { texts: string[]; chars: number } | null = { texts: [], chars: 0 };
+  const kids = parent.childNodes;
+  for (let i = 0; i < kids.length; i++) {
+    const c = kids[i];
+    if (c.nodeType !== TEXT_NODE) continue;
+    const data = (c as Text).data;
+    if (isWhitespaceOnly(data)) continue;
+    out.texts.push(data);
+    out.chars += data.length;
+    if (out.texts.length > TEXTS_MAX_NODES || out.chars > TEXTS_MAX_CHARS) {
+      out = null;
+      break;
+    }
+  }
+  cache?.set(parent, out);
+  return out;
+}
+
+/**
+ * The DomTextNode the matcher takes (core/types.ts). `texts` is the parent's live non-whitespace text nodes
+ * (texts[textIndex] === data), so the matcher can check that the element still holds the stamp's source runs
+ * before it trusts the own stamped run (9.2 Strategy 1 step 2; review finding 2, decision D-b).
+ */
+export function describeTextNode(node: Text, cache?: TextsCache): DomTextNode {
+  const out: DomTextNode = { stamp: stampOf(node.parentElement), textIndex: textIndexOf(node), data: node.data };
+  const parent = node.parentNode;
+  const t = parent ? parentTexts(parent, cache) : null;
+  if (t) out.texts = t.texts;
+  return out;
 }
 
 /**
@@ -208,12 +259,63 @@ export interface WalkOptions {
 }
 
 /**
+ * Where a text node lives (review finding 32). The walk enters open shadow roots and the documents of
+ * same-origin frames (srcdoc, about:blank, blob:), so that visible text is counted and a probe sentinel that
+ * lands there is seen. Closed shadow roots cannot be seen from the page at all, and a cross-origin frame's
+ * document is null (it is reported, not walked).
+ */
+interface Scope {
+  tree: WalkTree;
+  /** The scope's own window: computed styles of its elements, and a frame's viewport. */
+  win: Window;
+  /** Where the scope's viewport sits in the top viewport (a frame's content box), CSS px. */
+  ox: number;
+  oy: number;
+  /** The part of the top viewport the scope can paint into: the viewport, cut by every frame's content box. */
+  clip: { left: number; top: number; right: number; bottom: number };
+  /** Every frame element on the way down is visible (its own rect and ancestors). */
+  shown: boolean;
+  /** Prepended to the CSS path of the scope's locators: '' for the document, else the host or frame path and a separator. */
+  prefix: string;
+  /** The top-document node that holds the scope (the outermost shadow host or frame), for slide numbers. */
+  anchor: Node | null;
+}
+
+/** The node's parent element; for text directly under a shadow root, the root's host. */
+function ownerElement(n: Node): Element | null {
+  const p = n.parentNode;
+  if (!p) return null;
+  if (p.nodeType === ELEMENT_NODE) return p as Element;
+  return (p as ShadowRoot).host ?? null;
+}
+
+/** The element's parent in the flat tree: its slot when slotted, else its parent, else its shadow root's host. */
+function flatParent(el: Element): Element | null {
+  const slot = (el as Element & { assignedSlot?: Element | null }).assignedSlot;
+  if (slot) return slot;
+  if (el.parentElement) return el.parentElement;
+  const p = el.parentNode;
+  return p && p.nodeType === 11 /* DOCUMENT_FRAGMENT_NODE */ ? ((p as ShadowRoot).host ?? null) : null;
+}
+
+/** getComputedStyle from the element's own window (a frame's elements are styled by the frame). */
+function styleOf(el: Element, fallback: Window): CSSStyleDeclaration {
+  const w = el.ownerDocument?.defaultView ?? fallback;
+  return w.getComputedStyle(el);
+}
+
+/**
  * The section 10 step 4 walk, and `find` / `locate` over the same rules. Keys are given once per node per
  * page load (a WeakMap), so the walker can count each node once across slides.
  */
 export class DomWalker {
   private readonly keys = new WeakMap<object, number>();
   private nextKey = 1;
+  /** Per collect/find call: each parent's texts, and how much texts the reply may still carry. */
+  private textsCache: TextsCache = new Map();
+  private textsBudget = TEXTS_REPLY_BUDGET;
+  /** Per collect/find call: frames whose document the page cannot read, with the scope they sit in. */
+  private opaqueFrames: { frame: Element; scope: Scope }[] = [];
 
   constructor(
     private readonly win: Window,
@@ -240,75 +342,186 @@ export class DomWalker {
     return host !== null && host !== undefined && el === host;
   }
 
-  /** Every text node under the root, in document order, not inside the overlay host or a skipped element. */
-  private *textNodes(): Generator<Text> {
-    const doc = this.doc;
-    const root = doc.documentElement;
-    if (!root) return;
+  private topScope(): Scope {
+    return { tree: 'document', win: this.win, ox: 0, oy: 0, clip: { left: 0, top: 0, right: this.win.innerWidth, bottom: this.win.innerHeight }, shown: true, prefix: '', anchor: null };
+  }
+
+  /** Starts a collect/find/locate call: fresh per-call caches. */
+  private begin(): void {
+    this.chainCache = new Map();
+    this.clipCache = new Map();
+    this.textsCache = new Map();
+    this.textsBudget = TEXTS_REPLY_BUDGET;
+    this.opaqueFrames = [];
+  }
+
+  /**
+   * Every text node of the document in document order, not inside the overlay host or a skipped element,
+   * with the open shadow roots and same-origin frame documents it holds (review finding 32).
+   */
+  private *textNodes(): Generator<{ t: Text; scope: Scope }> {
+    const root = this.doc.documentElement;
+    if (root) yield* this.walkTree(root, this.topScope(), 0);
+  }
+
+  private *walkTree(root: Node, scope: Scope, depth: number): Generator<{ t: Text; scope: Scope }> {
+    const doc = root.nodeType === 9 ? (root as Document) : root.ownerDocument;
+    if (!doc) return;
     const skip = (el: Element) => this.isSkipElement(el);
     const walker = doc.createTreeWalker(root, 0x1 | 0x4 /* SHOW_ELEMENT | SHOW_TEXT */, {
       acceptNode(n: Node): number {
-        if (n.nodeType === ELEMENT_NODE) return skip(n as Element) ? 2 /* FILTER_REJECT */ : 3 /* FILTER_SKIP */;
+        if (n.nodeType === ELEMENT_NODE) return skip(n as Element) ? 2 /* FILTER_REJECT */ : 1; /* FILTER_ACCEPT */
         return 1; /* FILTER_ACCEPT */
       },
     });
-    for (let n = walker.nextNode(); n; n = walker.nextNode()) yield n as Text;
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+      if (n.nodeType === TEXT_NODE) {
+        yield { t: n as Text, scope };
+        continue;
+      }
+      if (depth >= 16) continue;
+      const el = n as Element;
+      // Open shadow roots only: a closed root is null here, as it is to the page.
+      const sr = (el as Element & { shadowRoot?: ShadowRoot | null }).shadowRoot;
+      if (sr) yield* this.walkTree(sr, { ...scope, tree: 'shadow', prefix: `${scope.prefix}${cssPath(el)} >>> `, anchor: scope.anchor ?? el }, depth + 1);
+      if (el.localName === 'iframe' || el.localName === 'frame') yield* this.frameTree(el, scope, depth + 1);
+    }
+  }
+
+  /** A frame's document, when the page can read it (same origin), positioned in the top viewport. */
+  private *frameTree(frame: Element, scope: Scope, depth: number): Generator<{ t: Text; scope: Scope }> {
+    let fdoc: Document | null = null;
+    try {
+      fdoc = (frame as HTMLIFrameElement).contentDocument;
+    } catch {
+      fdoc = null;
+    }
+    const fwin = fdoc?.defaultView ?? null;
+    if (!fdoc || !fwin || !fdoc.documentElement) {
+      // Cross-origin (data:, the -files origin, the network) or not loaded: reported, never walked.
+      if (!fdoc) this.opaqueFrames.push({ frame, scope });
+      return;
+    }
+    const r = frame.getBoundingClientRect();
+    const cs = styleOf(frame, scope.win);
+    const pl = parseFloat(cs.paddingLeft) || 0;
+    const pt = parseFloat(cs.paddingTop) || 0;
+    const pr = parseFloat(cs.paddingRight) || 0;
+    const pb = parseFloat(cs.paddingBottom) || 0;
+    const fe = frame as HTMLElement;
+    const ox = scope.ox + r.left + (fe.clientLeft || 0) + pl;
+    const oy = scope.oy + r.top + (fe.clientTop || 0) + pt;
+    const w = Math.max(0, (fe.clientWidth || 0) - pl - pr);
+    const h = Math.max(0, (fe.clientHeight || 0) - pt - pb);
+    const clip = {
+      left: Math.max(scope.clip.left, ox),
+      top: Math.max(scope.clip.top, oy),
+      right: Math.min(scope.clip.right, ox + w),
+      bottom: Math.min(scope.clip.bottom, oy + h),
+    };
+    const shown = scope.shown && r.width > 0 && r.height > 0 && this.chainOk(frame, scope.win);
+    const inner: Scope = { tree: 'frame', win: fwin, ox, oy, clip, shown, prefix: `${scope.prefix}${cssPath(frame)} >>frame>> `, anchor: scope.anchor ?? frame };
+    yield* this.walkTree(fdoc.documentElement, inner, depth);
   }
 
   /**
    * A per-call cache of "every ancestor-or-self passes": `visibility: visible`, opacity above 0, not a
-   * skipped element (section 10 step 4), and not clipped away (WalkOptions.skipClipped).
+   * skipped element (section 10 step 4), and not clipped away (WalkOptions.skipClipped). The chain follows
+   * the flat tree, so it crosses shadow roots to their hosts; a frame's own chain is checked in its scope.
    */
   private chainCache = new Map<Element, boolean>();
 
-  private chainOk(el: Element | null): boolean {
+  private chainOk(el: Element | null, fallback: Window = this.win): boolean {
     if (!el) return true;
     const cached = this.chainCache.get(el);
     if (cached !== undefined) return cached;
     let ok = !this.isSkipElement(el);
     if (ok) {
-      const cs = this.win.getComputedStyle(el);
+      const cs = styleOf(el, fallback);
       ok = cs.visibility === 'visible' && !(parseFloat(cs.opacity) <= 0);
       if (ok && this.opts.skipClipped !== false && (cs.position === 'absolute' || cs.position === 'fixed')) {
         ok = !zeroAreaClip(cs.clip);
       }
     }
-    if (ok) ok = this.chainOk(el.parentElement);
+    if (ok) ok = this.chainOk(flatParent(el), fallback);
     this.chainCache.set(el, ok);
     return ok;
   }
 
-  /** Section 10 step 4 for one text node (the data test, the parent's rect, every ancestor's style). */
+  /** Per-call cache: the element or an ancestor is absolutely or fixed positioned and clipped to a zero area. */
+  private clipCache = new Map<Element, boolean>();
+
+  private inZeroClip(el: Element | null, fallback: Window = this.win): boolean {
+    if (!el) return false;
+    const cached = this.clipCache.get(el);
+    if (cached !== undefined) return cached;
+    const cs = styleOf(el, fallback);
+    const v = ((cs.position === 'absolute' || cs.position === 'fixed') && zeroAreaClip(cs.clip)) || this.inZeroClip(flatParent(el), fallback);
+    this.clipCache.set(el, v);
+    return v;
+  }
+
+  /** Section 10 step 4 for one text node of the top document (the data test, the parent's rect, every ancestor's style). */
   isVisible(node: Text): boolean {
+    return this.visibleIn(node, this.topScope());
+  }
+
+  private visibleIn(node: Text, scope: Scope): boolean {
     if (isWhitespaceOnly(node.data)) return false;
-    const parent = node.parentElement;
+    if (!scope.shown) return false;
+    const parent = ownerElement(node);
     if (!parent || !parent.isConnected) return false;
     const r = parent.getBoundingClientRect();
     if (!(r.width > 0 && r.height > 0)) return false;
-    // "A non-zero rect inside the viewport": any overlap with the viewport counts.
-    if (!(r.right > 0 && r.bottom > 0 && r.left < this.win.innerWidth && r.top < this.win.innerHeight)) return false;
-    return this.chainOk(parent);
+    // "A non-zero rect inside the viewport": any overlap with the viewport (and every frame it is in) counts.
+    const c = scope.clip;
+    if (!(r.right + scope.ox > c.left && r.bottom + scope.oy > c.top && r.left + scope.ox < c.right && r.top + scope.oy < c.bottom)) return false;
+    return this.chainOk(parent, scope.win);
   }
 
-  private nodeRect(node: Text): { x: number; y: number; w: number; h: number } {
-    const range = this.doc.createRange();
+  private nodeRect(node: Text, scope: Scope): { x: number; y: number; w: number; h: number } {
+    const range = (node.ownerDocument ?? this.doc).createRange();
     range.selectNodeContents(node);
     let r = range.getBoundingClientRect();
-    if (!(r.width > 0 || r.height > 0)) r = node.parentElement!.getBoundingClientRect();
-    return { x: round2(r.left), y: round2(r.top), w: round2(r.width), h: round2(r.height) };
+    if (!(r.width > 0 || r.height > 0)) r = ownerElement(node)!.getBoundingClientRect();
+    return { x: round2(r.left + scope.ox), y: round2(r.top + scope.oy), w: round2(r.width), h: round2(r.height) };
   }
 
-  private walkNode(node: Text): WalkNode | null {
-    const locator = makeLocator(node);
+  /** The node's DomTextNode, with its parent's texts while the reply's texts budget lasts. */
+  private describe(node: Text): DomTextNode {
+    const d = describeTextNode(node, this.textsCache);
+    if (d.texts) {
+      const t = node.parentNode ? this.textsCache.get(node.parentNode) : null;
+      const cost = t ? t.chars + t.texts.length : 0;
+      if (cost > this.textsBudget) delete d.texts;
+      else this.textsBudget -= cost;
+    }
+    return d;
+  }
+
+  /** The node's locator; in a shadow root or frame, its CSS path follows the host or frame path (never resolvable). */
+  private locatorIn(node: Text, scope: Scope): NodeLocator | null {
+    if (scope.tree === 'document') return makeLocator(node);
+    const parent = node.parentElement;
+    if (parent) return { stamp: stampOf(parent), cssPath: scope.prefix + cssPath(parent), childIndex: childTextIndexOf(node) };
+    // Text directly under a shadow root.
+    return ownerElement(node) ? { stamp: null, cssPath: scope.prefix + '#shadow-root', childIndex: childTextIndexOf(node) } : null;
+  }
+
+  private walkNode(node: Text, scope: Scope, slideOf?: (n: Node) => number | null): WalkNode | null {
+    const locator = this.locatorIn(node, scope);
     if (!locator) return null;
-    return { key: this.keyOf(node), locator, node: describeTextNode(node), rect: this.nodeRect(node) };
+    const w: WalkNode = { key: this.keyOf(node), locator, node: this.describe(node), rect: this.nodeRect(node, scope) };
+    if (scope.tree !== 'document') w.tree = scope.tree;
+    if (slideOf) w.slide = slideOf(scope.anchor ?? node);
+    return w;
   }
 
   /** The nearest ancestor-or-self whose display is not `inline` or `contents`: the node's block. */
   private blockOf(el: Element): Element {
     let cur: Element = el;
     while (cur.parentElement) {
-      const d = this.win.getComputedStyle(cur).display;
+      const d = styleOf(cur, this.win).display;
       if (d !== 'inline' && d !== 'contents') return cur;
       cur = cur.parentElement;
     }
@@ -327,17 +540,20 @@ export class DomWalker {
     return false;
   }
 
-  /** Visible text nodes and their blocks right now (RenderCmd collect; section 10 steps 4-5). */
-  collect(): CollectResult {
-    this.chainCache = new Map();
+  /**
+   * Visible text nodes and their blocks right now (RenderCmd collect; section 10 steps 4-5). `slideOf` gives
+   * each node the slide or block that contains it (review finding 35).
+   */
+  collect(slideOf?: (n: Node) => number | null): CollectResult {
+    this.begin();
     const nodes: WalkNode[] = [];
     const byBlock = new Map<Element, number[]>();
-    for (const t of this.textNodes()) {
-      if (!this.isVisible(t)) continue;
-      const w = this.walkNode(t);
+    for (const { t, scope } of this.textNodes()) {
+      if (!this.visibleIn(t, scope)) continue;
+      const w = this.walkNode(t, scope, slideOf);
       if (!w) continue;
       nodes.push(w);
-      const block = this.blockOf(t.parentElement!);
+      const block = this.blockOf(ownerElement(t)!);
       let keys = byBlock.get(block);
       if (!keys) byBlock.set(block, (keys = []));
       keys.push(w.key);
@@ -346,39 +562,65 @@ export class DomWalker {
     for (const [block, nodeKeys] of byBlock) {
       blocks.push({ key: this.keyOf(block), hasInline: this.hasInline(block), nodeKeys });
     }
-    return { nodes, blocks };
+    const out: CollectResult = { nodes, blocks };
+    // Visible frames whose text the page cannot read: their content is visible but uncounted.
+    const opaque: number[] = [];
+    for (const { frame, scope } of this.opaqueFrames) {
+      if (!scope.shown) continue;
+      const r = frame.getBoundingClientRect();
+      if (!(r.width > 0 && r.height > 0)) continue;
+      const c = scope.clip;
+      if (!(r.right + scope.ox > c.left && r.bottom + scope.oy > c.top && r.left + scope.ox < c.right && r.top + scope.oy < c.bottom)) continue;
+      if (this.chainOk(frame, scope.win)) opaque.push(this.keyOf(frame));
+    }
+    if (opaque.length > 0) out.crossOriginFrames = opaque;
+    return out;
   }
 
-  /** Every text node whose data contains `needle`, visible or not (RenderCmd find). */
+  /**
+   * Every text node whose data contains `needle`, visible or not (RenderCmd find), in the document, its open
+   * shadow roots and its same-origin frames. Each match says whether it is clipped to a zero area (the
+   * skipClipped rule, which the probe uses to tell reveal.js's live region from a hidden copy; finding 31).
+   */
   find(needle: string, slideOf: (n: Node) => number | null = () => null): FindResult {
-    this.chainCache = new Map();
+    this.begin();
     const matches: FindResult['matches'] = [];
     if (!needle) return { matches, truncated: false };
     let truncated = false;
-    for (const t of this.textNodes()) {
+    for (const { t, scope } of this.textNodes()) {
       if (!t.data.includes(needle)) continue;
       if (matches.length >= FIND_LIMIT) {
         truncated = true;
         break;
       }
-      const locator = makeLocator(t);
+      const locator = this.locatorIn(t, scope);
       if (!locator) continue;
-      matches.push({ key: this.keyOf(t), locator, node: describeTextNode(t), visible: this.isVisible(t), slide: slideOf(t) });
+      const m: FindResult['matches'][number] = {
+        key: this.keyOf(t),
+        locator,
+        node: this.describe(t),
+        visible: this.visibleIn(t, scope),
+        slide: slideOf(scope.anchor ?? t),
+        clipped: this.inZeroClip(ownerElement(t), scope.win),
+      };
+      if (scope.tree !== 'document') m.tree = scope.tree;
+      matches.push(m);
     }
     return { matches, truncated };
   }
 
   /** The text node at a locator (RenderCmd locate). */
   locate(loc: NodeLocator, slideOf: (n: Node) => number | null = () => null): LocateResult {
-    this.chainCache = new Map();
+    this.begin();
     const t = resolveLocator(this.doc, loc);
     if (!t) return { found: false, node: null, visible: false, slide: null };
     const host = this.opts.host?.();
     for (let a: Element | null = t.parentElement; a; a = a.parentElement) {
       if (SKIP_TAGS.has(a.localName) || (host && a === host)) return { found: false, node: null, visible: false, slide: null };
     }
-    const w = this.walkNode(t);
-    return { found: w !== null, node: w, visible: this.isVisible(t), slide: slideOf(t) };
+    const scope = this.topScope();
+    const w = this.walkNode(t, scope);
+    return { found: w !== null, node: w, visible: this.visibleIn(t, scope), slide: slideOf(t) };
   }
 }
 

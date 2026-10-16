@@ -81,13 +81,18 @@ function client(map: DeckMap): ClientMap {
   };
 }
 
-const node = (data: string, stamp: string | null = null, textIndex = 0): DomTextNode => ({ stamp, textIndex, data });
+/**
+ * A DOM text node. A stamped node carries `texts`, the element's non-whitespace direct text nodes as the DOM
+ * holds them (D-b): the own run is only trusted while they agree with the source.
+ */
+const node = (data: string, stamp: string | null = null, textIndex = 0, texts?: string[]): DomTextNode =>
+  texts ? { stamp, textIndex, data, texts } : { stamp, textIndex, data };
 
 describe('matcher: stamped runs', () => {
   it('maps a node to its own stamped run when the text is equal', () => {
     const h = html('bl-1', 0, 'Quarterly results');
     const m = createMatcher(deck([h], []));
-    const r = m(node('Quarterly results', 'bl-1', 0));
+    const r = m(node('Quarterly results', 'bl-1', 0, ['Quarterly results']));
     expect(r.confidence).toBe('exact');
     expect(r.runId).toBe('h:bl-1:0');
     expect(r.strategy).toBe('html-text');
@@ -99,7 +104,7 @@ describe('matcher: stamped runs', () => {
     const a = html('bl-2', 0, 'Before ');
     const b = html('bl-2', 1, ' after');
     const m = createMatcher(deck([a, b], []));
-    expect(m(node(' after', 'bl-2', 1)).runId).toBe(b.id);
+    expect(m(node(' after', 'bl-2', 1, ['Before ', ' after'])).runId).toBe(b.id);
     // Same stamp, wrong index: the run is someone else's text.
     const r = m(node(' after', 'bl-2', 0));
     expect(r.confidence).toBe('ambiguous');
@@ -108,7 +113,7 @@ describe('matcher: stamped runs', () => {
 
   it('keeps own-run matches exact even when other headings share the text', () => {
     const m = createMatcher(deck([html('bl-1', 0, 'Revenue'), html('bl-7', 0, 'Revenue')], []));
-    expect(m(node('Revenue', 'bl-7')).runId).toBe('h:bl-7:0');
+    expect(m(node('Revenue', 'bl-7', 0, ['Revenue'])).runId).toBe('h:bl-7:0');
     // Without a stamp the same text has two candidates.
     const r = m(node('Revenue'));
     expect(r.confidence).toBe('ambiguous');
@@ -118,7 +123,7 @@ describe('matcher: stamped runs', () => {
 
   it('is none for an unaligned own run', () => {
     const m = createMatcher(deck([html('bl-1', 0, 'Odd &text', { aligned: false })], []));
-    const r = m(node('Odd &text', 'bl-1'));
+    const r = m(node('Odd &text', 'bl-1', 0, ['Odd &text']));
     expect(r.confidence).toBe('none');
     expect(r.reason).toBe('unaligned');
     expect(r.runId).toBeNull();
@@ -128,7 +133,7 @@ describe('matcher: stamped runs', () => {
     const h = html('bl-1', 0, 'Loading');
     const l = lit('Loading');
     const m = createMatcher(deck([h], [l]));
-    const r = m(node('Loading', 'bl-1'));
+    const r = m(node('Loading', 'bl-1', 0, ['Loading']));
     expect(r.confidence).toBe('ambiguous');
     expect(r.reason).toBe('duplicate');
     expect(r.candidates.map((c) => c.runId).sort()).toEqual([h.id, l.id].sort());
@@ -245,8 +250,8 @@ describe('matcher: with the real mapper (buildMap)', () => {
   const p = map.runs.find((r) => r.value === 'Revenue grew ')!;
 
   it.each([
-    ['own stamped run, but a JSON value has the same text', { stamp: h1.stamp, data: 'Quarterly results' }, 'ambiguous', 'duplicate'],
-    ['own stamped run', { stamp: p.stamp, data: 'Revenue grew ' }, 'exact', undefined],
+    ['own stamped run, but a JSON value has the same text', { stamp: h1.stamp, data: 'Quarterly results', texts: ['Quarterly results'] }, 'ambiguous', 'duplicate'],
+    ['own stamped run', { stamp: p.stamp, data: 'Revenue grew ', texts: ['Revenue grew ', ' in Q3'] }, 'exact', undefined],
     ['a JS string', { data: 'Market size' }, 'exact', undefined],
     ['a text node of an HTML literal', { data: 'TAM is ' }, 'exact', undefined],
     ['a text node with a reference', { data: ' & growing' }, 'exact', undefined],
@@ -358,7 +363,7 @@ describe('matcher: ClientMap', () => {
     const u = lit('Bad', { aligned: false });
     const map = client(deck([h], [l, u]));
     const m = createMatcher(map);
-    expect(m(node('Title', 'bl-1'))).toEqual({
+    expect(m(node('Title', 'bl-1', 0, ['Title']))).toEqual({
       confidence: 'exact',
       runId: h.id,
       strategy: 'html-text',
@@ -391,7 +396,8 @@ describe('matcher: scale', () => {
     const t0 = performance.now();
     let exact = 0;
     for (let i = 0; i < 4000; i++) {
-      if (m(node(`Heading number ${i} of the deck`, `bl-${i}`)).confidence === 'exact') exact++;
+      const h = `Heading number ${i} of the deck`;
+      if (m(node(h, `bl-${i}`, 0, [h])).confidence === 'exact') exact++;
       if (m(node(`Literal text ${i} with some words`)).confidence === 'exact') exact++;
     }
     // Near misses go through the slower paths.
@@ -400,5 +406,69 @@ describe('matcher: scale', () => {
     const ms = performance.now() - t0;
     expect(exact).toBe(8000);
     expect(ms).toBeLessThan(3000);
+  });
+});
+
+describe('matcher: the own stamped run is trusted only while the element’s text nodes agree with the source (finding 2, D-b)', () => {
+  // 9.2 Strategy 1 step 2: textIndex counts the element's non-whitespace direct text nodes, and parse5 and the
+  // DOM count it the same way only until a script adds or removes one. DomTextNode.texts is what the DOM holds
+  // now; step 1 accepts the own run only when it agrees with the stamp's source runs.
+  const src = '<!doctype html><body><p id="crumb"><a href="#h">Home</a> / <a href="#g">Guide</a> / <a href="#a">API</a></p><p>Quarterly results</p><p>Before <b>bold</b> after</p></body>';
+  const map = buildMap(src, { version: 'v', utf8: true });
+  const matchers = [createMatcher(map), createMatcher(toClientMap(map))];
+  const crumb = map.runs.filter((r) => r.value === ' / ');
+  const plain = map.runs.find((r) => r.value === 'Quarterly results')!;
+  const after = map.runs.find((r) => r.value === ' after')!;
+
+  it('the breadcrumb after p.prepend(‘You are here: ’): the first separator is not exact to the second', () => {
+    expect(crumb.map((r) => r.textIndex)).toEqual([0, 1]);
+    const texts = ['You are here: ', ' / ', ' / '];
+    for (const m of matchers) {
+      // The live DOM gives the first separator textIndex 1, the second separator's source index.
+      const first = m({ stamp: crumb[0].stamp, textIndex: 1, data: ' / ', texts });
+      expect(first.confidence).not.toBe('exact');
+      expect(first).toMatchObject({ confidence: 'ambiguous', reason: 'duplicate' });
+      expect(first.candidates.map((c) => c.runId)).toEqual(crumb.map((r) => r.id));
+      expect(m({ stamp: crumb[0].stamp, textIndex: 2, data: ' / ', texts }).confidence).toBe('ambiguous');
+      // The prepended text itself has no run.
+      expect(m({ stamp: crumb[0].stamp, textIndex: 0, data: 'You are here: ', texts }).confidence).toBe('none');
+    }
+  });
+
+  it('without the prepend both separators are ambiguous: another run of the element has the same text', () => {
+    const texts = [' / ', ' / '];
+    for (const m of matchers) {
+      for (const k of [0, 1]) {
+        const r = m({ stamp: crumb[0].stamp, textIndex: k, data: ' / ', texts });
+        expect(r).toMatchObject({ confidence: 'ambiguous', reason: 'duplicate' });
+        expect(r.candidates.map((c) => c.runId).sort()).toEqual(crumb.map((r) => r.id).sort());
+      }
+    }
+  });
+
+  it('a paragraph whose text nodes match the source stays exact', () => {
+    for (const m of matchers) {
+      expect(m({ stamp: plain.stamp, textIndex: 0, data: 'Quarterly results', texts: ['Quarterly results'] })).toMatchObject({ confidence: 'exact', runId: plain.id });
+      expect(m({ stamp: after.stamp, textIndex: 1, data: ' after', texts: ['Before ', ' after'] })).toMatchObject({ confidence: 'exact', runId: after.id });
+    }
+  });
+
+  it('falls through to step 2 when texts are absent, malformed or disagree with the source', () => {
+    for (const m of matchers) {
+      for (const texts of [undefined, ['Loading', 'Before ', ' after'], ['Before'], ['Changed ', ' after'], [' after'], 'Before  after' as unknown as string[], [1, ' after'] as unknown as string[]]) {
+        const r = m({ stamp: after.stamp, textIndex: 1, data: ' after', texts });
+        expect(r, JSON.stringify(texts)).toMatchObject({ confidence: 'ambiguous', reason: 'stamp-other' });
+      }
+    }
+  });
+
+  it('falls through when the stamp’s source runs have a gap (a text index the mapper dropped)', () => {
+    // <b> is reconstructed in the second <p>: its index 0 is held by two elements and dropped, index 1 is kept.
+    const g = buildMap('<body><p><b>x</p><p>y<!---->z', { version: 'v', utf8: true });
+    const z = g.runs.find((r) => r.value === 'z')!;
+    expect(z.textIndex).toBe(1);
+    for (const m of [createMatcher(g), createMatcher(toClientMap(g))]) {
+      expect(m({ stamp: z.stamp, textIndex: 1, data: 'z', texts: ['y', 'z'] })).toMatchObject({ confidence: 'ambiguous', reason: 'stamp-other' });
+    }
   });
 });

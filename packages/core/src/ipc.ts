@@ -130,7 +130,13 @@ export type RenderCmd =
   | { type: 'scroll-blocks' } // scrolling documents: the blocks to scrollIntoView
   // Added by preload: 6.7 Index replay fallback, a synthetic keydown + keyup on the focused element (a deck that
   // ignores untrusted keys does not move, and main reports navOk: false).
-  | { type: 'key'; key: 'ArrowRight' | 'ArrowLeft' | 'PageDown' | 'PageUp' | ' ' };
+  | { type: 'key'; key: 'ArrowRight' | 'ArrowLeft' | 'PageDown' | 'PageUp' | ' ' }
+  // Added by map-walk-probe (review finding 33): the keydowns the page's window has seen since this load, from a
+  // capture listener the render agent registers at preload start, before any page script (KeydownsResult).
+  | { type: 'keydowns' }
+  // Added by map-walk-probe (review finding 34): window.scrollTo(0, y), so a scrolling or single-page walk can
+  // step through the whole document and the probe can replay a stop at the same offset (ScrollToResult).
+  | { type: 'scroll-to'; y: number };
 
 export interface RenderRequest {
   reqId: number;
@@ -196,7 +202,20 @@ export interface SettleResult {
 
 /** `find`: every text node whose data contains the needle, visible or not (6.9 Find). */
 export interface FindResult {
-  matches: { key: number; locator: NodeLocator; node: DomTextNode; visible: boolean; slide: number | null }[];
+  matches: {
+    key: number;
+    locator: NodeLocator;
+    node: DomTextNode;
+    visible: boolean;
+    slide: number | null;
+    /**
+     * Added by map-walk-probe (review finding 31): the node sits inside an absolutely or fixed positioned
+     * element clipped to a zero area (the walk's skipClipped rule; reveal.js's `.aria-status`, F17).
+     */
+    clipped?: boolean;
+    /** Added by map-walk-probe (review finding 32): where the node lives; absent means 'document'. */
+    tree?: WalkTree;
+  }[];
   /** More than the reply limit matched; the list is cut. */
   truncated: boolean;
 }
@@ -220,6 +239,21 @@ export interface KeyResult {
   dispatched: boolean;
   /** The current slide after waiting up to 1 s for it to change. */
   current: number;
+}
+
+/** Added by map-walk-probe. `keydowns`: keydown events the page's window saw since this load (6.7 Index replay). */
+export interface KeydownsResult {
+  /** Trusted keydowns (sendInputEvent reached the page). */
+  trusted: number;
+  all: number;
+}
+
+/** Added by map-walk-probe. `scroll-to`: where the document is after window.scrollTo(0, y) (CSS px). */
+export interface ScrollToResult {
+  scrollY: number;
+  innerHeight: number;
+  /** The document's scroll height: the walk is done when scrollY + innerHeight reaches it. */
+  scrollHeight: number;
 }
 
 // Added by preload: payloads of the MainToDeck channels other than init and renderRequest.
@@ -257,12 +291,27 @@ export interface NodeLocator {
   childIndex: number;
 }
 
+/**
+ * Added by map-walk-probe (review finding 32): the tree a text node lives in. `shadow`: an open shadow root;
+ * `frame`: a same-origin frame's document. Such text is counted but never written (section 7: text in iframes
+ * is pin only), and its locator's cssPath joins the host or frame path with ` >>> ` or ` >>frame>> `.
+ */
+export type WalkTree = 'document' | 'shadow' | 'frame';
+
 export interface WalkNode {
   /** Unique per page load; the walker counts each node once across slides by this key. */
   key: number;
   locator: NodeLocator;
   node: DomTextNode;
+  /** In the top document's viewport (CSS px); a frame's own position is added. */
   rect: { x: number; y: number; w: number; h: number };
+  /** Added by map-walk-probe: absent means 'document'. */
+  tree?: WalkTree;
+  /**
+   * Added by map-walk-probe (review finding 35): the slide or block that contains the node (9.4 slideIndexOf),
+   * null when none does; absent when the agent has no slide model.
+   */
+  slide?: number | null;
 }
 
 export interface WalkBlock {
@@ -276,6 +325,12 @@ export interface WalkBlock {
 export interface CollectResult {
   nodes: WalkNode[];
   blocks: WalkBlock[];
+  /**
+   * Added by map-walk-probe (review finding 32): keys of visible frames whose document the page cannot read
+   * (cross-origin: data:, `-files`, the network), so their text is not counted. Closed shadow roots cannot be
+   * seen from the page at all.
+   */
+  crossOriginFrames?: number[];
 }
 
 // ----------------------------------------------------------------- shell (contextBridge window.blueline)

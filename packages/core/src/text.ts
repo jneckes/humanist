@@ -59,6 +59,15 @@ export function isWhitespaceOnly(s: string): boolean {
   return true;
 }
 
+/**
+ * Counts, dates, times, prices: text made only of digits and number punctuation (section 7 "computed values").
+ * The matcher explains such a node as `computed`; the mapper lets a literal with such text be `exact` only
+ * when its text occurs exactly once in the file (review finding 3).
+ */
+export function looksComputed(data: string): boolean {
+  return /\d/.test(data) && /^[\s\d.,:/%+\-\u2212\u2013$\u20ac\u00a3\u00a5()]+$/.test(data);
+}
+
 /** The file's dominant existing line ending; new line breaks are written with it (9.2 rule 4). */
 export function detectLineEnding(src: string): LineEnding {
   let crlf = 0;

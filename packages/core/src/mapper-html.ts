@@ -20,12 +20,22 @@
 //     MathML, also parse differently.
 // Everything parsed after such a point may sit elsewhere in the page, so each run that ends after the first
 // one is kept (for uniqueness) but unaligned: it is never written.
+//
+// Text the walk never records as a run is still page text, so it must keep an equal literal from looking
+// unique (9.2 Strategy 2 step 3, "that run occurs once in the file"; review findings 0 and 1, decision D-a).
+// It is returned as shadow values (DeckMap.shadows): document <template> content, the text of SKIP_TEXT
+// elements, script data blocks that are neither JS nor JSON, every attribute value (and the strings and
+// numbers of inline event handlers), and every Strategy 1 text the stamping drops (a text index held by two
+// parser clones, Noah's Ark groups, groups that cannot be stamped, a deck with a stripped stamp on a Noah's
+// Ark element, text under parser-invented elements). A run whose raw range lies inside another run's range
+// (foster-parented text merged before a <table>) is kept but unaligned (review finding 6).
 
 import { html as P5, Parser, type DefaultTreeAdapterMap, type DefaultTreeAdapterTypes, type Token } from 'parse5';
 import { htmlTextTable } from './html-tables';
+import { fragmentTextValues, jsShadowValues, scanJson, type FoundShadow } from './mapper-literals';
 import { findNotesBlockIn } from './notes-block';
 import { isHtmlWhitespace, isWhitespaceOnly, type LineIndex } from './text';
-import type { HtmlRun, HtmlTextOptions, ScriptInfo, ServedPlan } from './types';
+import type { HtmlRun, HtmlTextOptions, ScriptInfo, ServedPlan, ShadowKind } from './types';
 
 type Node = DefaultTreeAdapterTypes.Node;
 type Element = DefaultTreeAdapterTypes.Element;
@@ -124,6 +134,11 @@ export interface HtmlMapResult {
   keyValues: string[];
   parseErrors: { code: string; offset: number }[];
   served: ServedPlan;
+  /**
+   * Shadow values found by the walk (DeckMap.shadows; see the header): `start` indexes src, -1 when parse5
+   * gave no location. Empty for a deck that is not UTF-8 (nothing in it is ever exact).
+   */
+  shadows: FoundShadow[];
 }
 
 /** ASCII lowercase only, as HTML compares names and keywords. */
@@ -483,12 +498,30 @@ export function mapHtmlText(src: string, opts: HtmlMapOptions): HtmlMapResult {
   const keys: { value: string; attr: string; line: number }[] = [];
   const strip: { start: number; end: number }[] = [];
   const hints: { start: number; end: number; text: string }[] = [];
+  const shadows: FoundShadow[] = [];
+  /** Records a shadow value (D-a). A deck that is not UTF-8 has none: nothing in it is ever exact. */
+  const shadow = (value: string, kind: ShadowKind, start: number): void => {
+    if (opts.utf8 && !isWhitespaceOnly(value)) shadows.push({ value, kind, start });
+  };
+  /** A shadow value and, when it holds `<`, the text nodes of its fragment parse (a page may set it with innerHTML). */
+  const shadowWithMarkup = (value: string, kind: ShadowKind, start: number): void => {
+    shadow(value, kind, start);
+    if (opts.utf8 && value.includes('<')) for (const v of fragmentTextValues(value)) shadow(v, kind, start);
+  };
+  const textStart = (node: TextNode): number => (node.sourceCodeLocation ? s(t(node.sourceCodeLocation.startOffset)) : -1);
   for (const tag of parsed.tags) {
     const tagStart = t(tag.start);
     const tagEnd = t(tag.end);
     if (tagStart >= nbStart) continue; // nothing at or after the notes block is mapped
     for (const a of tag.attrs) {
       if (a.name === STAMP_ATTR || a.value === '') continue;
+      // Every attribute value is text a script may show (title, alt, aria-label, srcdoc, HTML tooltips), and
+      // an inline handler's strings and numbers are too: shadow values (D-a), whether or not they are keys.
+      const attrStart = s(a.start >= 0 ? t(a.start) : tagStart);
+      shadowWithMarkup(a.value, 'attribute', attrStart);
+      if (opts.utf8 && a.name.startsWith('on')) {
+        for (const v of jsShadowValues(a.value, 'event-handler', { functionBody: true }) ?? []) shadow(v.value, v.kind, attrStart);
+      }
       // SVG's xlink:href is an href too.
       const name = a.name === 'xlink:href' ? 'href' : a.name;
       if (!KEY_ATTRS.has(name) && !name.startsWith('data-')) continue;
@@ -562,7 +595,11 @@ export function mapHtmlText(src: string, opts: HtmlMapOptions): HtmlMapResult {
   };
   while (stack.length > 0) {
     const { node, noText } = stack.pop()!;
-    if (!isElement(node)) continue;
+    if (!isElement(node)) {
+      // Template content is inert and never stamped, but a script may clone it onto the page (D-a).
+      if (noText && isText(node)) shadow(node.value, 'template', textStart(node));
+      continue;
+    }
     const el = node;
     const loc = el.sourceCodeLocation;
     if (el.tagName === 'select' && el.namespaceURI === NS_HTML && loc && selectDiffers(el)) taint = Math.min(taint, loc.startOffset);
@@ -577,6 +614,7 @@ export function mapHtmlText(src: string, opts: HtmlMapOptions): HtmlMapResult {
         if (loc.endTag) contentEnd = t(loc.endTag.startOffset);
         else for (const c of el.childNodes) if (c.sourceCodeLocation) contentEnd = Math.max(contentEnd, t(c.sourceCodeLocation.endOffset));
         const end = loc.endTag ? t(loc.endOffset) : contentEnd;
+        const hasSrc = getAttr(el, 'src') !== null;
         scripts.push({
           index: scripts.length,
           start: s(start),
@@ -584,16 +622,36 @@ export function mapHtmlText(src: string, opts: HtmlMapOptions): HtmlMapResult {
           contentStart: s(contentStart),
           contentEnd: s(contentEnd),
           type,
-          hasSrc: getAttr(el, 'src') !== null,
+          hasSrc,
           kind,
           parsed: false,
         });
+        // A data block that is neither JS nor JSON (text/x-template, text/babel, text/markdown, ld+json, an
+        // SVG script) is never mapped, but a page may show it or what it holds: shadow values (D-a).
+        if (kind === 'other' && !hasSrc && opts.utf8) {
+          const data = el.childNodes.map((c) => (isText(c) ? c.value : '')).join('');
+          const at = s(contentStart);
+          shadowWithMarkup(data, 'script-data', at);
+          const json = scanJson(data);
+          if (json) {
+            for (const l of json.literals) shadow(l.cooked, 'script-data', at);
+            for (const k of json.keys) shadow(k.value, 'script-data', at);
+            for (const v of json.shadows) shadow(v.value, v.kind, at);
+          } else {
+            for (const v of jsShadowValues(data, 'script-data') ?? []) shadow(v.value, v.kind, at);
+          }
+        }
       }
     }
     if (el.tagName === 'template' && el.namespaceURI === NS_HTML) {
       // Template content is inert and never stamped (9.2 Strategy 1 step 4); its scripts are still listed.
       pushChildren((el as Template).content.childNodes, true);
       continue;
+    }
+    if (!noText && SKIP_TEXT.has(el.tagName) && el.tagName !== 'script') {
+      // Raw text, RCDATA and other text Strategy 1 never maps (<title>, <textarea>, <style>, <noscript>, …):
+      // a script may show it (document.title, textarea.value), so it is a shadow value (D-a).
+      for (const c of el.childNodes) if (isText(c)) shadowWithMarkup(c.value, 'raw-text', textStart(c));
     }
     if (!noText && !SKIP_TEXT.has(el.tagName)) {
       const texts: TextNode[] = [];
@@ -617,25 +675,42 @@ export function mapHtmlText(src: string, opts: HtmlMapOptions): HtmlMapResult {
   // element's text: refuse every stamp (only a hand-made or hostile file has this).
   let noahStripped = false;
   for (const attrs of parsed.noahRisky) if (attrs.some((a) => a.name === STAMP_ATTR)) noahStripped = true;
+  // Strategy 1 text that is not recorded as a run is still on the page: a shadow value (D-a), so an equal
+  // literal is never `exact`. Text under an element the parser invented (no location) is `invented-parent`.
+  const dropText = (el: Element, node: TextNode): void =>
+    shadow(node.value, el.sourceCodeLocation ? 'dropped-run' : 'invented-parent', textStart(node));
+  const dropGroup = (g: Group): void => {
+    for (const m of g.members) for (const node of m.texts) dropText(m.el, node);
+  };
   let n = 0;
-  if (opts.utf8 && !noahStripped) {
+  if (opts.utf8) {
     for (const g of groups.values()) {
-      if (parsed.noahRisky.has(g.attrs)) continue;
+      if (noahStripped || parsed.noahRisky.has(g.attrs)) {
+        dropGroup(g);
+        continue;
+      }
       // The element the start tag made (and any reconstructed clone) has the tag's location; clones from
       // the adoption agency have none. The parser invented elements with no location at all.
       const located = g.members.filter((m) => m.el.sourceCodeLocation?.startTag);
-      if (located.length === 0) continue;
+      if (located.length === 0) {
+        dropGroup(g);
+        continue;
+      }
       const tag = located[0].el.sourceCodeLocation!.startTag!;
-      if (located.some((m) => m.el.sourceCodeLocation!.startTag!.startOffset !== tag.startOffset)) continue;
       const tagStart = t(tag.startOffset);
       const tagEnd = t(tag.endOffset);
-      if (tagEnd > nbStart) continue;
       const nameLen = rawTagNameLength(text, tagStart, tagEnd);
-      if (nameLen < 0) continue;
       // The insertion point is right after the raw tag name (an `<image>` token builds an <img>, and
       // foreign names are case-adjusted, so the raw spelling decides). Refuse if the name does not match.
-      const rawName = asciiLower(text.slice(tagStart + 1, tagStart + 1 + nameLen));
-      if (rawName !== asciiLower(located[0].el.tagName)) continue;
+      if (
+        located.some((m) => m.el.sourceCodeLocation!.startTag!.startOffset !== tag.startOffset) ||
+        tagEnd > nbStart ||
+        nameLen < 0 ||
+        asciiLower(text.slice(tagStart + 1, tagStart + 1 + nameLen)) !== asciiLower(located[0].el.tagName)
+      ) {
+        dropGroup(g);
+        continue;
+      }
       // Collect texts by textIndex across the group; an index held by two elements is ambiguous.
       const byIndex = new Map<number, { m: Member; node: TextNode }[]>();
       for (const m of g.members) {
@@ -648,11 +723,18 @@ export function mapHtmlText(src: string, opts: HtmlMapOptions): HtmlMapResult {
       const pending: Omit<HtmlRun, 'id' | 'stamp'>[] = [];
       for (const k of [...byIndex.keys()].sort((a, b) => a - b)) {
         const list = byIndex.get(k)!;
-        if (list.length !== 1) continue;
+        if (list.length !== 1) {
+          for (const x of list) dropText(x.m.el, x.node);
+          continue;
+        }
         const { m, node } = list[0];
-        if (!m.el.sourceCodeLocation) continue; // parser-invented clone (9.2 Strategy 1 step 4)
+        if (!m.el.sourceCodeLocation) {
+          dropText(m.el, node); // parser-invented clone (9.2 Strategy 1 step 4)
+          continue;
+        }
         const run = makeRun(src, text, m.el, node, k, t, s, nbStart, nbLen, opts.lines, t(taint));
         if (run) pending.push(run);
+        else dropText(m.el, node);
       }
       if (pending.length === 0) continue;
       const stamp = `bl-${++n}`;
@@ -661,6 +743,7 @@ export function mapHtmlText(src: string, opts: HtmlMapOptions): HtmlMapResult {
     }
   }
 
+  unalignNested(runs);
   stamps.sort((a, b) => a.offset - b.offset);
   strip.sort((a, b) => a.start - b.start);
   hints.sort((a, b) => a.start - b.start);
@@ -673,7 +756,34 @@ export function mapHtmlText(src: string, opts: HtmlMapOptions): HtmlMapResult {
     keyValues,
     parseErrors,
     served: { srcLength: src.length, stamps, strip: dedupeRanges(strip), hints },
+    shadows,
   };
+}
+
+/**
+ * Marks unaligned every run whose raw range overlaps another run's range (review finding 6). parse5 merges
+ * foster-parented text into the text node before the <table>, and that node's range then spans the table's
+ * first rows: a cell run inside it could be matched `exact`, yet every write there reaches into the merged run
+ * and verify refuses it. The safer outcome is `none` (unaligned) for both, never an exact claim that cannot be
+ * written (D-k).
+ */
+function unalignNested(runs: HtmlRun[]): void {
+  const order = runs.map((_, i) => i).sort((a, b) => runs[a].start - runs[b].start || runs[b].end - runs[a].end);
+  let reach = -1;
+  let holder = -1;
+  for (const i of order) {
+    const r = runs[i];
+    if (holder >= 0 && r.start < reach) {
+      for (const x of [r, runs[holder]]) {
+        x.aligned = false;
+        x.usesNbspRef = false;
+      }
+    }
+    if (r.end > reach) {
+      reach = r.end;
+      holder = i;
+    }
+  }
 }
 
 function dedupeRanges(ranges: { start: number; end: number }[]): { start: number; end: number }[] {

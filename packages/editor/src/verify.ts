@@ -7,9 +7,9 @@
 //   - the same run holds afterText: for html-text the run of the element with the same stamp site (its
 //     source position) and the same textIndex; for literals the same literal (same content start) and
 //     run index, whose cooked value equals the expected value;
-//   - nothing else moved: every other run, literal, script, stamp site, stripped attribute, resource hint and
-//     key is unchanged, shifted by the splice's delta when it lies after it. A text edit cannot change the
-//     tree, so any difference means the edit did, and it is refused;
+//   - nothing else moved: every other run, literal, script, stamp site, stripped attribute, resource hint,
+//     key and shadow value is unchanged, shifted by the splice's delta when it lies after it. A text edit
+//     cannot change the tree, so any difference means the edit did, and it is refused;
 //   - parse5 reports no new parse errors: every error of the new parse is an old one, by code, at its old
 //     position mapped through the splice (so the multiset of codes never grows);
 //   - literals: acorn parses the whole edited script with the mapper's options and the edited literal cooks
@@ -114,7 +114,7 @@ export function checkParseErrors(
   return null;
 }
 
-/** True if a literal run is a shadow run (the innerHTML reading of a literal without `<`; mapper-literals). */
+/** True if a literal run is a shadow run (the innerHTML reading of a plain literal; mapper-literals). */
 function isShadow(map: DeckMap, run: DeckMap['literals'][number]): boolean {
   const unit = map.units[run.unit];
   return run.html && !!unit && !unit.html;
@@ -283,6 +283,17 @@ function compareMaps(oldMap: DeckMap, newMap: DeckMap, s: SpliceSpan, target: Ta
   // Last, so a script that no longer parses (and so lost its object keys) reports that first.
   if (oldMap.keyValues.length !== newMap.keyValues.length || oldMap.keyValues.some((k, i) => newMap.keyValues[i] !== k)) {
     return 'the key values changed (attribute values or object keys)';
+  }
+
+  // ------------------------------------------------------------ shadow values (D-a)
+  // Text from sources Blueline never writes (templates, raw text, attributes, handlers, data blocks, tagged
+  // templates, dropped Strategy 1 text, numbers) cannot change with a text edit. `repeated-number` shadows
+  // are left out: they count occurrences of a literal's text in the whole file, which an edit may change.
+  const fixed = (m: DeckMap) => (m.shadows ?? []).filter((x) => x.kind !== 'repeated-number');
+  const os2 = fixed(oldMap);
+  const ns2 = fixed(newMap);
+  if (os2.length !== ns2.length || os2.some((x, i) => ns2[i].kind !== x.kind || ns2[i].value !== x.value)) {
+    return 'the shadow values changed (text the page may show that Blueline never writes)';
   }
   return null;
 }

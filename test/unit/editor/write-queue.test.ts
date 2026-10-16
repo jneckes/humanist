@@ -191,6 +191,44 @@ describe('write queue: the version check (9.2 Write protocol step 2)', () => {
   });
 });
 
+describe('write queue: findings 5 and 0 through the real queue', () => {
+  it("a textContent literal 'Latency <5 ms': an edit that adds & or < is a verbatim note and the file is untouched (finding 5)", async () => {
+    const base = doc("<p id=\"x\"></p><p id=\"y\"></p><script>document.getElementById('x').textContent = 'Latency <5 ms';\ndocument.getElementById('y').innerHTML = '<b>x</b> &amp; y';</script>");
+    const io = new MemIO(base);
+    const q = createWriteQueue(io);
+    const map = await q.refresh();
+    for (const after of ['Latency <5 ms & falling', 'Latency <5 ms, <3 ms soon']) {
+      const out = await q.edit(requestFor(map, 'Latency <5 ms', after));
+      expect(out).toMatchObject({ ok: false, verbatim: { before: 'Latency <5 ms', after }, why: expect.stringMatching(/5\.1/) });
+    }
+    expect(io.writes).toBe(0);
+    expect(io.text).toBe(base);
+    // A real HTML literal still encodes what is typed (9.2 Strategy 2 step 5.1).
+    const out = await q.edit(requestFor(map, ' & y', ' & y & z'));
+    expect(out.ok).toBe(true);
+    expect(io.text).toBe(base.replace("'<b>x</b> &amp; y'", "'<b>x</b> &amp; y &amp; z'"));
+  });
+
+  it('a stale version: a beforeText that is also a shadow value is not unique, so it needs the context (D-a)', async () => {
+    const filler = 'z'.repeat(40);
+    const base = doc(`<p>${filler}</p><script>var s = 'Revenue';</script><p>${filler}</p>`);
+    const io = new MemIO(base);
+    const q = createWriteQueue(io);
+    const map = await q.refresh();
+    // The deck changes: a <template> now shows "Revenue" too (a shadow value; never a run).
+    const changed = base.replace('<body>', '<body><template><h3>Revenue</h3></template>');
+    io.external(changed);
+    // A version the queue never saw: no context, so the edit is a verbatim note.
+    const unknown = { ...requestFor(map, 'Revenue', 'Net revenue'), version: 'e'.repeat(64) };
+    expect(await q.edit(unknown)).toMatchObject({ ok: false, verbatim: { before: 'Revenue', after: 'Net revenue' } });
+    expect(io.text).toBe(changed);
+    // The client's own version is known: its 32 characters of context single the literal out.
+    const out = await q.edit(requestFor(map, 'Revenue', 'Net revenue'));
+    expect(out.ok).toBe(true);
+    expect(io.text).toBe(changed.replace("'Revenue'", "'Net revenue'"));
+  });
+});
+
 describe('write queue: atomic write conflicts (9.2 Atomic write step 3)', () => {
   it('a write that lands between the read and the rename aborts and requeues; the edit lands on the right text', async () => {
     const io = new MemIO(doc('<p>Alpha</p><p>Beta</p>'));

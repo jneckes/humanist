@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Board review</title>
+<style>
+  body { margin: 40px; font-family: sans-serif; }
+  textarea { display: none; }
+</style>
+</head>
+<body>
+<section class="slide">
+<h1 id="hdr"></h1>
+<div id="grid"></div>
+<div id="xt"></div>
+<div id="tagged"></div>
+<div id="tip" aria-label="Gross margin"></div>
+<div id="ta"></div>
+<p id="note"></p>
+<canvas id="chart" width="400" height="140"></canvas>
+</section>
+<template id="kpi"><div class="kpi"><h3>Revenue</h3></div></template>
+<textarea id="src">Pipeline health</textarea>
+<script type="text/x-template" id="tmpl"><p>Churn outlook</p></script>
+<script>
+// Chart labels, drawn on a canvas only: none of these literals is ever in the DOM.
+const SERIES = ['Revenue', 'Board review', 'Churn outlook', 'Hiring plan', 'Gross margin', 'Pipeline health'];
+const ctx = document.getElementById('chart').getContext('2d');
+SERIES.forEach((s, i) => ctx.fillText(s, 20, 20 + i * 20));
+// Page text from sources that are not runs (review finding 0): each equals one literal above.
+document.getElementById('grid').appendChild(document.getElementById('kpi').content.cloneNode(true));
+document.getElementById('hdr').textContent = document.title;
+document.getElementById('xt').innerHTML = document.getElementById('tmpl').textContent;
+const html = (s) => s.raw.join('');
+document.getElementById('tagged').innerHTML = html`<span>Hiring plan</span>`;
+const tip = document.getElementById('tip');
+tip.textContent = tip.getAttribute('aria-label');
+document.getElementById('ta').textContent = document.getElementById('src').value;
+// Control: text only this literal holds stays exact and passes the probe.
+document.getElementById('note').textContent = 'Only the script says this';
+</script>
+</body>
+</html>

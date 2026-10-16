@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pipeline numbers</title>
+</head>
+<body>
+<section class="slide">
+<h1>Pipeline</h1>
+<p>Deals in flight: <b id="v"></b></p>
+<p>Revenue: <b id="r"></b></p>
+<p>Slide <b id="n"></b></p>
+<p>Growth: <b id="g"></b></p>
+<canvas id="c"></canvas>
+</section>
+<script>
+// Numbers the page computes (review finding 3): each equals one unrelated string literal.
+const DATA = { deals: 600, revenue: 1234 };
+document.getElementById('v').textContent = DATA.deals;
+document.getElementById('r').textContent = new Intl.NumberFormat('en-US').format(DATA.revenue);
+let i = 0;
+document.getElementById('n').textContent = String(i + 1);
+const canvas = document.getElementById('c');
+canvas.setAttribute('width', '600');
+canvas.setAttribute('height', '120');
+document.body.style.opacity = '1';
+const legacy = ['1,234'];
+// Control: a number-like literal that occurs once in the file stays exact.
+document.getElementById('g').textContent = '17.5%';
+</script>
+</body>
+</html>

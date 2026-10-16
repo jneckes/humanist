@@ -300,9 +300,29 @@ describe('extractLiterals: HTML literals', () => {
     expect(literalRunMapping(src, units[0], 0)).not.toBeNull();
   });
 
-  it('treats a literal with only a stray < as HTML text', () => {
-    const { literals } = extract("<script>x = 'a < b';</script>");
-    expect(literals.map((r) => [r.value, r.html])).toEqual([['a < b', true]]);
+  it('treats a literal whose < starts no markup as plain text, not HTML (finding 5, D-d)', () => {
+    // A unit is HTML only if its fragment parse holds markup: an element, a character reference, a comment, or
+    // anything else that makes it read differently through innerHTML. 'a < b' and 'Latency <5 ms' parse to one
+    // text node equal to the whole literal, so they are plain literals (9.2 Strategy 2 step 5.1: an edit that adds
+    // < or & becomes verbatim). This test used to assert that 'a < b' was an HTML unit.
+    const src =
+      "<script>a = 'a < b'; b = 'Latency <5 ms'; c = '<b>x</b>'; d = 'x <5 &amp; y'; e = '<!-- c -->z'; f = 'p </b> q'; g = 'Revenue <$1M';</script>";
+    const { units, literals } = extract(src);
+    expect(units.map((u) => [u.cooked, u.html])).toEqual([
+      ['a < b', false],
+      ['Latency <5 ms', false],
+      ['<b>x</b>', true],
+      ['x <5 &amp; y', true],
+      ['<!-- c -->z', true],
+      ['p </b> q', true],
+      ['Revenue <$1M', false],
+    ]);
+    expect(literals.filter((r) => r.unit === 0).map((r) => [r.value, r.html, r.aligned])).toEqual([['a < b', false, true]]);
+    expect(literals.filter((r) => r.unit === 3).map((r) => [r.value, r.html])).toEqual([['x <5 & y', true]]);
+    // A plain literal maps through the unit table alone, like any literal without <.
+    const m = literalRunMapping(src, units[1], 0)!;
+    expect(m.textOpts).toBeNull();
+    expect(src.slice(m.rawStart + m.table.toRaw(0), m.rawStart + m.table.toRaw(13))).toBe('Latency <5 ms');
   });
 });
 
@@ -584,11 +604,14 @@ describe('extractLiterals: object keys that are not units', () => {
     ]);
   });
 
-  it('returns identifier keys of object literals and class fields, not destructuring keys or methods', () => {
+  it('returns identifier keys of object literals and class fields, member names and destructuring keys, not methods', () => {
+    // Finding 4 (D-c): a property made by member assignment (o.X = …, this.X = …) is rendered by Object.keys like
+    // a literal key, and a key read by name (o.X, o?.X, const { X } = o) breaks when a label edit renames it, so
+    // both count as keys. (This test used to assert that destructuring keys and member names were not keys.)
     const src =
       "<script>const m = { Retention: 1, short, go() {}, [computed]: 2, 'str': 3 };" +
-      " class C { field = 1; method() {} static s = 2; #p = 3 }" +
-      " const { readOnly } = m; ({ alsoRead: x } = m); f(m.member);</script>";
+      " class C { field = 1; method() {} static s = 2; #p = 3; q() { return this.#p + this.field; } }" +
+      " const { readOnly } = m; ({ alsoRead: x } = m); f(m.member, m?.opt, m[computedRead], m['quoted']); m.member = 2;</script>";
     const { keys, units } = extract(src);
     expect(keys.map((k) => [k.value, k.attr])).toEqual([
       ['Retention', 'object key'],
@@ -596,9 +619,16 @@ describe('extractLiterals: object keys that are not units', () => {
       ['go', 'object key'],
       ['field', 'object key'],
       ['s', 'object key'],
+      // this.field is not listed again: member names and destructuring keys are recorded once per script, and
+      // not when the value is already a key there (keyValues lists each value once anyway).
+      ['readOnly', 'destructuring key'],
+      ['alsoRead', 'destructuring key'],
+      ['member', 'member name'],
+      ['opt', 'member name'],
     ]);
-    // A string key stays a unit (it can be edited when it is the only place its text occurs).
-    expect(units.map((u) => u.cooked)).toEqual(['str']);
+    // A string key stays a unit (it can be edited when it is the only place its text occurs); so does a
+    // computed member read with a string (m['quoted']), which is a literal.
+    expect(units.map((u) => u.cooked)).toEqual(['str', 'quoted']);
   });
 
   it('returns no keys from a script that fails to parse', () => {

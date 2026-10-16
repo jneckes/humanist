@@ -88,6 +88,8 @@ describe('toClientMap', () => {
       runs: [{ id: 'h:bl-1:0', stamp: 'bl-1', textIndex: 0, value: 'Hi', aligned: true }],
       literals: map.literals.map((l) => ({ id: l.id, value: l.value, placeholder: l.placeholder, html: l.html, strategy: l.strategy, aligned: l.aligned ?? true })),
       keyValues: ['hero'],
+      // D-a: every attribute value is a shadow value (a script may show it), listed once.
+      shadowValues: ['hero'],
     });
     expect(client.literals.some((l) => l.placeholder)).toBe(true);
     // Structured-clone safe (it crosses IPC): plain data only.
@@ -273,5 +275,49 @@ describe('buildMap + createMatcher: text that is also an object key is never exa
     const m = createMatcher(buildMap(src, { version: 'v', utf8: true }));
     expect(m(node('Revenue'))).toMatchObject({ confidence: 'ambiguous', reason: 'key' });
     expect(m(node('Alone')).confidence).toBe('exact');
+  });
+});
+
+describe('buildMap + createMatcher: member names and destructuring keys are keys too (finding 4, D-c)', () => {
+  const node = (data: string) => ({ stamp: null, textIndex: 0, data });
+  const both = (src: string) => {
+    const map = buildMap(src, { version: 'v', utf8: true });
+    return [createMatcher(map), createMatcher(toClientMap(map))];
+  };
+
+  it('a key made by member assignment (totals.Bookings = 120) makes an equal literal ambiguous (key)', () => {
+    // Scratch deck memberkey.html: labels from Object.keys(totals), and chartTitle drawn on a canvas.
+    const src =
+      '<!doctype html><body><ul id="l"></ul><canvas id="chart"></canvas><script>\nconst totals = {};\ntotals.Bookings = 120;\ntotals.Churn = 8;\n' +
+      "Object.keys(totals).forEach(function (k) { const li = document.createElement('li'); li.textContent = k; document.getElementById('l').appendChild(li); });\n" +
+      "const chartTitle = 'Bookings';\nconst other = 'Unique words';\n</script></body>";
+    for (const m of both(src)) {
+      expect(m(node('Bookings'))).toMatchObject({ confidence: 'ambiguous', reason: 'key' });
+      expect(m(node('Unique words')).confidence).toBe('exact');
+    }
+  });
+
+  it("a quoted key {'Retention': 41} that code reads as KPI.Retention, KPI?.Retention, this.Retention or {Retention} is ambiguous (key)", () => {
+    // Scratch deck strkey.html: renaming the key through the label edit broke KPI.Retention ("undefined pts").
+    const reads = ["KPI.Retention + ' pts'", "KPI?.Retention + ' pts'", "(function () { return this.Retention; }).call(KPI)", "(({ Retention }) => Retention)(KPI)", "(() => { const { Retention: r } = KPI; return r; })()"];
+    for (const read of reads) {
+      const src =
+        "<!doctype html><body><b id=\"hero\"></b><ul id=\"rows\"></ul><script>\nconst KPI = { 'Retention': 41, 'Churn': 3 };\n" +
+        "for (const [name] of Object.entries(KPI)) { const li = document.createElement('li'); li.textContent = name; document.getElementById('rows').appendChild(li); }\n" +
+        `document.getElementById('hero').textContent = ${read};\n</script></body>`;
+      for (const m of both(src)) {
+        expect(m(node('Retention')), read).toMatchObject({ confidence: 'ambiguous', reason: 'key' });
+        // A quoted key nobody reads by name stays editable.
+        expect(m(node('Churn')), read).toMatchObject({ confidence: 'exact' });
+      }
+    }
+  });
+
+  it('records member names and destructuring keys with their lines', () => {
+    const src = '<!doctype html><body><script>\nconst o = {};\no.Assigned = 1;\nconst { Destructured } = o;\n</script></body>';
+    const map = buildMap(src, { version: 'v', utf8: true });
+    expect(map.keys).toContainEqual({ value: 'Assigned', attr: 'member name', line: 3 });
+    expect(map.keys).toContainEqual({ value: 'Destructured', attr: 'destructuring key', line: 4 });
+    expect(map.keyValues).toEqual(expect.arrayContaining(['Assigned', 'Destructured']));
   });
 });

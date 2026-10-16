@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { planEdit, verifyEdit, type EditPlan } from '@blueline/editor';
 import { cleanupCommit } from '@blueline/core/edit-cleanup';
+import { createMatcher } from '@blueline/core/matcher';
 import { PLACEHOLDER } from '@blueline/core/js-literals';
 import type { DeckMap, EditRequest } from '@blueline/core/types';
 import { mapOf, requestFor } from './helpers';
@@ -125,6 +126,15 @@ describe('planEdit: html-text (9.2 Strategy 1 step 5)', () => {
     expect(out).toBe(doc('<pre>\nmy code</pre>'));
   });
 
+  it('a cell inside a foster-parented run is never planned; the cell after it is written (finding 6)', () => {
+    const src = doc('<section>\n<table><tr><td>Cell one</td></tr>Foster text<tr><td>Cell two</td></tr></table>\n</section>');
+    const map = mapOf(src);
+    const one = map.runs.find((r) => r.value === 'Cell one')!;
+    expect(createMatcher(map)({ stamp: one.stamp, textIndex: 0, data: 'Cell one', texts: ['Cell one'] })).toMatchObject({ confidence: 'none', reason: 'unaligned' });
+    expect(refusal(src, 'Cell one', 'Cell one!')).toMatch(/unaligned/);
+    expect(edit(src, 'Cell two', 'Cell two!').out).toBe(src.replace('Cell two', 'Cell two!'));
+  });
+
   it('refuses structural edits: emptying a run or leaving it whitespace-only (6.3)', () => {
     const src = doc('<p>Before <b>bold</b> after</p>');
     expect(refusal(src, 'bold', '')).toMatch(/structural/);
@@ -197,6 +207,18 @@ describe('planEdit: script literals (9.2 Strategy 2 steps 4–5)', () => {
     const src = js("var a = 'Tom and Jerry';");
     expect(refusal(src, 'Tom and Jerry', 'Tom & Jerry')).toMatch(/5\.1/);
     expect(refusal(src, 'Tom and Jerry', 'Tom <3 Jerry')).toMatch(/5\.1/);
+  });
+
+  it('a literal whose < starts no markup is plain: adding & or < is a verbatim note, a real HTML literal still encodes (finding 5)', () => {
+    const src = js("el.textContent = 'Latency <5 ms'; other.innerHTML = '<b>x</b> &amp; y';");
+    expect(refusal(src, 'Latency <5 ms', 'Latency <5 ms & falling')).toMatch(/5\.1/);
+    expect(refusal(src, 'Latency <5 ms', 'Latency <5 ms, <3 ms soon')).toMatch(/5\.1/);
+    // Text without < or & is written as typed (JS-escaped only).
+    expect(edit(src, 'Latency <5 ms', 'Latency <4 ms').out).toBe(js("el.textContent = 'Latency <4 ms'; other.innerHTML = '<b>x</b> &amp; y';"));
+    // A deletion that turns the < into markup would read differently through innerHTML.
+    expect(refusal(src, 'Latency <5 ms', 'Latency <ms')).toMatch(/innerHTML/);
+    // The HTML literal: & and < are encoded (step 5.1).
+    expect(edit(src, ' & y', ' & y < z').out).toBe(js("el.textContent = 'Latency <5 ms'; other.innerHTML = '<b>x</b> &amp; y &lt; z';"));
   });
 
   it('refuses a deletion that makes a plain literal read differently through innerHTML', () => {
@@ -309,6 +331,22 @@ describe('verifyEdit refuses anything but the planned change (9.2 Write protocol
     if (v.ok) throw new Error('verify accepted a tampered plan');
     return v.why;
   }
+
+  it('shadow values that changed (D-a): a text edit never changes them; repeated-number shadows may change', () => {
+    const src = doc('<h1>Deals</h1><p title="Hint">x</p><b id="v"></b><script>document.getElementById(\'v\').textContent = \'600\';</script>');
+    const map = mapOf(src);
+    const req = requestFor(map, 'Deals', 'Deals at 600');
+    const plan = planEdit(src, map, req);
+    if (!plan.ok) throw new Error(plan.why);
+    const newMap = mapOf(plan.newSrc);
+    // The edit makes "600" occur twice, so it becomes a repeated-number shadow: that is not a structural change.
+    expect(newMap.shadows).toContainEqual(expect.objectContaining({ value: '600', kind: 'repeated-number' }));
+    expect(map.shadows!.some((x) => x.kind === 'repeated-number')).toBe(false);
+    expect(verifyEdit(src, plan.newSrc, map, newMap, plan, req)).toEqual({ ok: true });
+    // Any other shadow that differs means the edit changed something it must not.
+    const tampered: DeckMap = { ...newMap, shadows: newMap.shadows!.map((x) => (x.value === 'Hint' ? { ...x, value: 'Hint!' } : x)) };
+    expect(verifyEdit(src, plan.newSrc, map, tampered, plan, req)).toMatchObject({ ok: false, why: expect.stringMatching(/shadow/) });
+  });
 
   it('a new source that is not the old one with the splice', () => {
     const src = doc('<p>Hello</p>');

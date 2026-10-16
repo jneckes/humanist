@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Member keys</title>
+</head>
+<body>
+<section class="slide">
+<h1>Totals</h1>
+<p id="note"></p>
+<ul id="l"></ul>
+<p>Headline retention: <b id="hero"></b></p>
+<ul id="rows"></ul>
+<canvas id="chart" width="300" height="40"></canvas>
+</section>
+<script>
+// A key made by member assignment, rendered by Object.keys; an unrelated literal has the same text (finding 4).
+const totals = {};
+totals.Bookings = 120;
+totals.Churn = 8;
+Object.keys(totals).forEach(function (k) { const li = document.createElement('li'); li.textContent = k; document.getElementById('l').appendChild(li); });
+const chartTitle = 'Bookings';
+document.getElementById('chart').getContext('2d').fillText(chartTitle, 10, 20);
+// A quoted key rendered by Object.entries and read by name elsewhere: renaming it would break the read.
+const KPI = { 'Retention': 41, 'Expansion': 3 };
+for (const [name] of Object.entries(KPI)) {
+  const li = document.createElement('li');
+  li.textContent = name;
+  document.getElementById('rows').appendChild(li);
+}
+document.getElementById('hero').textContent = KPI.Retention + ' pts';
+// Control: text only this literal holds stays exact and passes the probe.
+document.getElementById('note').textContent = 'Only the script says this';
+</script>
+</body>
+</html>

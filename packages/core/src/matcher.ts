@@ -2,7 +2,7 @@
 // overlay (with the ClientMap it receives over IPC), by `blueline map` and by the patcher's re-check (with
 // the full DeckMap). Environment-neutral and dependency-free, so the preload bundle stays small.
 
-import { isWhitespaceOnly } from './text';
+import { isWhitespaceOnly, looksComputed } from './text';
 import type { ClientMap, DeckMap, DomTextNode, MatchCandidate, MatchReason, MatchResult, Strategy } from './types';
 
 const PLACEHOLDER = '\uE000';
@@ -59,6 +59,14 @@ export function createMatcher(map: ClientMap | DeckMap, opts: MatcherOptions = {
   const deck = isDeckMap(map) ? map : null;
   const cands: Cand[] = [];
   const own = new Map<string, Cand>();
+  /** Each stamp's source runs by textIndex (D-b: step 1 checks the element's live text nodes against them). */
+  const byStamp = new Map<string, Cand[]>();
+  const addOwn = (stamp: string, textIndex: number, c: Cand): void => {
+    own.set(ownKey(stamp, textIndex), c);
+    let list = byStamp.get(stamp);
+    if (!list) byStamp.set(stamp, (list = []));
+    if (Number.isInteger(textIndex) && textIndex >= 0) list[textIndex] = c;
+  };
   if (deck) {
     for (const r of deck.runs) {
       const c: Cand = {
@@ -74,7 +82,7 @@ export function createMatcher(map: ClientMap | DeckMap, opts: MatcherOptions = {
         order: 0,
       };
       cands.push(c);
-      own.set(ownKey(r.stamp, r.textIndex), c);
+      addOwn(r.stamp, r.textIndex, c);
     }
     for (const l of deck.literals) {
       cands.push({
@@ -109,7 +117,7 @@ export function createMatcher(map: ClientMap | DeckMap, opts: MatcherOptions = {
         order: cands.length,
       };
       cands.push(c);
-      own.set(ownKey(r.stamp, r.textIndex), c);
+      addOwn(r.stamp, r.textIndex, c);
     }
     for (const l of cm.literals) {
       cands.push({
@@ -135,8 +143,12 @@ export function createMatcher(map: ClientMap | DeckMap, opts: MatcherOptions = {
     else byValue.set(c.value, [c]);
   }
 
-  // Ambiguity by key (9.2 Strategy 2 step 3): id, class, name, for, href and data-* attribute values.
+  // Ambiguity by key (9.2 Strategy 2 step 3): id, class, name, for, href and data-* attribute values, and
+  // object keys, member names and destructuring keys (mapper-literals).
   const keySet = new Set(map.keyValues);
+  // Shadow values (D-a): text the page may show from a source Blueline never writes. A literal equal to one
+  // does not occur once (9.2 Strategy 2 step 3), so it is never exact. Absent (hand-built maps) is empty.
+  const shadowSet = new Set<string>(deck ? (deck.shadows ?? []).map((sh) => sh.value) : ((map as ClientMap).shadowValues ?? []));
   const keyLine = new Map<string, number>();
   if (deck) for (const k of deck.keys) if (!keyLine.has(k.value)) keyLine.set(k.value, k.line);
   const keyWarning = (value: string): string | undefined => {
@@ -259,18 +271,42 @@ export function createMatcher(map: ClientMap | DeckMap, opts: MatcherOptions = {
     return segment(data, litValues, litLengths);
   };
 
+  /**
+   * D-b (review finding 2): the live textIndex picks the own run only while the element's direct text nodes
+   * are still the source's. A script that adds or removes one (p.prepend('You are here: ')) shifts the index
+   * onto a neighbour's run, which may have the same text. So the element's non-whitespace direct text nodes
+   * (node.texts) must be as many as the stamp's source runs, these must cover textIndex 0..n-1 with no gap
+   * (a text the mapper dropped leaves one), and every other index must hold its source value. Absent or
+   * malformed texts cannot be checked.
+   */
+  const ownAgrees = (node: DomTextNode, mine: Cand): boolean => {
+    const texts = node.texts;
+    const runs = node.stamp !== null ? byStamp.get(node.stamp) : undefined;
+    if (!Array.isArray(texts) || !runs || texts.length !== runs.length) return false;
+    for (let i = 0; i < runs.length; i++) {
+      const r = runs[i];
+      if (r === undefined || typeof texts[i] !== 'string') return false;
+      if (i === node.textIndex ? r !== mine || texts[i] !== node.data : texts[i] !== r.value) return false;
+    }
+    return true;
+  };
+
   return (node: DomTextNode): MatchResult => {
     const data = node.data;
     const equal = byValue.get(data) ?? [];
 
-    // 1. The node's own stamped run, only if its data equals the run's decoded value exactly.
+    // 1. The node's own stamped run, only if its data equals the run's decoded value exactly and the
+    // element's text nodes still agree with the source (D-b). Shadow values do not apply here: the node is
+    // the run's own text node.
     if (node.stamp !== null) {
       const mine = own.get(ownKey(node.stamp, node.textIndex));
-      if (mine && mine.value === data) {
+      if (mine && mine.value === data && ownAgrees(node, mine)) {
         // A stamped run is never preferred over a literal with the same text: the script may have
-        // replaced the element's text with that literal.
+        // replaced the element's text with that literal. Another run of the same element with the same
+        // text is the same doubt: a script may have swapped or removed equal text nodes (D-b).
+        const twins = (byStamp.get(node.stamp) ?? []).filter((c) => c !== mine && c.value === data);
         const lits = equal.filter((c) => c.literal);
-        if (lits.length > 0) return ambiguous('duplicate', [mine, ...lits]);
+        if (twins.length + lits.length > 0) return ambiguous('duplicate', [mine, ...twins, ...lits]);
         if (!mine.aligned) return none('unaligned', [mine]);
         return exact(mine);
       }
@@ -281,10 +317,12 @@ export function createMatcher(map: ClientMap | DeckMap, opts: MatcherOptions = {
       const c = equal[0];
       // One stamped run that is not the node's own: JS-built text, or a coincidence.
       if (!c.literal) return ambiguous('stamp-other', [c]);
-      // One literal run: Strategy 2 decides. It occurs once (no other run of either kind is equal).
+      // One literal run: Strategy 2 decides. It must occur once: no other run of either kind is equal, and
+      // no text Blueline never writes (a shadow value, D-a) is equal either. Shadows are never candidates.
       if (c.placeholder) return none('placeholder', [c]); // section 7: `${…}` inside the run is pin-only
       if (!c.aligned) return none('unaligned', [c]);
       if (keySet.has(c.value)) return ambiguous('key', [c]);
+      if (shadowSet.has(c.value)) return ambiguous('shadow', [c]);
       return exact(c);
     }
     if (equal.length > 1) return ambiguous('duplicate', equal);
@@ -331,11 +369,6 @@ function wildcardMatch(pieces: string[], s: string): boolean {
     pos = at + p.length;
   }
   return true;
-}
-
-/** Counts, dates, times, prices: text made only of digits and number punctuation (section 7 "computed values"). */
-function looksComputed(data: string): boolean {
-  return /\d/.test(data) && /^[\s\d.,:/%+\-−–$€£¥()]+$/.test(data);
 }
 
 const DIGIT = /[0-9]/;

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Foster-parented text</title>
+</head>
+<body>
+<section class="slide">
+<h1>Heading</h1>
+<p id="note"></p>
+<table><tr><td>Cell one</td></tr>Foster text<tr><td>Cell two</td></tr></table>
+<p>After</p>
+</section>
+<script>
+// Control: text only this literal holds stays exact and passes the probe.
+document.getElementById('note').textContent = 'Only the script says this';
+</script>
+</body>
+</html>

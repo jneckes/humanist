@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Unclosed em in a heading</title>
+</head>
+<body>
+<section class="slide">
+<h1>Contents</h1>
+<ul id="toc"></ul>
+<p id="note"></p>
+</section>
+<section class="slide">
+<h2><em>Plan</h2><p>Details</p>
+</section>
+<script>
+// "Plan" in the heading sits in an <em> the parser re-opens in the next <p>: the walk drops it (finding 1).
+const TITLES = ['Contents', 'Plan'];
+const toc = document.getElementById('toc');
+for (const t of TITLES) { const li = document.createElement('li'); li.textContent = t; toc.appendChild(li); }
+document.getElementById('note').textContent = 'Only the script says this';
+</script>
+</body>
+</html>

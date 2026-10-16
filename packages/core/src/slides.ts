@@ -225,13 +225,24 @@ function detectGeneric(doc: Document, win: Window, opts: DetectOptions): SlideMo
     if (!g) groups.set(p, (g = []));
     g.push(el);
   }
-  let best: Element[] | null = null;
+  // Three or more siblings, one or two of them visible at a time (9.4 step 2). "At most one or two" read as
+  // allowing none let a hidden slide's own children (a grid of `<section class=card>`) outnumber the real
+  // slides and win, and then the current slide never changed (finding 29): a deck shows a slide, and "the
+  // current slide is the visible one".
+  const qualifying: Element[][] = [];
   for (const g of groups.values()) {
-    // Three or more siblings, at most one or two visible at a time (9.4 step 2).
     if (g.length < 3) continue;
     let visible = 0;
     for (const s of g) if (isSlideVisible(s, win)) visible++;
-    if (visible > 2) continue;
+    if (visible < 1 || visible > 2) continue;
+    qualifying.push(g);
+  }
+  // The outermost group wins: a group inside a member of another qualifying group (a carousel on a slide) is
+  // part of that slide. Among the outermost ones, the longest (the first in document order on a tie).
+  let best: Element[] | null = null;
+  for (const g of qualifying) {
+    const parent = g[0].parentElement;
+    if (qualifying.some((o) => o !== g && o.some((member) => member.contains(parent)))) continue;
     if (!best || g.length > best.length) best = g;
   }
   if (!best) return null;

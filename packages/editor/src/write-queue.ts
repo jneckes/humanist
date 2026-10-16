@@ -8,7 +8,9 @@
 //      not the client's version, the map is rebuilt from the current file and the edit goes to the only run
 //      whose text equals beforeText, using 32 characters of the old version's source context on each side to
 //      break ties; no run, or several, makes it a verbatim note. Stale offsets are never applied. A text that
-//      was already in several places in the client's version counts as a tie even when one copy is left.
+//      was already in several places in the client's version counts as a tie even when one copy is left, and
+//      so does a text that is also a shadow value (text the page may show from a source Blueline never
+//      writes, DeckMap.shadows; decision D-a): it is not unique, so the context must single the run out.
 //   3. Re-check before writing: the run must hold beforeText exactly (planEdit), and the splice is planned on
 //      the file as just read.
 //   4. Atomic write through DeckIO.atomicWrite, which re-hashes the file on disk against the hash read in
@@ -134,8 +136,11 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
     // A text that was already in several places in the client's version is a tie even when only one copy is
     // left: the copy the client edited may be the one that changed. Then the context must decide.
     const tiedBefore = !!old && allRuns(old.map).filter((r) => r.value === req.beforeText).length > 1;
+    // A text that is also a shadow value (now or in the client's version) is not unique either (D-a).
+    const isShadow = (m: DeckMap | undefined): boolean => !!m && (m.shadows ?? []).some((x) => x.value === req.beforeText);
+    const shadowed = isShadow(cur.map) || isShadow(old?.map);
     let chosen: HtmlRun | LiteralRun | null = null;
-    if (equal.length === 1 && !tiedBefore) {
+    if (equal.length === 1 && !tiedBefore && !shadowed) {
       chosen = equal[0];
     } else if (equal.length >= 1 && old && oldRun) {
       const before = old.src.slice(Math.max(0, oldRun.start - CONTEXT), oldRun.start);
@@ -151,7 +156,9 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
         why:
           equal.length === 0
             ? 'the deck changed and no run holds beforeText any more'
-            : 'the deck changed and beforeText is in several places (9.2 Write protocol step 2)',
+            : equal.length === 1 && !tiedBefore
+              ? 'the deck changed and beforeText is also text Blueline never writes, so it is not unique (9.2 Write protocol step 2)'
+              : 'the deck changed and beforeText is in several places (9.2 Write protocol step 2)',
       };
     }
     // An edit never moves between parsed text and a script literal: that is a different place on the page.
