@@ -398,6 +398,12 @@ export interface DomTextNode {
    * node (step 1 falls through to the candidate set); a literal can still match it.
    */
   touched?: boolean;
+  /**
+   * For a touched node: the stamp of its nearest ancestor element that has one (the parent included). A deck
+   * that splits a heading into one span per word or letter leaves the heading stamped and its pieces
+   * unstamped; a piece whose text is inside that heading's source text is a fragment, not a literal's text.
+   */
+  stampedAncestor?: string;
 }
 
 /**
@@ -416,6 +422,8 @@ export type MatchReason =
   | 'duplicate'
   | 'key'
   | 'shadow'
+  | 'short'
+  | 'split'
   | 'stamp-other'
   | 'unaligned'
   | 'placeholder';

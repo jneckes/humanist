@@ -379,10 +379,10 @@ describe('matcher: ClientMap', () => {
       version: 'v',
       utf8: true,
       runs: [],
-      literals: [{ id: 'l:0:0', value: 'Hi', placeholder: false, html: false }],
+      literals: [{ id: 'l:0:0', value: 'Hello', placeholder: false, html: false }],
       keyValues: [],
     };
-    expect(createMatcher(map)(node('Hi'))).toMatchObject({ confidence: 'exact', strategy: 'script-literal' });
+    expect(createMatcher(map)(node('Hello'))).toMatchObject({ confidence: 'exact', strategy: 'script-literal' });
   });
 });
 
@@ -493,5 +493,45 @@ describe('a node a script rewrote after parsing (DomTextNode.touched)', () => {
   it('leaves untouched nodes as they were', () => {
     const r = run('Plan');
     expect(createMatcher(map)({ stamp: r.stamp, textIndex: r.textIndex, data: 'Plan', texts: ['Plan'] }).confidence).toBe('exact');
+  });
+});
+
+describe('text of one or two characters through a lone literal (reason short)', () => {
+  // A heading split into one span per letter shows "A"; an unrelated literal 'A' sits in the deck's code.
+  const src = "<!doctype html><html><body><h1>Agents</h1><script>var grade = 'A'; var label = 'Agenda';</script></body></html>";
+  const map = buildMap(src, { version: 'v', utf8: true });
+
+  it('is never exact, on the DeckMap and the ClientMap path', () => {
+    for (const m of [createMatcher(map), createMatcher(toClientMap(map))]) {
+      expect(m({ stamp: null, textIndex: 0, data: 'A' })).toMatchObject({ confidence: 'ambiguous', reason: 'short' });
+      expect(m({ stamp: null, textIndex: 0, data: 'Agenda' }).confidence).toBe('exact');
+    }
+  });
+
+  it('counts code points, so one astral character is short too', () => {
+    const m = createMatcher(buildMap("<!doctype html><body><script>var s = '\u{1F680}';</script></body>", { version: 'v', utf8: true }));
+    expect(m({ stamp: null, textIndex: 0, data: '\u{1F680}' })).toMatchObject({ confidence: 'ambiguous', reason: 'short' });
+  });
+});
+
+describe('a piece of split text (reason split)', () => {
+  // The deck cuts <h1>Growth plan</h1> into one span per word after load; a literal 'Growth' sits elsewhere.
+  const src = "<!doctype html><html><body><h1>Growth plan</h1><script>var series = ['Growth', 'Churn'];</script></body></html>";
+  const map = buildMap(src, { version: 'v', utf8: true });
+  const h1 = map.runs.find((r) => r.value === 'Growth plan')!;
+
+  it('is never exact through a literal when its stamped ancestor holds its text', () => {
+    for (const m of [createMatcher(map), createMatcher(toClientMap(map))]) {
+      expect(m({ stamp: null, textIndex: 0, data: 'Growth', touched: true, stampedAncestor: h1.stamp })).toMatchObject({ confidence: 'ambiguous', reason: 'split' });
+      // Untouched, or under a stamp whose text does not hold it: the literal decides as before.
+      expect(m({ stamp: null, textIndex: 0, data: 'Growth' }).confidence).toBe('exact');
+      expect(m({ stamp: null, textIndex: 0, data: 'Churn', touched: true, stampedAncestor: h1.stamp }).confidence).toBe('exact');
+    }
+  });
+
+  it('keeps two-character labels exact (Q1, EU)', () => {
+    const m = createMatcher(buildMap("<!doctype html><body><script>var r = ['EU', 'Q1'];</script></body>", { version: 'v', utf8: true }));
+    expect(m({ stamp: null, textIndex: 0, data: 'EU' }).confidence).toBe('exact');
+    expect(m({ stamp: null, textIndex: 0, data: 'Q1' }).confidence).toBe('exact');
   });
 });

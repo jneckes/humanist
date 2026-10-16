@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Split characters</title>
+<style>body { margin: 0; font: 40px/1.3 system-ui, sans-serif; } .char { display: inline-block; } h1, p { margin: 48px; }</style>
+</head>
+<body>
+<!-- Like the GSAP decks with motion on: a heading is split into one span per letter after load. A literal
+     'A' elsewhere in the deck's code equals the first letter by coincidence; writing an edit of that letter
+     to the literal would change the code, not the heading. -->
+<h1 id="title">Agents at work</h1>
+<p id="note"></p>
+<script>
+(function () {
+  var GRADE = 'A'; // used in code only, never shown
+  var h = document.getElementById('title');
+  document.addEventListener('DOMContentLoaded', function () {
+    var text = h.textContent;
+    h.textContent = '';
+    for (var i = 0; i < text.length; i++) {
+      var s = document.createElement('span');
+      s.className = 'char';
+      s.textContent = text[i];
+      h.appendChild(s);
+    }
+    document.getElementById('note').textContent = 'Only the script says this';
+    document.documentElement.dataset.grade = GRADE.toLowerCase();
+  });
+})();
+</script>
+</body>
+</html>

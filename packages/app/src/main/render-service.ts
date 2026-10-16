@@ -181,6 +181,9 @@ function domNodeOf(v: unknown, what: string): DomTextNode {
   const texts = textsOf(r.texts);
   if (texts) out.texts = texts;
   if (r.touched === true) out.touched = true;
+  if (r.touched === true && typeof r.stampedAncestor === 'string' && r.stampedAncestor.length <= 12 && STAMP.test(r.stampedAncestor)) {
+    out.stampedAncestor = r.stampedAncestor;
+  }
   return out;
 }
 const TREES: readonly WalkTree[] = ['document', 'shadow', 'frame'];

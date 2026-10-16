@@ -6,6 +6,14 @@ import { isWhitespaceOnly, looksComputed } from './text';
 import type { ClientMap, DeckMap, DomTextNode, MatchCandidate, MatchReason, MatchResult, Strategy } from './types';
 
 const PLACEHOLDER = '\uE000';
+/** Text this short (in code points) is never exact through a lone literal: the match is too likely a coincidence. */
+export const SHORT_LITERAL_MAX = 1;
+
+function codePoints(s: string): number {
+  let n = 0;
+  for (const _ of s) n++;
+  return n;
+}
 /** Most candidates a substring or normalized-text search returns; exact duplicates are all listed (9.2). */
 export const MAX_SEARCH_CANDIDATES = 50;
 /** Longest node text the multi-literal reason search segments (it is a report reason only, section 10). */
@@ -142,6 +150,10 @@ export function createMatcher(map: ClientMap | DeckMap, opts: MatcherOptions = {
     if (list) list.push(c);
     else byValue.set(c.value, [c]);
   }
+
+  /** Each stamp's source text, its runs joined in order (split-text pieces are looked up in it). */
+  const stampText = new Map<string, string>();
+  for (const [stamp, list] of byStamp) stampText.set(stamp, list.filter((c) => c !== undefined).map((c) => c.value).join(''));
 
   // Ambiguity by key (9.2 Strategy 2 step 3): id, class, name, for, href and data-* attribute values, and
   // object keys, member names and destructuring keys (mapper-literals).
@@ -324,6 +336,16 @@ export function createMatcher(map: ClientMap | DeckMap, opts: MatcherOptions = {
       if (!c.aligned) return none('unaligned', [c]);
       if (keySet.has(c.value)) return ambiguous('key', [c]);
       if (shadowSet.has(c.value)) return ambiguous('shadow', [c]);
+      // A piece of split text: a script cut a stamped heading into one span per word or letter, and this
+      // piece's text is inside that heading's source text. An equal literal elsewhere is a coincidence:
+      // Josh's real decks with motion on showed "A" and "T" from split headings, matched to some literal
+      // 'A' (a library's own code), 22 times, every one a wrong-place write.
+      if (node.touched === true && node.stampedAncestor && (stampText.get(node.stampedAncestor) ?? '').includes(data)) {
+        return ambiguous('split', [c]);
+      }
+      // One character equal to one literal is a coincidence more often than a source (the same letters,
+      // where no stamped ancestor names the heading they came from).
+      if (codePoints(data) <= SHORT_LITERAL_MAX) return ambiguous('short', [c]);
       return exact(c);
     }
     if (equal.length > 1) return ambiguous('duplicate', equal);

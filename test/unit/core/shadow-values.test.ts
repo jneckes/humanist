@@ -158,13 +158,13 @@ describe('finding 0: text from sources that are not runs counts for uniqueness',
   });
 
   it('never takes shadows from the notes block, and lists each value once in the ClientMap', () => {
-    const notes = '<script type="application/vnd.blueline+json" id="blueline-notes" data-version="1">{"notes":[{"text":"Only in notes, 77 times"}]}</script>';
-    const src = doc('', `<p title="Twin" class="Twin">x</p><b id="n"></b><script>const a = 'Only in notes'; document.getElementById('n').textContent = '77';</script>\n${notes}\n`);
+    const notes = '<script type="application/vnd.blueline+json" id="blueline-notes" data-version="1">{"notes":[{"text":"Only in notes, 777 times"}]}</script>';
+    const src = doc('', `<p title="Twin" class="Twin">x</p><b id="n"></b><script>const a = 'Only in notes'; document.getElementById('n').textContent = '777';</script>\n${notes}\n`);
     const map = mapOf(src);
     expect(map.notesBlock).not.toBeNull();
     expect(matchFree(map, 'Only in notes').confidence).toBe('exact');
-    // "77" occurs once outside the notes block: the literal is the only place it is.
-    expect(matchFree(map, '77').confidence).toBe('exact');
+    // "777" occurs once outside the notes block: the literal is the only place it is.
+    expect(matchFree(map, '777').confidence).toBe('exact');
     const values = toClientMap(map).shadowValues!;
     expect(new Set(values).size).toBe(values.length);
     expect(values).toContain('Twin');

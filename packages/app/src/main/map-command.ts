@@ -53,7 +53,8 @@ function log(msg: string): void {
 export type StopNav =
   | { kind: 'start' } // as loaded (a generic deck's first slide)
   | { kind: 'goto'; index: number } // RenderCmd goto: Reveal.slide, the hash, or scrollIntoView
-  | { kind: 'keys'; key: NavKey; presses: number } // forward keys pressed from the start
+  // forward keys from the start: `presses` moved the deck, then `still` more changed the slide but showed a build step
+  | { kind: 'keys'; key: NavKey; presses: number; still?: number }
   | { kind: 'scroll'; y: number }; // RenderCmd scroll-to: a scrolling or single-page document at this offset
 
 export interface WalkStop {
@@ -100,6 +101,10 @@ export class DeckWalker {
   private pos = 0;
   /** The walk's slide count: a press on the last slide changed nothing because the deck has ended. */
   private count = 1;
+  /** Presses since the last move that did not move the deck (replaying `keys` stops with `still`). */
+  private still = 0;
+  /** For each move of the walk, how many presses before it changed nothing (key-gated build steps). */
+  private stillBeforeMove: number[] = [];
 
   constructor(
     private readonly view: RenderView,
@@ -111,14 +116,28 @@ export class DeckWalker {
   }
 
   /**
-   * Presses `key`; when trusted input reached the deck but the slide did not change, and this is not the
-   * last slide, waits and presses again (PRESS_RETRY_GAPS_MS). The first press that moves the deck wins.
+   * Presses `key` until the deck moves. When trusted input reached the deck but the slide did not change,
+   * `onStill` (the walk) collects what the press may have revealed (a key-gated build step) and says whether
+   * it found new text; then, unless the deck has ended, this waits (PRESS_RETRY_GAPS_MS) and presses again.
+   * A press that revealed new text does not use up a retry, so a slide with many build steps is walked
+   * through. `budget` caps the presses that change nothing (the replay knows how many the walk needed).
    */
-  private async pressPatiently(key: NavKey): Promise<Awaited<ReturnType<RenderView['pressKey']>>> {
+  private async pressPatiently(
+    key: NavKey,
+    opts: { onStill?: () => Promise<boolean>; budget?: number } = {},
+  ): Promise<Awaited<ReturnType<RenderView['pressKey']>>> {
     let p = await this.view.pressKey(key);
-    for (const gap of PRESS_RETRY_GAPS_MS) {
-      if (p.moved || p.via !== 'input' || p.delivered === false || p.from >= this.count - 1) break;
-      await new Promise((r) => setTimeout(r, gap));
+    let misses = 0;
+    let stills = 0;
+    while (!p.moved && p.via === 'input' && p.delivered !== false) {
+      stills++;
+      const revealed = opts.onStill ? await opts.onStill() : false;
+      if (!revealed) misses++;
+      if (opts.budget !== undefined ? stills >= opts.budget : misses > PRESS_RETRY_GAPS_MS.length) break;
+      // The last slide: a press that showed nothing new means the deck has ended.
+      if (p.from >= this.count - 1 && !revealed && opts.budget === undefined) break;
+      if (stills > MAX_PRESSES) break;
+      await new Promise((r) => setTimeout(r, PRESS_RETRY_GAPS_MS[Math.min(Math.max(misses - 1, 0), PRESS_RETRY_GAPS_MS.length - 1)]));
       p = await this.view.pressKey(key);
     }
     return p;
@@ -179,7 +198,15 @@ export class DeckWalker {
       });
     };
 
-    const collectAt = async (nav: StopNav): Promise<number> => {
+    /** `slide|locator|text` of every counted node: a press that changed nothing reveals only text not in here. */
+    const seenText = new Set<string>();
+    const textKey = (slide: number, w: WalkNode): string => `${slide}\u0000${w.locator.stamp ?? ''}\u0000${w.locator.cssPath}\u0000${w.locator.childIndex}\u0000${w.node.data}`;
+    /**
+     * `onlyNew` (a press that changed nothing): count only nodes whose text is new at its place on this slide.
+     * A deck that re-renders its counter on every key makes a new text node with the same text each time;
+     * that is not a build step, and counting it would count the counter once per press.
+     */
+    const collectAt = async (nav: StopNav, onlyNew = false): Promise<number> => {
       await view.waitStable();
       const cur = Math.min(Math.max(0, await this.current()), count - 1);
       const stop = stops.push({ slide: cur, nav }) - 1;
@@ -194,6 +221,9 @@ export class DeckWalker {
         if (nodes.has(w.key)) continue;
         // The slide or block that contains the node (review finding 35), else the one current now.
         const own = typeof w.slide === 'number' ? Math.min(w.slide, count - 1) : cur;
+        const tk = textKey(own, w);
+        if (onlyNew && seenText.has(tk)) continue;
+        seenText.add(tk);
         nodes.set(w.key, { w, slide: own, stop });
       }
       for (const b of res.blocks) {
@@ -274,12 +304,22 @@ export class DeckWalker {
         let key: NavKey = 'ArrowRight';
         let presses = 0;
         while (presses < MAX_PRESSES) {
-          let p = await this.pressPatiently(key);
+          // A press that changes nothing may show a build step on this slide: collect, as a stop of its own.
+          let stillHere = 0;
+          const onStill = async (): Promise<boolean> => {
+            stillHere++;
+            const had = nodes.size;
+            await collectAt({ kind: 'keys', key, presses, still: stillHere }, true);
+            return nodes.size > had;
+          };
+          let p = await this.pressPatiently(key, { onStill });
           if (!p.moved && presses === 0 && det.count > 1) {
             notes.push('ArrowRight did not move the deck; trying PageDown');
             key = 'PageDown';
-            p = await this.pressPatiently(key);
+            stillHere = 0;
+            p = await this.pressPatiently(key, { onStill });
           }
+          if (p.moved) this.stillBeforeMove[presses] = stillHere;
           keys = keys === 'synthetic' || p.via === 'synthetic' ? 'synthetic' : 'input';
           if (!p.moved) {
             if (p.from < det.count - 1) notes.push(`${key} changed nothing on slide ${p.from + 1} of ${det.count}`);
@@ -342,6 +382,7 @@ export class DeckWalker {
    */
   async startReplay(): Promise<void> {
     this.pos = 0;
+    this.still = 0;
     if (this.kind === 'scroll' || this.kind === 'single') await this.view.scrollToTop();
     else if (this.kind === 'generic') await this.toStart(await this.view.detect(), null);
   }
@@ -368,14 +409,31 @@ export class DeckWalker {
     } else {
       while (this.pos < nav.presses) {
         // Every key settles before the next: a slide read mid-transition is unreliable (two slides visible).
-        const p = await this.pressPatiently(nav.key);
+        // The walk's own count of presses that changed nothing before this move, plus the usual retries.
+        const budget = Math.max(0, (this.stillBeforeMove[this.pos] ?? 0) - this.still) + PRESS_RETRY_GAPS_MS.length;
+        const p = await this.pressPatiently(nav.key, { budget });
         if (process.env.BLUELINE_DEBUG === '1') this.say(`replay press ${nav.key}: ${p.from + 1} -> ${p.to + 1} via ${p.via} delivered ${p.delivered}`);
         if (!p.moved) break;
         this.pos++;
+        this.still = 0;
       }
       if (this.pos !== nav.presses) {
         this.say(`replay: stop ${i} needs ${nav.presses} ${nav.key} presses, the deck moved ${this.pos} times`);
         return false;
+      }
+      // A build step on this slide: the same presses that changed nothing in the walk.
+      const want = nav.still ?? 0;
+      if (this.still > want) {
+        this.say(`replay: stop ${i} needs ${want} presses on its slide, ${this.still} were made`);
+        return false;
+      }
+      while (this.still < want) {
+        const p = await this.view.pressKey(nav.key);
+        if (p.moved) {
+          this.say(`replay: stop ${i} expected a build step, the deck moved on`);
+          return false;
+        }
+        this.still++;
       }
     }
     const cur = await this.current();

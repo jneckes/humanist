@@ -99,18 +99,23 @@ const failureFor = (j: MapJson, text: string) => j.report.probe.failures.find((f
 
 // ------------------------------------------------------------------------------------------- finding 28
 
-test('builds.html: a walk that reached 1 of 5 slides is incomplete coverage and exits 1, with or without --min-coverage (D-j)', async () => {
+test('builds.html: key-gated build steps are walked through and counted, and the probe replays them (D-j; real decks)', async () => {
+  // Slide 1 shows two build points, one per key press, before ArrowRight moves the deck. The walk collects
+  // after every press that changes nothing (it may show a build step), presses again, and reaches all five
+  // slides; the probe's replay makes the same presses, so the build points are checked like any text.
   test.setTimeout(300_000);
   const deck = copyDeck('builds');
-  const { code, j } = mapJson(deck);
-  expect(j.report.slides).toMatchObject({ kind: 'generic', count: 5, reached: 1 });
-  expect(j.coverage.slides).toEqual({ count: 5, reached: 1 });
-  expect(j.report.coverage.complete).toBe(false);
-  expect(code).toBe(1);
-  const t = map([deck, '--report', '--min-coverage', '0.95']);
-  expect(t.code).toBe(1);
-  expect(t.stdout).toContain('INCOMPLETE: the walk reached 1 of 5 slides');
-  expect(t.stdout).toContain('Minimum coverage 95.0%: NOT met (the walk reached 1 of 5 slides)');
+  const { code, j, stderr } = mapJson(deck);
+  expect(j.report.slides).toMatchObject({ kind: 'generic', count: 5, reached: 5 });
+  expect(j.coverage.slides).toEqual({ count: 5, reached: 5 });
+  expect(j.report.coverage.complete).toBe(true);
+  for (const text of ['First build point', 'Second build point']) {
+    const n = j.runs.filter((r) => r.text === text);
+    expect(n.length, `${text} is counted`).toBe(1);
+    expect(n[0]).toMatchObject({ slide: 0, confidence: 'exact', probe: 'pass' });
+  }
+  expect(j.report.probe.failures).toEqual([]);
+  expect(code, stderr.slice(-2000)).toBe(0);
 });
 
 // ------------------------------------------------------------------------------------------- finding 30
