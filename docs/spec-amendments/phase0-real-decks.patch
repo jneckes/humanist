@@ -1,0 +1,31 @@
+--- a/SPEC.md
++++ b/SPEC.md
+@@ -431,7 +431,7 @@
+ 
+ - The visible view records which keys moved the deck and stores them in `session.json` as `deckNav: {forward, back}`. The defaults are ArrowRight and ArrowLeft, then PageDown and PageUp.
+ - The render service sends the forward key with `webContents.sendInputEvent` (trusted input), as a `keyDown` then a `keyUp`. `keyCode` takes Electron Accelerator key names, not DOM `key` values, so stored names are mapped: ArrowRight → `Right`, ArrowLeft → `Left`, PageDown → `PageDown`, PageUp → `PageUp`, and the space bar → `Space`. Electron documents that the window must be focused for `sendInputEvent`, so the render service calls `webContents.focus()` on the render window first. Phase 0 checks that keys reach an offscreen deck while the visible window keeps focus. If they do not, the preload dispatches the key as a synthetic `KeyboardEvent`, and a deck that ignores untrusted keys gets `navOk: false`. After each key it waits up to 1 s for the visible slide to change, and repeats until it reaches the target slide.
+-- If a key changes nothing, it stops and sets `navOk: false`.
++- A key that changes nothing on a slide that is not the last is pressed again after 700, 1,400 and 2,500 ms: decks that build take the first press to finish the build in progress, or ignore keys during a transition. Text a press shows without changing the slide (a key-gated build step) is collected too, and a press that shows new text does not use up a retry. If the retries change nothing, it stops and sets `navOk: false`.
+ 
+ ### 6.8 People, recordings and sharing notes
+ 
+@@ -869,6 +869,8 @@
+   - No candidates: `none`.
+ 
+   A stamped run is never preferred over a literal with the same text.
++- The overlay records which text nodes scripts change: after the document leaves `loading`, any change; while it loads, any change that removes a text node (the parser never does). A DOM text node a script changed never maps to its own stamped run: a deck engine that rewrites its slide counter leaves slide 1's value in the source.
++- A text node a script inserted, whose text lies inside the source text of its nearest stamped ancestor, is a piece of split text (one span per word or letter) and is `ambiguous`, never `exact` through a literal. A single character is never `exact` through a lone literal.
+ - A `none` node has no outline, and a click on it drops a pin.
+ 
+ **Committing an edit.**
+@@ -1263,7 +1265,9 @@
+      - the slide count is unchanged.
+   5. Undo through the patcher, and assert that the copy's bytes equal the original.
+ 
+-  Coverage counts only nodes that pass.
++  Coverage counts only nodes that pass. To keep `map` to minutes on large animated decks, up to 24 runs are written at once, each with a sentinel of its own (`⟦bl1⟧`, `⟦bl2⟧`…), and checked on one load against step 4 with their own sentinel; then the writes are undone newest first and the bytes compared. Whatever a batch cannot attribute to one run (a new console error, a changed slide count, a refused write, a failed undo), and every run that fails on a batch, is probed again on its own with `⟦bl⟧`, and that result stands.
++
++  `blueline map --reduced-motion` maps the deck as `prefers-reduced-motion: reduce` shows it.
+ - **Diagnostics window** (Help › Run Diagnostics, or `blueline check`). Josh runs it on his Mac with Wispr Flow. It writes `check.json` to app data, and Josh shares it by pasting it into the session or committing it as `fixtures/check/<yyyy-mm-dd>.json`.
+   - **What it contains:**
+     - a deck view on a reveal.js fixture, with the real key router and mode switching;

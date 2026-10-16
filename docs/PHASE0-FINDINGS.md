@@ -556,6 +556,104 @@ under Review round 1, at the end; its new entries, F18 to F24, sit in the sectio
 - **Electron installs SIGINT, SIGTERM and SIGHUP graceful-quit handlers while it starts,** so main installs its
   own signal handlers after `ready` (F24).
 
+## Josh's real decks (section 10 exit gate; SPEC 13, question 1)
+
+Josh sent 14 files on 2026-10-16: 12 distinct decks (two were byte-identical copies). They are kept in the
+gitignored `fixtures/local/`, with their baselines in `fixtures/local/expected/` (`<deck>.json` with motion as
+the deck sets it, `<deck>.reduced-motion.json` with `blueline map --reduced-motion`). All 12 use their own
+slide engine (no reveal.js), update `location.hash`, and honour `prefers-reduced-motion`; five animate with GSAP
+(SplitText, ScrambleText). Six have more than 400 visible text nodes; the largest is 977 KB.
+
+### F25. The walk must be patient with decks that build (6.7 Index replay; section 10 step 3)
+
+- **Check.** `blueline map` on `miller-ink-qbr.html`.
+- **Result.** The walk stopped on slide 2 of 16. The deck's `next()` returns while a transition is busy and
+  spends the first press on fast-forwarding a build that has more than 0.6 s left; read literally, 6.7's "If a
+  key changes nothing, it stops" ends the walk there. The hash fallback did not help: the deck reads
+  `location.hash` only at start.
+- **Code.** A key that changes nothing on a slide that is not the last is pressed again after 700, 1,400 and
+  2,500 ms. The walk also collects after every such press, because it may have shown a key-gated build step,
+  and counts only text that is new at its place (a counter re-rendered on every key is not counted twice). A
+  press that shows new text does not use up a retry. The probe's replay presses the same way and knows how
+  many presses before each move changed nothing. `fixtures/map/builds.html` now reaches all 5 slides and
+  counts both build points. All 193 slides of the 12 decks are reached.
+
+### F26. One probe load per run takes hours on real decks (section 10 mutation probe)
+
+- **Check.** The same decks: each load is a 0.5–1 MB file with an animated engine, then a replay of every key
+  to the node's slide.
+- **Result.** A 17-slide deck was still probing after 30 minutes.
+- **Code.** The probe writes up to 24 runs at once, each with a sentinel of its own (`⟦bl1⟧`, `⟦bl2⟧`…, none a
+  substring of another), checks every node of the batch on one load against step 4 (its own sentinel in that
+  node, and that sentinel in no other node except reported renders of its run), undoes the writes newest first
+  and compares the copy's bytes (step 5). A run passes on the batch only if all its nodes pass. Whatever a batch
+  cannot attribute (a new console error, a changed slide count, a refused or failed write, a failed undo) and
+  every run that fails on it is probed again on its own with `⟦bl⟧`, and that verdict stands, so a batch can
+  only make the probe faster, never more lenient (`test/unit/app/probe.test.ts`, "a write that lands in another
+  node fails on the batch and again on its own"). Real decks now take 2–7 minutes each.
+
+### F27. Animated decks: map as reduced motion shows them (6.3, 6.9, section 10 step 4)
+
+- **Check.** `blueline map` with and without `--reduced-motion` (Chromium's `force-prefers-reduced-motion`) on
+  all 12 decks.
+- **Result.** With motion on, the GSAP decks split headings into one span per word or letter, scramble text
+  for a few seconds, and fade content in after each slide change; the walk read many slides mid-build. With
+  reduced motion every deck draws its final frame directly, as plain text.
+
+  | | Motion as set | Reduced motion |
+  |---|---|---|
+  | Visible text nodes | MOTION_TOTAL | 6,675 |
+  | Exact and probe-passed | MOTION_COVERAGE | 5,941 (89.0%) |
+  | Slides reached | MOTION_SLIDES | 193 of 193 |
+  | Probe failures | MOTION_PF | 1 |
+
+  The five GSAP decks fall to MOTION_GSAP with motion on; the seven others are within a few points either way.
+- **Code.** `blueline map --reduced-motion`. Edit mode (Phase 2) needs a decision: see Still open.
+
+### F28. Deck engines rewrite their chrome (9.2 Matching DOM to source at runtime)
+
+- **Check.** The probe on the reduced-motion maps.
+- **Result.** Slide 1's counter, total and section label ("01", "/ 16", "Cover") matched their own stamped
+  runs, because the source holds slide 1's values, and failed the probe: the engine writes them again on every
+  load, so an edit there would be undone. Some engines write them from an inline script while the page is still
+  loading.
+- **Code.** The preload records the text nodes scripts change: after parsing, any change; while parsing, any
+  record that removes a text node (the parser never does; `el.textContent = …` always does). The matcher never
+  takes the own stamped run for such a node (`DomTextNode.touched`; `fixtures/matching/chrome-rewrite.html`).
+
+### F29. Split text and lone characters (9.2 Strategy 2 step 3)
+
+- **Check.** The probe on the motion-on maps.
+- **Result.** 22 wrong-place writes, all caught by the probe: GSAP split headings into one span per letter, and
+  a lone "A" or "T" matched some literal `'A'` elsewhere in the file (in the bundled library's own code).
+- **Code.** A node a script inserted whose text lies inside its nearest stamped ancestor's source text is
+  `ambiguous` (`split`), and a single character through a lone literal is `ambiguous` (`short`). Two-character
+  labels ("Q1", "EU") stay exact (`fixtures/matching/split-chars.html`).
+
+### F30. Coverage on the real decks, and what stops the rest
+
+| Deck | Nodes | Exact and probe-passed (reduced motion) |
+|---|---|---|
+DECK_ROWS
+
+Of the 734 nodes that are not exact on the reduced-motion maps (11.0% of all nodes): 4.6% of all nodes are
+numbers and counters (slide numbers, KPIs, dates: `computed`, or equal to several runs), 0.6% are glyphs and
+labels of up to three characters, and 5.8% are words. The words are mostly labels that several literals hold
+(the decks draw diagrams and tables from data arrays: "PracticeMaster" six times), kickers assembled from parts
+("01 · Fractional CPTO"), and chrome. Counting only words, 93.9% are exact.
+
+The one probe failure (`bobsled-landing-zone.html`, "Writing transfer job") is not a wrong-place write: the
+literal is the right source, and the deck also shows it in a hidden element on another slide, so an edit would
+change that copy too. The probe does not count such a node; 6.3's "also changes N other places" is the Edit
+mode answer.
+
+**Measured, not adopted:** 176 of the 280 `duplicate` nodes are text that a stamped run and a literal both
+hold. 9.2 never prefers the stamped run, because a script may have replaced the element's text with the
+literal; F28's record of script changes now shows when that happened. With the own stamped run taking
+precedence for nodes no script touched, the three decks with the most duplicates rose from 80.7%, 80.1% and
+87.4% to 83.8%, 85.3% and 89.5%, with no new probe failure. Proposed in
+`docs/spec-amendments/README.md`; not in the code.
+
 ## Packaging and the `blueline` command
 
 ### F24. A packaged build cannot serve files from inside `app.asar` (9.10, 9.1 Shell view; review findings 19, 20, 25, 27)
@@ -625,9 +723,10 @@ in [`spec-amendments/phase0-review1.patch`](spec-amendments/phase0-review1.patch
 
 ## Still open
 
-- **The 95% coverage gate and the 90% navigation gate** need Josh's 10 real decks in `fixtures/local/`
-  (SPEC 13, question 1). Run `blueline map <deck> --report --json > fixtures/local/expected/<deck>.json` on
-  each and report the combined figure.
+- **The 95% coverage gate is not met** (F30): 89.0% on Josh's 12 decks with reduced motion, MOTION_COVERAGE with motion
+  as set. The navigation gate is met (193 of 193 slides). Two decisions for Josh: whether Edit and Review render
+  animated decks with reduced motion (F27), and whether an untouched stamped node may take precedence over an
+  equal literal (F30, `docs/spec-amendments/README.md`).
 - **Diagnostics on Josh's Mac.** The guided steps (Wispr Flow into the card and the heading, dictation in
   each mode, two strokes while dictating) need a person and Wispr Flow; `check.json` from that run decides
   the Diagnostics exit gate. F3, F4 and F5 are also rechecked there (Retina scale, macOS focus rules). The card
@@ -640,8 +739,8 @@ in [`spec-amendments/phase0-review1.patch`](spec-amendments/phase0-review1.patch
 - **The command on macOS and Windows** (F24): `open-file` routing from a `map` or `check` process is not run
   on macOS here; Windows still stops the app with `child.kill`; a `blueline` command killed with SIGKILL
   leaves its own run folder (`tmp/blueline-cli-*`), though the app still stops.
-- **Walk limits** (F23): a generic deck with in-slide build steps is reported incomplete; a document that
-  scrolls inside its own container is walked only as far as `scrollIntoView` takes it.
+- **Walk limits** (F23): a document that scrolls inside its own container is walked only as far as
+  `scrollIntoView` takes it. Key-gated build steps are now walked and counted (F25).
 - **Slide detection trade-offs** (review finding 29): a deck that shows its first slide only after `load`,
   without inserting DOM nodes, is detected as scroll or single by the visible view until the next structural
   change; a real deck nested inside the visible member of an outer group of three siblings with one or two

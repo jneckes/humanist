@@ -322,6 +322,8 @@ function styleOf(el: Element, fallback: Window): CSSStyleDeclaration {
 export class ScriptTouchTracker {
   private readonly nodes = new WeakSet<object>();
   private readonly parents = new WeakSet<object>();
+  /** Elements a script inserted: every text node inside one is a script's (GSAP SplitText wraps each word). */
+  private readonly inserted = new WeakSet<object>();
   private readonly observer: MutationObserver | null;
   private parsed: boolean;
 
@@ -352,15 +354,22 @@ export class ScriptTouchTracker {
         this.parents.add(r.target);
         r.addedNodes.forEach((n) => {
           if (n.nodeType === 3) this.nodes.add(n);
+          else if (n.nodeType === 1 || n.nodeType === 11) this.inserted.add(n);
         });
       }
     }
   }
 
-  /** True when a script changed the node or its parent's children after parsing. */
+  /**
+   * True when a script changed the node, its parent's children, or inserted an element the node is inside.
+   * A mutation record names only the inserted element, not the text nodes built inside it before insertion.
+   */
   isTouched(node: Text): boolean {
     if (this.observer) this.take(this.observer.takeRecords());
-    return this.nodes.has(node) || (node.parentNode !== null && this.parents.has(node.parentNode));
+    if (this.nodes.has(node)) return true;
+    if (node.parentNode !== null && this.parents.has(node.parentNode)) return true;
+    for (let p: Node | null = node.parentNode; p; p = p.parentNode) if (this.inserted.has(p)) return true;
+    return false;
   }
 }
 
