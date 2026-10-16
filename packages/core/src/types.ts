@@ -390,6 +390,14 @@ export interface DomTextNode {
    * candidate set (9.2 Matching DOM to source at runtime, step 2).
    */
   texts?: string[];
+  /**
+   * A script changed this node's data, or its parent's children, after the parser finished (the document
+   * left readyState 'loading'). The node is then not the parser's text node for its stamp: a deck engine
+   * that rewrites a slide counter or a section label on every slide leaves the source's first value in
+   * place, equal by coincidence on slide 1 only. The matcher never takes the own stamped run for a touched
+   * node (step 1 falls through to the candidate set); a literal can still match it.
+   */
+  touched?: boolean;
 }
 
 /**

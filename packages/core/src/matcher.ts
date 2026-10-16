@@ -300,7 +300,8 @@ export function createMatcher(map: ClientMap | DeckMap, opts: MatcherOptions = {
     // the run's own text node.
     if (node.stamp !== null) {
       const mine = own.get(ownKey(node.stamp, node.textIndex));
-      if (mine && mine.value === data && ownAgrees(node, mine)) {
+      // A node a script rewrote after parsing is not the run's own text node, whatever it holds now.
+      if (mine && mine.value === data && node.touched !== true && ownAgrees(node, mine)) {
         // A stamped run is never preferred over a literal with the same text: the script may have
         // replaced the element's text with that literal. Another run of the same element with the same
         // text is the same doubt: a script may have swapped or removed equal text nodes (D-b).

@@ -249,6 +249,8 @@ function zeroAreaClip(clip: string): boolean {
 export interface WalkOptions {
   /** The overlay's shadow host; its subtree is never page text (section 10 step 4). */
   host?: () => Element | null;
+  /** Marks text nodes scripts changed after parsing (DomTextNode.touched). */
+  touched?: ScriptTouchTracker;
   /**
    * Skip text inside an absolutely positioned element clipped to a zero area (`clip: rect(1px, 1px, 1px,
    * 1px)`, the visually-hidden pattern of live regions such as reveal.js's `.aria-status`). Default true.
@@ -308,6 +310,60 @@ function styleOf(el: Element, fallback: Window): CSSStyleDeclaration {
  * The section 10 step 4 walk, and `find` / `locate` over the same rules. Keys are given once per node per
  * page load (a WeakMap), so the walker can count each node once across slides.
  */
+/**
+ * Which text nodes scripts changed (DomTextNode.touched). Built at preload start, before any page script, so
+ * it sees every change. After readyState leaves 'loading', a changed text node, a text node a script
+ * inserted, and every text child of an element whose children a script changed count as touched. While the
+ * document is still loading, insertions and data appends may be the parser's own, but the parser never
+ * removes a text node: a record that removes one is a script (`el.textContent = …` from an inline script at
+ * the end of <body>, as Josh's real decks write their slide counters), so its target and its added text
+ * nodes count as touched then too. Isolated-world safe: it observes the shared DOM.
+ */
+export class ScriptTouchTracker {
+  private readonly nodes = new WeakSet<object>();
+  private readonly parents = new WeakSet<object>();
+  private readonly observer: MutationObserver | null;
+  private parsed: boolean;
+
+  constructor(private readonly doc: Document) {
+    this.parsed = doc.readyState !== 'loading';
+    const View = doc.defaultView as (Window & { MutationObserver?: typeof MutationObserver }) | null;
+    const MO = View?.MutationObserver ?? (typeof MutationObserver === 'function' ? MutationObserver : undefined);
+    this.observer = MO ? new MO((records) => this.take(records)) : null;
+    this.observer?.observe(doc, { subtree: true, childList: true, characterData: true });
+    if (!this.parsed) {
+      doc.addEventListener('readystatechange', () => {
+        if (doc.readyState === 'loading') return;
+        // Records queued before this point were the parser's: deliver them as such first.
+        if (this.observer) this.take(this.observer.takeRecords(), true);
+        this.parsed = true;
+      });
+    }
+  }
+
+  private take(records: MutationRecord[], parserTime = !this.parsed): void {
+    for (const r of records) {
+      if (parserTime) {
+        // During parsing only a removed text node is certain to be a script's doing.
+        if (r.type !== 'childList' || !Array.prototype.some.call(r.removedNodes, (n: Node) => n.nodeType === 3)) continue;
+      }
+      if (r.type === 'characterData') this.nodes.add(r.target);
+      else if (r.type === 'childList') {
+        this.parents.add(r.target);
+        r.addedNodes.forEach((n) => {
+          if (n.nodeType === 3) this.nodes.add(n);
+        });
+      }
+    }
+  }
+
+  /** True when a script changed the node or its parent's children after parsing. */
+  isTouched(node: Text): boolean {
+    if (this.observer) this.take(this.observer.takeRecords());
+    return this.nodes.has(node) || (node.parentNode !== null && this.parents.has(node.parentNode));
+  }
+}
+
 export class DomWalker {
   private readonly keys = new WeakMap<object, number>();
   private nextKey = 1;
@@ -490,6 +546,7 @@ export class DomWalker {
   /** The node's DomTextNode, with its parent's texts while the reply's texts budget lasts. */
   private describe(node: Text): DomTextNode {
     const d = describeTextNode(node, this.textsCache);
+    if (this.opts.touched?.isTouched(node)) d.touched = true;
     if (d.texts) {
       const t = node.parentNode ? this.textsCache.get(node.parentNode) : null;
       const cost = t ? t.chars + t.texts.length : 0;

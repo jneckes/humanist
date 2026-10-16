@@ -96,6 +96,12 @@ describe('argument codecs and validators', () => {
     expect(validateOpenArgs(JSON.parse('{"__proto__": {"x": 1}, "files": []}'))).toEqual({ files: [], protected: false });
   });
 
+  it('validateMapArgs: reducedMotion is a boolean, present only when true', () => {
+    expect(validateMapArgs({ deck: '/d', reducedMotion: true })).toEqual({ deck: '/d', report: false, json: false, minCoverage: null, reducedMotion: true });
+    expect(validateMapArgs({ deck: '/d', reducedMotion: false })).toEqual({ deck: '/d', report: false, json: false, minCoverage: null });
+    expect(validateMapArgs({ deck: '/d', reducedMotion: 'yes' })).toBeNull();
+  });
+
   it('validateMapArgs: coverage within 0..1', () => {
     expect(validateMapArgs({ deck: '/d' })).toEqual({ deck: '/d', report: false, json: false, minCoverage: null });
     expect(validateMapArgs({ deck: '/d', minCoverage: 1 })?.minCoverage).toBe(1);

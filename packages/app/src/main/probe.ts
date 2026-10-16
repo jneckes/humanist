@@ -13,11 +13,23 @@
 //   5. Undo through the patcher, and assert that the copy's bytes equal the original.
 // Coverage counts only nodes that pass. Each run is written once and every node mapped to it is checked
 // against that one write (several nodes can be renders of one run).
+//
+// Batches. A probe load of a large animated deck takes seconds (a reload, then replaying every key to the
+// node's slide), and one load per run made `map` run for hours on real decks. So the probe first writes up
+// to BATCH_SIZE runs at once, each with a sentinel of its own (⟦bl1⟧, ⟦bl2⟧…; the closing bracket keeps one
+// from being a substring of another), and checks every node of the batch on one load: each node must hold
+// its own run's sentinel, and each sentinel may appear in no other node except reported renders of that
+// run, exactly as step 4 asks of ⟦bl⟧. Then it undoes the writes in reverse and checks the copy's bytes
+// (step 5). A run passes on the batch only if all its nodes pass. Anything the batch cannot attribute to
+// one run (a new console error, a changed slide count, a refused or failed write, a failed undo) and every
+// run that fails on the batch is probed again on its own with ⟦bl⟧, and that result is its verdict. A wrong
+// write cannot pass a batch: the run's own sentinel would be missing from its node, or present in another.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { DeckIO, EditorModule, WriteQueue } from '@blueline/core/capabilities';
 import type { FindResult, LocateResult, NodeLocator, TrustState } from '@blueline/core/ipc';
+import type { WriteOutcome, WriteRecord } from '@blueline/core/types';
 import { buildMap } from '@blueline/core/mapper';
 import { buildServedCopy } from '@blueline/core/served';
 import { decodeDeck, encodeDeck, encodeLatin1 } from '@blueline/core/text';
@@ -28,6 +40,17 @@ import type { ConsoleError, RenderView } from './render-service';
 
 /** Section 10 Mutation probe step 2: the sentinel appended to a run. */
 export const SENTINEL = '⟦bl⟧';
+
+/** What every sentinel starts with: one find() on a batch load returns every node holding any of them. */
+export const SENTINEL_PREFIX = '⟦bl';
+
+/** The sentinel of the j-th run of a batch (0-based): ⟦bl1⟧, ⟦bl2⟧… Never a substring of another. */
+export function batchSentinel(j: number): string {
+  return `${SENTINEL_PREFIX}${j + 1}⟧`;
+}
+
+/** Runs written and checked on one probe load (1 turns batching off). */
+export const BATCH_SIZE = 24;
 
 /** `.<name>.bl-probe.html`: hidden, in the deck's folder (section 10 Mutation probe step 1). */
 export function probeCopyName(fileName: string): string {
@@ -277,6 +300,8 @@ export interface NodeCheck {
   reported: ReadonlySet<string>;
   /** Console errors of the probe load that the walk's load did not have. */
   newErrors: readonly string[];
+  /** The sentinel written to this node's run (default ⟦bl⟧; batches give each run its own). */
+  sentinel?: string;
 }
 
 /**
@@ -297,11 +322,14 @@ export function judgeNode(c: NodeCheck): ProbeVerdict {
     return { pass: false, why: `the slide count changed from ${c.slideCountBefore} to ${c.slideCountAfter}` };
   }
   if (!c.located || !c.located.found || !c.located.node) return { pass: false, why: 'the node is not there after the reload' };
+  const sentinel = c.sentinel ?? SENTINEL;
   const data = c.located.node.node.data;
-  if (!data.includes(SENTINEL)) return { pass: false, why: `the sentinel is not in the node (it reads ${JSON.stringify(data.slice(0, 80))})` };
+  if (!data.includes(sentinel)) return { pass: false, why: `the sentinel is not in the node (it reads ${JSON.stringify(data.slice(0, 80))})` };
   if (c.found.truncated) return { pass: false, why: 'the sentinel appears in too many nodes' };
   const self = locatorKey(c.self);
   for (const m of c.found.matches) {
+    // A batch load holds other runs' sentinels too: only this run's own sentinel is this node's business.
+    if (!m.node.data.includes(sentinel)) continue;
     const k = locatorKey(m.locator);
     if (k === self || c.sameRun.has(k)) continue;
     const reported = c.reported.has(k);
@@ -371,16 +399,33 @@ export interface ProbeContext {
    * settle fully (RenderView.pressKey).
    */
   settleMs?: number;
+  /** Runs written and checked per load (default BATCH_SIZE; 1 probes each run on its own). */
+  batchSize?: number;
 }
 
 export interface ProbeRun {
-  /** Runs written (one write per run). */
+  /** Writes made (one per run on its batch, plus one per run probed again on its own). */
   runs: number;
   /** Set when the probe stopped early (the copy could not be restored, or an interrupt); remaining nodes failed. */
   aborted: string | null;
+  /** Probe loads (batches plus single runs), for the report's timing line. */
+  loads?: number;
 }
 
-/** Runs the probe over every exact node, sequentially, one write per run. */
+interface RunGroup {
+  runId: string;
+  group: CountedNode[];
+  /** Locator keys of every reported render of this run (exact, or this run among ambiguous candidates). */
+  sameRun: ReadonlySet<string>;
+  /** Earliest walk stop that shows one of its nodes: batches follow the walk's order. */
+  firstStop: number;
+}
+
+type PassItem = { run: RunGroup; sentinel: string };
+/** Per run: its nodes' verdicts are final (`done`), or the batch could not decide it (`retry`). */
+type PassOutcome = Map<string, 'done' | 'retry'>;
+
+/** Runs the probe over every exact node: batches first, then each undecided run on its own. */
 export async function runProbe(ctx: ProbeContext): Promise<ProbeRun> {
   const groups = new Map<string, CountedNode[]>();
   for (const n of ctx.nodes) {
@@ -390,126 +435,219 @@ export async function runProbe(ctx: ProbeContext): Promise<ProbeRun> {
     g.push(n);
   }
   const reported = new Set(ctx.nodes.map((n) => locatorKey(n.locator)));
+  const runsList: RunGroup[] = [...groups].map(([runId, group]) => ({
+    runId,
+    group,
+    sameRun: new Set(
+      ctx.nodes
+        .filter((n) => n.match.runId === runId || (n.match.confidence === 'ambiguous' && n.match.candidates.some((c) => c.runId === runId)))
+        .map((n) => locatorKey(n.locator)),
+    ),
+    firstStop: Math.min(...group.map((n) => n.stop)),
+  }));
+  runsList.sort((a, b) => a.firstStop - b.firstStop);
   const queue: WriteQueue = ctx.editor.createWriteQueue(ctx.copy.io());
   // Every load on its own origin: storage a deck wrote on an earlier probe load (the slide it was on, a "seen"
   // flag) never changes where or how the next load opens (review finding 30).
   const target = () => ({ docId: ctx.newDocId ? ctx.copy.addDocId(ctx.newDocId()) : ctx.copy.docId, fileName: ctx.copy.fileName });
-  let runs = 0;
-  let aborted: string | null = null;
+  const state = { runs: 0, loads: 0, aborted: null as string | null };
+  const size = Math.max(1, ctx.batchSize ?? BATCH_SIZE);
+
+  const single: RunGroup[] = [];
+  if (size === 1) single.push(...runsList);
+  else {
+    for (let at = 0; at < runsList.length; at += size) {
+      const batch = runsList.slice(at, at + size);
+      if (state.aborted || ctx.interrupted()) {
+        single.push(...batch);
+        continue;
+      }
+      ctx.log(`probe batch ${at / size + 1}/${Math.ceil(runsList.length / size)}: ${batch.length} run${batch.length === 1 ? '' : 's'}`);
+      const out = await probePass(ctx, queue, batch.map((run, j) => ({ run, sentinel: batchSentinel(j) })), reported, target, state, true);
+      for (const run of batch) if (out.get(run.runId) !== 'done') single.push(run);
+    }
+    if (single.length > 0) ctx.log(`probe: ${single.length} run${single.length === 1 ? '' : 's'} again on their own`);
+  }
+  single.sort((a, b) => a.firstStop - b.firstStop);
   let i = 0;
-  for (const [runId, group] of groups) {
+  for (const run of single) {
     i++;
-    if (aborted) {
-      for (const n of group) n.probe = { pass: false, why: `not probed: ${aborted}` };
+    if (state.aborted) {
+      for (const n of run.group) n.probe = { pass: false, why: `not probed: ${state.aborted}` };
       continue;
     }
     if (ctx.interrupted()) {
-      aborted = 'interrupted';
-      for (const n of group) n.probe = { pass: false, why: 'not probed: interrupted' };
+      state.aborted = 'interrupted';
+      for (const n of run.group) n.probe = { pass: false, why: 'not probed: interrupted' };
       continue;
     }
-    ctx.log(`probe ${i}/${groups.size}: ${runId} (${group.length} node${group.length === 1 ? '' : 's'})`);
-    const sameRun = new Set(
-      ctx.nodes
-        .filter((n) => n.match.runId === runId || (n.match.confidence === 'ambiguous' && n.match.candidates.some((c) => c.runId === runId)))
-        .map((n) => locatorKey(n.locator)),
-    );
-    const before = group[0].node.data;
-    const fail = (why: string) => {
-      for (const n of group) if (!n.probe || n.probe.pass) n.probe = { pass: false, why };
-    };
-    let outcome;
+    ctx.log(`probe ${i}/${single.length}: ${run.runId} (${run.group.length} node${run.group.length === 1 ? '' : 's'})`);
+    await probePass(ctx, queue, [{ run, sentinel: SENTINEL }], reported, target, state, false);
+  }
+  return { runs: state.runs, aborted: state.aborted, loads: state.loads };
+}
+
+/**
+ * Steps 2–5 for one load: write every item's sentinel, reload, show each node's stop, judge each node, undo
+ * every write in reverse and check the copy's bytes. In a batch (`tentative`), only a run whose nodes all
+ * pass is decided here; everything else is left for a probe of its own. On its own, every verdict is final.
+ */
+async function probePass(
+  ctx: ProbeContext,
+  queue: WriteQueue,
+  items: PassItem[],
+  reported: ReadonlySet<string>,
+  target: () => { docId: string; fileName: string },
+  state: { runs: number; loads: number; aborted: string | null },
+  tentative: boolean,
+): Promise<PassOutcome> {
+  const out: PassOutcome = new Map(items.map((it) => [it.run.runId, 'retry']));
+  const finalFail = (run: RunGroup, why: string) => {
+    for (const n of run.group) if (!n.probe || n.probe.pass) n.probe = { pass: false, why };
+    out.set(run.runId, 'done');
+  };
+  // Step 2, for each item. Each write names the version the previous one produced, so the queue never takes
+  // the stale-version path between two writes of the same pass.
+  const records: WriteRecord[] = [];
+  const written: PassItem[] = [];
+  let version = ctx.original.version;
+  let writeTrouble = false;
+  for (const it of items) {
+    const before = it.run.group[0].node.data;
+    let outcome: WriteOutcome;
     try {
-      outcome = await queue.edit({ version: ctx.original.version, runId, beforeText: before, afterText: before + SENTINEL });
+      outcome = await queue.edit({ version, runId: it.run.runId, beforeText: before, afterText: before + it.sentinel });
     } catch (e) {
-      outcome = { ok: false as const, verbatim: { before, after: before + SENTINEL }, why: e instanceof Error ? e.message : String(e) };
+      outcome = { ok: false, verbatim: { before, after: before + it.sentinel }, why: e instanceof Error ? e.message : String(e) };
     }
-    runs++;
     if (outcome.ok) {
-      try {
-        await checkRun(ctx, target(), group, sameRun, reported);
-      } catch (e) {
-        fail(`the probe could not check it: ${e instanceof Error ? e.message : String(e)}`);
-      }
-      // Step 5: undo through the patcher; the copy's bytes must equal the original.
-      let undoWhy: string | null = null;
-      try {
-        const u = await queue.undo(outcome.record);
-        if (!u.ok) undoWhy = `undo failed: ${u.why}`;
-      } catch (e) {
-        undoWhy = `undo failed: ${e instanceof Error ? e.message : String(e)}`;
-      }
-      if (undoWhy) fail(undoWhy);
+      state.runs++;
+      records.push(outcome.record);
+      written.push(it);
+      version = outcome.version;
+    } else if (tentative) {
+      writeTrouble = true; // decided on its own: an earlier write of the batch may be the cause
     } else {
-      fail(`the patcher did not write it: ${outcome.why}`);
+      state.runs++;
+      finalFail(it.run, `the patcher did not write it: ${outcome.why}`);
     }
-    // Whatever happened, the copy must be the original again before the next run.
-    let bytes: Uint8Array | null = null;
+  }
+  // Steps 3–4.
+  let inconclusive = false;
+  if (written.length > 0) {
     try {
-      bytes = await ctx.copy.read();
-    } catch {
-      bytes = null;
+      const verdicts = await checkPass(ctx, target(), written, reported);
+      state.loads++;
+      // A batch cannot tell which run caused a new console error or a changed slide count.
+      if (tentative && (verdicts.newErrors || verdicts.slideCountChanged)) inconclusive = true;
+      for (const it of written) {
+        const v = verdicts.byRun.get(it.run.runId)!;
+        const allPass = it.run.group.every((n) => v.get(n)?.pass === true);
+        if (!tentative || (allPass && !inconclusive)) {
+          for (const n of it.run.group) n.probe = v.get(n) ?? { pass: false, why: 'the probe could not check it' };
+          out.set(it.run.runId, 'done');
+        }
+      }
+    } catch (e) {
+      if (tentative) inconclusive = true;
+      else for (const it of written) finalFail(it.run, `the probe could not check it: ${e instanceof Error ? e.message : String(e)}`);
     }
-    if (!bytes || !sameBytes(bytes, ctx.original.bytes)) {
-      fail(outcome.ok ? "undo did not restore the copy's bytes exactly" : 'the refused write changed the copy');
+  }
+  // Step 5: undo through the patcher, newest first; the copy's bytes must equal the original.
+  let undoWhy: string | null = null;
+  for (let k = records.length - 1; k >= 0; k--) {
+    try {
+      const u = await queue.undo(records[k]);
+      if (!u.ok) undoWhy = undoWhy ?? `undo failed: ${u.why}`;
+    } catch (e) {
+      undoWhy = undoWhy ?? `undo failed: ${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
+  let bytes: Uint8Array | null = null;
+  try {
+    bytes = await ctx.copy.read();
+  } catch {
+    bytes = null;
+  }
+  const restored = !!bytes && sameBytes(bytes, ctx.original.bytes);
+  if (undoWhy || !restored) {
+    const why = undoWhy ?? (written.length > 0 ? "undo did not restore the copy's bytes exactly" : 'the refused write changed the copy');
+    if (tentative) for (const it of items) out.set(it.run.runId, 'retry');
+    else for (const it of items) finalFail(it.run, why);
+    if (!restored) {
       try {
         await ctx.copy.restore();
         const again = await ctx.copy.read();
-        if (!sameBytes(again, ctx.original.bytes)) aborted = 'the probe copy could not be restored';
+        if (!sameBytes(again, ctx.original.bytes)) state.aborted = 'the probe copy could not be restored';
       } catch (e) {
-        aborted = `the probe copy could not be restored (${e instanceof Error ? e.message : String(e)})`;
+        state.aborted = `the probe copy could not be restored (${e instanceof Error ? e.message : String(e)})`;
       }
     }
   }
-  return { runs, aborted };
+  if (tentative && (inconclusive || writeTrouble)) {
+    // Keep the passes the batch did decide only when nothing about the load is in doubt.
+    if (inconclusive) for (const it of items) out.set(it.run.runId, 'retry');
+  }
+  for (const it of items) if (out.get(it.run.runId) === 'retry') for (const n of it.run.group) n.probe = undefined;
+  return out;
 }
 
-/** Steps 3–4 for one written run: reload the copy, show each node's stop, judge each node. */
-async function checkRun(
+/** Steps 3–4 for one load: reload the copy, show each node's stop, judge each node against its own sentinel. */
+async function checkPass(
   ctx: ProbeContext,
   target: { docId: string; fileName: string },
-  group: CountedNode[],
-  sameRun: ReadonlySet<string>,
+  items: PassItem[],
   reported: ReadonlySet<string>,
-): Promise<void> {
+): Promise<{ byRun: Map<string, Map<CountedNode, ProbeVerdict>>; newErrors: boolean; slideCountChanged: boolean }> {
   const view = ctx.view;
   const settleMs = ctx.settleMs ?? 300;
   await view.load(target);
   await view.waitStable(settleMs);
   const slideCountAfter = (await view.detect()).count;
   await ctx.start();
-  const byStop = new Map<number, CountedNode[]>();
-  for (const n of group) {
-    let g = byStop.get(n.stop);
-    if (!g) byStop.set(n.stop, (g = []));
-    g.push(n);
+  const byStop = new Map<number, { node: CountedNode; item: PassItem }[]>();
+  for (const it of items) {
+    for (const n of it.run.group) {
+      let g = byStop.get(n.stop);
+      if (!g) byStop.set(n.stop, (g = []));
+      g.push({ node: n, item: it });
+    }
   }
+  const byRun = new Map<string, Map<CountedNode, ProbeVerdict>>(items.map((it) => [it.run.runId, new Map()]));
+  let anyNewErrors = false;
+  const needle = items.length === 1 ? items[0].sentinel : SENTINEL_PREFIX;
   for (const stop of [...byStop.keys()].sort((a, b) => a - b)) {
     const reached = await ctx.replay(stop);
     await view.waitStable(settleMs);
-    const found = await view.find(SENTINEL);
+    const found = await view.find(needle);
     const newErrors = view
       .consoleErrors()
       .map((e) => ctx.normalize(e))
       .filter((m) => !ctx.baselineErrors.has(m));
-    for (const n of byStop.get(stop)!) {
+    if (newErrors.length > 0) anyNewErrors = true;
+    for (const { node: n, item } of byStop.get(stop)!) {
       let located: LocateResult | null = null;
       try {
         located = await view.locate(n.locator);
       } catch {
         located = null;
       }
-      n.probe = judgeNode({
-        reached,
-        slideCountBefore: ctx.slideCount,
-        slideCountAfter,
-        located,
-        found,
-        self: n.locator,
-        sameRun,
-        reported,
-        newErrors,
-      });
+      byRun.get(item.run.runId)!.set(
+        n,
+        judgeNode({
+          reached,
+          slideCountBefore: ctx.slideCount,
+          slideCountAfter,
+          located,
+          found,
+          self: n.locator,
+          sameRun: item.run.sameRun,
+          reported,
+          newErrors,
+          sentinel: item.sentinel,
+        }),
+      );
     }
   }
+  return { byRun, newErrors: anyNewErrors, slideCountChanged: slideCountAfter !== ctx.slideCount };
 }

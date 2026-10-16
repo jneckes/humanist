@@ -8,7 +8,7 @@
 
 export type CliCommand =
   | { kind: 'open'; files: string[]; protected: boolean }
-  | { kind: 'map'; deck: string; report: boolean; json: boolean; minCoverage: number | null }
+  | { kind: 'map'; deck: string; report: boolean; json: boolean; minCoverage: number | null; reducedMotion: boolean }
   | { kind: 'check'; auto: boolean; json: boolean }
   | { kind: 'later'; name: string; phase: number }
   | { kind: 'help' }
@@ -21,7 +21,7 @@ export const LATER: Readonly<Record<string, number>> = Object.freeze({ pdf: 1, e
 export const USAGE = `Usage:
   blueline <file.html>…                 open files in Blueline (same as: blueline open)
   blueline open <file.html>… [--protected]
-  blueline map <deck.html> [--report] [--json] [--min-coverage 0.95]
+  blueline map <deck.html> [--report] [--json] [--min-coverage 0.95] [--reduced-motion]
   blueline check [--auto] [--json]      open the Diagnostics window
   blueline pdf | export | mcp | attach  arrive in later phases
 
@@ -30,6 +30,7 @@ Options:
   --report             map: list every string that is not exact, with its slide and reason
   --json               print the result as JSON
   --min-coverage N     map: exit 1 when coverage is below N (0 to 1)
+  --reduced-motion     map: map the deck as prefers-reduced-motion: reduce shows it
   --auto               check: run only the automatic checks
   -h, --help           show this help
   -v, --version        show the version`;
@@ -80,9 +81,11 @@ function parseMap(args: readonly string[]): CliCommand {
   let report = false;
   let json = false;
   let minCoverage: number | null = null;
+  let reducedMotion = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '--report') report = true;
+    else if (a === '--reduced-motion') reducedMotion = true;
     else if (a === '--json') json = true;
     else if (a === '--min-coverage' || a.startsWith('--min-coverage=')) {
       const v = a === '--min-coverage' ? args[++i] : a.slice('--min-coverage='.length);
@@ -94,7 +97,7 @@ function parseMap(args: readonly string[]): CliCommand {
     else return usage('map takes one deck.');
   }
   if (deck === null || deck.length === 0 || deck.includes('\0')) return usage('Give the deck to map: blueline map deck.html --report');
-  return { kind: 'map', deck, report, json, minCoverage };
+  return { kind: 'map', deck, report, json, minCoverage, reducedMotion };
 }
 
 function parseCheck(args: readonly string[]): CliCommand {

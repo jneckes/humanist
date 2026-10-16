@@ -19,8 +19,9 @@ describe('parseCli', () => {
   });
 
   it('map <deck> [--report] [--json] [--min-coverage N]', () => {
-    expect(parseCli(['map', 'deck.html', '--report'])).toEqual({ kind: 'map', deck: 'deck.html', report: true, json: false, minCoverage: null });
-    expect(parseCli(['map', '--json', 'deck.html', '--min-coverage', '0.95'])).toEqual({ kind: 'map', deck: 'deck.html', report: false, json: true, minCoverage: 0.95 });
+    expect(parseCli(['map', 'deck.html', '--report'])).toEqual({ kind: 'map', deck: 'deck.html', report: true, json: false, minCoverage: null, reducedMotion: false });
+    expect(parseCli(['map', 'deck.html', '--reduced-motion'])).toMatchObject({ kind: 'map', reducedMotion: true });
+    expect(parseCli(['map', '--json', 'deck.html', '--min-coverage', '0.95'])).toEqual({ kind: 'map', deck: 'deck.html', report: false, json: true, minCoverage: 0.95, reducedMotion: false });
     expect(parseCli(['map', 'deck.html', '--min-coverage=1'])).toMatchObject({ minCoverage: 1 });
     expect(parseCli(['map']).kind).toBe('usage');
     expect(parseCli(['map', 'a.html', 'b.html']).kind).toBe('usage');

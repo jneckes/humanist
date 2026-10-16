@@ -303,7 +303,7 @@ export async function main(argv: readonly string[]): Promise<number> {
     case 'map': {
       const deck = existingFile(cmd.deck);
       if (!deck) return fail(`no such file: ${cmd.deck}`, 1);
-      const args: MapArgs = { deck, report: cmd.report, json: cmd.json, minCoverage: cmd.minCoverage };
+      const args: MapArgs = { deck, report: cmd.report, json: cmd.json, minCoverage: cmd.minCoverage, ...(cmd.reducedMotion ? { reducedMotion: true } : {}) };
       return runAndReport('map', args, cmd.json);
     }
     case 'check': {

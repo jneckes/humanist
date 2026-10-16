@@ -75,6 +75,7 @@ const CASES: { deck: string; finding: string; notExact: string[]; control: strin
   { deck: 'numbers', finding: '3: computed numbers vs lone string literals', notExact: ['600', '1', '1,234'], control: '17.5%' },
   { deck: 'member-keys', finding: '4: member-assigned keys and quoted keys read by name', notExact: ['Bookings', 'Retention'], control: 'Only the script says this' },
   { deck: 'foster-table', finding: '6: a cell inside a foster-parented run', notExact: ['Cell one'], control: 'Only the script says this' },
+  { deck: 'chrome-rewrite', finding: 'real decks: the engine rewrites its slide number and label after load (DomTextNode.touched)', notExact: ['01', 'Cover', '/ 03'], control: 'Plan for growth' },
 ];
 
 for (const c of CASES) {

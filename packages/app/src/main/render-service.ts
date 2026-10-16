@@ -180,6 +180,7 @@ function domNodeOf(v: unknown, what: string): DomTextNode {
   const out: DomTextNode = { stamp, textIndex: int(r.textIndex, `${what}.textIndex`, -1, 1_000_000), data: str(r.data, `${what}.data`, 1024 * 1024) };
   const texts = textsOf(r.texts);
   if (texts) out.texts = texts;
+  if (r.touched === true) out.touched = true;
   return out;
 }
 const TREES: readonly WalkTree[] = ['document', 'shadow', 'frame'];

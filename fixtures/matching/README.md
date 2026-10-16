@@ -15,3 +15,4 @@ and that a control text only one literal holds stays `exact` and passes the prob
 | `numbers.html` | 3: computed numbers (`DATA.deals = 600`, a counter, Intl `1,234`) equal to unrelated string literals (`setAttribute('width', '600')`, `style.opacity = '1'`, a fallback `'1,234'`) | `600`, `1`, `1,234` |
 | `member-keys.html` | 4: a key made by member assignment (`totals.Bookings = 120`) and a quoted key read by name (`KPI.Retention`) | `Bookings`, `Retention` |
 | `foster-table.html` | 6: a cell inside the range of a foster-parented text run (every write there is refused by verify) | `Cell one` |
+| `chrome-rewrite.html` | real decks: the engine rewrites the slide number and section label after load; on slide 1 they equal their stamped runs by coincidence (`DomTextNode.touched`) | `01`, `Cover`, `/ 03` (written by an inline script while the page loads) |

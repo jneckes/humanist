@@ -146,11 +146,13 @@ export function validateMapArgs(v: unknown): MapArgs | null {
   const report = own(v, 'report');
   const json = own(v, 'json');
   const min = own(v, 'minCoverage');
+  const rm = own(v, 'reducedMotion');
   if (!pathString(deck)) return null;
+  if (rm !== undefined && typeof rm !== 'boolean') return null;
   if (report !== undefined && typeof report !== 'boolean') return null;
   if (json !== undefined && typeof json !== 'boolean') return null;
   if (min !== undefined && min !== null && (typeof min !== 'number' || !Number.isFinite(min) || min < 0 || min > 1)) return null;
-  return { deck, report: report === true, json: json === true, minCoverage: typeof min === 'number' ? min : null };
+  return { deck, report: report === true, json: json === true, minCoverage: typeof min === 'number' ? min : null, ...(rm === true ? { reducedMotion: true } : {}) };
 }
 
 export function validateCheckArgs(v: unknown): CheckArgs | null {

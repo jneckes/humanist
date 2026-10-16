@@ -19,7 +19,7 @@ import type {
   ScrollToResult,
   SettleResult,
 } from '@blueline/core/ipc';
-import { DomWalker, cssPath } from '@blueline/core/dom-walk';
+import { DomWalker, ScriptTouchTracker, cssPath } from '@blueline/core/dom-walk';
 import { currentSlide, detectSlides, inferHashFormat, scrollBlocks, slideIndexOf, slideTitle, toDetectResult, type HashFormat, type SlideModel } from '@blueline/core/slides';
 import { PAUSE_ANIMATIONS_CSS } from './styles';
 import { listen } from './listeners';
@@ -90,7 +90,8 @@ export class RenderAgent {
       },
       { capture: true, passive: true },
     );
-    this.walker = new DomWalker(win, { host: () => null });
+    // Built at preload start like the key counter above, so it sees every change a page script makes.
+    this.walker = new DomWalker(win, { host: () => null, touched: new ScriptTouchTracker(win.document) });
     // 9.4 step 2 evidence, as in the visible view: a hash that names the slide after a move.
     listen(win, 'hashchange', () => {
       const m = this.model;

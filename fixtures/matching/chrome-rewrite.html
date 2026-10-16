@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chrome rewrite</title>
+<style>
+  body { margin: 0; font: 32px/1.3 system-ui, sans-serif; }
+  .chrome { position: fixed; top: 24px; left: 48px; right: 48px; display: flex; gap: 24px; }
+  .slide { position: absolute; inset: 120px 48px 48px; display: none; }
+  .slide.on { display: block; }
+</style>
+</head>
+<body>
+<!-- Like Josh's real decks: the engine rewrites the slide number and section label on every slide. The
+     source holds slide 1's values, so on slide 1 the rewritten nodes equal their stamped runs by
+     coincidence; an edit there would be undone by the engine on reload. -->
+<div class="chrome"><span class="num">01</span><span class="label">Cover</span><span class="total">/ 03</span></div>
+<section class="slide on" data-label="Cover"><h1>Plan for growth</h1></section>
+<section class="slide" data-label="Market"><h2>Where the market is going</h2></section>
+<section class="slide" data-label="Ask"><h2>What we are asking for</h2></section>
+<script>
+(function () {
+  var slides = [].slice.call(document.querySelectorAll('.slide'));
+  var num = document.querySelector('.num'), label = document.querySelector('.label');
+  var cur = 0;
+  function show(i) {
+    slides.forEach(function (s, k) { s.classList.toggle('on', k === i); });
+    num.textContent = (i + 1 < 10 ? '0' : '') + (i + 1);
+    label.textContent = slides[i].getAttribute('data-label');
+    cur = i;
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight' && cur < slides.length - 1) show(cur + 1);
+    if (e.key === 'ArrowLeft' && cur > 0) show(cur - 1);
+  });
+  // Written while the document is still loading (this script runs during parsing), as real decks do.
+  document.querySelector('.total').textContent = '/ ' + (slides.length < 10 ? '0' : '') + slides.length;
+  document.addEventListener('DOMContentLoaded', function () { show(0); });
+})();
+</script>
+</body>
+</html>

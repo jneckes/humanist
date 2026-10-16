@@ -34,6 +34,14 @@ import { installDeckSessionPolicy } from './trust-hooks';
 export const MAX_PRESSES = 200;
 /** Viewport-height steps through one scrolling or single-page document (a document 900 viewports tall). */
 export const MAX_SCROLL_STEPS = 900;
+/**
+ * Waits before pressing a key again that changed nothing on a slide that is not the last. Decks with build
+ * animations take the first press to finish the build in progress, and ignore keys during a transition
+ * (Josh's real decks: `next()` returns while busy, and fast-forwards a build that has more than 0.6 s left).
+ * 6.7 says a key that changes nothing stops the walk; read literally, those decks stop on slide 2. The walk
+ * and the probe's replay press with the same patience, so a replay reaches the stop the walk recorded.
+ */
+export const PRESS_RETRY_GAPS_MS: readonly number[] = [700, 1400, 2500];
 
 function log(msg: string): void {
   console.error(`[blueline map] ${msg}`);
@@ -90,6 +98,8 @@ export class DeckWalker {
   private kind: DetectResult['kind'] = 'single';
   /** Forward presses since the last start() (replaying `keys` stops). */
   private pos = 0;
+  /** The walk's slide count: a press on the last slide changed nothing because the deck has ended. */
+  private count = 1;
 
   constructor(
     private readonly view: RenderView,
@@ -98,6 +108,20 @@ export class DeckWalker {
 
   private async current(): Promise<number> {
     return (await this.view.detect()).current;
+  }
+
+  /**
+   * Presses `key`; when trusted input reached the deck but the slide did not change, and this is not the
+   * last slide, waits and presses again (PRESS_RETRY_GAPS_MS). The first press that moves the deck wins.
+   */
+  private async pressPatiently(key: NavKey): Promise<Awaited<ReturnType<RenderView['pressKey']>>> {
+    let p = await this.view.pressKey(key);
+    for (const gap of PRESS_RETRY_GAPS_MS) {
+      if (p.moved || p.via !== 'input' || p.delivered === false || p.from >= this.count - 1) break;
+      await new Promise((r) => setTimeout(r, gap));
+      p = await this.view.pressKey(key);
+    }
+    return p;
   }
 
   /** Brings a generic deck to its first slide the way the walk did: by hash, or back keys. */
@@ -127,6 +151,7 @@ export class DeckWalker {
     this.kind = det.kind;
     const notes: string[] = [];
     const count = Math.max(1, det.count);
+    this.count = count;
     const reached: boolean[] = new Array(count).fill(false);
     const nodes = new Map<number, { w: WalkNode; slide: number; stop: number }>();
     const blocks = new Map<number, CountedBlock>();
@@ -249,11 +274,11 @@ export class DeckWalker {
         let key: NavKey = 'ArrowRight';
         let presses = 0;
         while (presses < MAX_PRESSES) {
-          let p = await view.pressKey(key);
+          let p = await this.pressPatiently(key);
           if (!p.moved && presses === 0 && det.count > 1) {
             notes.push('ArrowRight did not move the deck; trying PageDown');
             key = 'PageDown';
-            p = await view.pressKey(key);
+            p = await this.pressPatiently(key);
           }
           keys = keys === 'synthetic' || p.via === 'synthetic' ? 'synthetic' : 'input';
           if (!p.moved) {
@@ -343,7 +368,7 @@ export class DeckWalker {
     } else {
       while (this.pos < nav.presses) {
         // Every key settles before the next: a slide read mid-transition is unreliable (two slides visible).
-        const p = await this.view.pressKey(nav.key);
+        const p = await this.pressPatiently(nav.key);
         if (process.env.BLUELINE_DEBUG === '1') this.say(`replay press ${nav.key}: ${p.from + 1} -> ${p.to + 1} via ${p.via} delivered ${p.delivered}`);
         if (!p.moved) break;
         this.pos++;
@@ -578,6 +603,7 @@ export async function runMapCommand(args: MapArgs, outFile: string): Promise<num
       utf8: doc.utf8,
       trust: doc.trust(),
       viewport: { ...view.viewport },
+      reducedMotion: args.reducedMotion === true,
       walk: summary,
       nodes,
       blocks: walk.blocks,

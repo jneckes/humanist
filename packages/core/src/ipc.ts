@@ -456,6 +456,12 @@ export interface MapArgs {
   json: boolean;
   /** 0..1, or null when not given. */
   minCoverage: number | null;
+  /**
+   * Map the deck as a viewer with prefers-reduced-motion: reduce sees it (Chromium's
+   * force-prefers-reduced-motion). Decks that animate their builds (split text, scrambled text, fades)
+   * honour it and draw their final frame directly. Absent means the system setting.
+   */
+  reducedMotion?: boolean;
 }
 
 /** `--bl-args` of `check` (section 10, Diagnostics window). */

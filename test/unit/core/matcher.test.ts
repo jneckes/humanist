@@ -472,3 +472,26 @@ describe('matcher: the own stamped run is trusted only while the element’s tex
     }
   });
 });
+
+describe('a node a script rewrote after parsing (DomTextNode.touched)', () => {
+  // A deck engine writes the slide counter on every slide; the source's first value equals it on slide 1.
+  const src = '<!doctype html><html><body><div class="chrome"><span>01</span><span>Cover</span></div><h1>Plan</h1></body></html>';
+  const map = buildMap(src, { version: 'v', utf8: true });
+  const run = (v: string) => map.runs.find((r) => r.value === v)!;
+
+  it('never takes the own stamped run for a touched node', () => {
+    for (const m of [createMatcher(map), createMatcher(toClientMap(map))]) {
+      const r = run('Cover');
+      const node: DomTextNode = { stamp: r.stamp, textIndex: r.textIndex, data: 'Cover', texts: ['Cover'], touched: true };
+      const res = m(node);
+      expect(res.confidence).toBe('ambiguous');
+      expect(res.reason).toBe('stamp-other');
+      expect(m({ ...node, touched: undefined }).confidence).toBe('exact');
+    }
+  });
+
+  it('leaves untouched nodes as they were', () => {
+    const r = run('Plan');
+    expect(createMatcher(map)({ stamp: r.stamp, textIndex: r.textIndex, data: 'Plan', texts: ['Plan'] }).confidence).toBe('exact');
+  });
+});

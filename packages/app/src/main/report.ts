@@ -90,6 +90,8 @@ export interface MapInputs {
   utf8: boolean;
   trust: TrustState;
   viewport: { w: number; h: number; dpr: number };
+  /** The run forced prefers-reduced-motion: reduce (`map --reduced-motion`). */
+  reducedMotion?: boolean;
   walk: WalkSummary;
   nodes: CountedNode[];
   blocks: CountedBlock[];
@@ -139,6 +141,8 @@ export interface MapReport {
   utf8: boolean;
   trust: TrustState;
   viewport: { w: number; h: number; dpr: number };
+  /** Present (true) only when the run forced prefers-reduced-motion: reduce. */
+  reducedMotion?: true;
   slides: {
     kind: WalkSummary['kind'];
     navKind: string;
@@ -291,6 +295,7 @@ export function buildReport(i: MapInputs): MapJson {
     utf8: i.utf8,
     trust: i.trust,
     viewport: { ...i.viewport },
+    ...(i.reducedMotion ? { reducedMotion: true as const } : {}),
     slides: {
       kind: i.walk.kind,
       navKind: i.walk.navKind,
@@ -384,7 +389,7 @@ export function formatText(json: MapJson, opts: { detailed: boolean; minCoverage
   const keys = s.keys === 'input' ? ', keys: trusted input' : s.keys === 'synthetic' ? ', keys: synthetic (trusted input did not reach the deck)' : '';
   out.push(
     `Slides: ${s.kind}, ${s.count} slide${s.count === 1 ? '' : 's'}, navigation ${s.navKind} (${s.reached} of ${s.count} reached${keys}) · ` +
-      `viewport ${r.viewport.w}×${r.viewport.h} @${r.viewport.dpr}x · design size ${s.designSize.w}×${s.designSize.h}`,
+      `viewport ${r.viewport.w}×${r.viewport.h} @${r.viewport.dpr}x · design size ${s.designSize.w}×${s.designSize.h}${r.reducedMotion ? ' · reduced motion' : ''}`,
   );
   const t = r.totals;
   out.push(`Nodes: ${t.total} visible text node${t.total === 1 ? '' : 's'} · exact ${t.exact} · ambiguous ${t.ambiguous} · none ${t.none}`);

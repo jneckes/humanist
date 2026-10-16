@@ -236,6 +236,9 @@ function watchParent(pid: number, onGone: () => void): void {
 
 if (parsed.cmd === 'map' || parsed.cmd === 'check') {
   const cmd = parsed;
+  // `map --reduced-motion`: Chromium switches only take effect before ready. map runs in its own process, so
+  // the switch reaches only the render views of this run.
+  if (cmd.cmd === 'map' && cmd.map?.reducedMotion === true) app.commandLine.appendSwitch('force-prefers-reduced-motion');
   // Windows a command opens close on their own; the command decides when the app exits.
   app.on('window-all-closed', () => undefined);
   void app.whenReady().then(async () => {
