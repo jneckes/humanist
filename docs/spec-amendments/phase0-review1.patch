@@ -1,0 +1,120 @@
+diff --git a/SPEC.md b/SPEC.md
+index 0526b29..19ded3e 100644
+--- a/SPEC.md
++++ b/SPEC.md
+@@ -739,18 +739,18 @@ Electron app
+ 
+   Main accepts trust changes only from the shell's trust-bar buttons and Settings.
+ - **Protocol.**
+-  - **Registration.** `blueline` is registered before `ready` with `registerSchemesAsPrivileged`, with `standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true` (for the font CORS header under Serving). `bypassCSP` is not set.
++  - **Registration.** `blueline` is registered before `ready` with `registerSchemesAsPrivileged`, with `standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true` (for the font CORS header under Serving). `blueline-media` is registered with `standard: true, secure: true, stream: true` only: it is neither CORS-enabled nor fetch-capable (audio and video, under Serving). `bypassCSP` is set on neither.
+   - **Per-partition handler.** Each partition gets `ses.protocol.handle('blueline', …)`.
+   - **URLs.** A document loads at `blueline://<docId>/<file name>`. `<docId>` is a random id that main maps to the file's folder.
+   - **Serving.** The handler serves:
+     - the document as its stamped copy (9.2, Strategy 1), with the notes block removed;
+-    - other paths from that folder and below, for display only, from a second origin. On the `<docId>` host, only the document's own path is served. A request for any other path gets a `307` redirect to `blueline://<docId>-files/<same path>`, which the same handler serves as raw files with the right MIME type. Those files are cross-origin to the page. The page can show them as images, styles, scripts, fonts and media, but cannot read them: `fetch` and XHR fail, an `<iframe>` or `<object>` showing one is cross-origin, a canvas that draws one is tainted, `cssRules` throws, and script errors are muted. This matches how Chrome treats a `file://` page's sibling files. It holds in both trust states, so a Trusted deck saved in the home folder or in Downloads cannot read `~/.ssh` or the files beside it.
++    - other paths from that folder and below, for display only, from a second origin. On the `<docId>` host, only the document's own path is served. A request for any other path gets a `307` redirect to `blueline://<docId>-files/<same path>`, which the same handler serves as raw files with the right MIME type. Audio and video (`mp3 m4a wav ogg webm mp4`) are redirected instead, from either host, to `blueline-media://<docId>/<same path>`, which serves only those, with the same refusals and headers. Chromium sends a `crossorigin` `<video>` or `<audio>` load in CORS mode with no `Origin` header and the headers of a plain load, and Electron applies no CORS check to `protocol.handle` responses, so on the CORS-enabled `blueline` scheme such a load read the file (canvas not tainted, Web Audio samples readable). Blink refuses every CORS-mode request or redirect to a scheme that is not CORS-enabled, so a `crossorigin` load fails, and a plain one plays, tainted. Those files are cross-origin to the page. The page can show them as images, styles, scripts, fonts and media, but cannot read them: `fetch` and XHR fail, an `<iframe>` or `<object>` showing one is cross-origin, a canvas that draws one is tainted, `cssRules` throws, and script errors are muted. This matches how Chrome treats a `file://` page's sibling files. It holds in both trust states, so a Trusted deck saved in the home folder or in Downloads cannot read `~/.ssh` or the files beside it.
+       - Only fonts get a CORS header (`Access-Control-Allow-Origin: blueline://<docId>`, with `corsEnabled: true` added to the scheme's registration), so `@font-face` works. Module scripts from local files do not load, as in Chrome's `file://`.
+       - Every `-files` response carries `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, so a file opened as a frame (an SVG, for example) runs no script.
+       - Only these extensions are served: `css js png jpg jpeg gif webp avif svg ico bmp woff woff2 ttf otf mp3 m4a wav ogg webm mp4`.
+       - Phase 0 checks that `protocol.handle` can redirect this way. If it cannot, the handler serves only the document until Phase 0 finds another way to give these files their own origin.
+   - **Refusals.** The handler checks every request the same way, and returns 404 on any failure:
+-    1. Parse with `new URL(request.url)`. The host must be this partition's `<docId>` or `<docId>-files`. `<docId>` is lowercase hex, because a standard scheme lowercases the host. Ignore the query and the fragment. On the `<docId>` host, only the document's own path, matched exactly, is served, so a document whose name starts with `.` (the `blueline map` probe copy) still loads. Steps 2 to 4 apply to every path on the `-files` host.
++    1. Parse with `new URL(request.url)`. The host must be this partition's `<docId>` or `<docId>-files` (on `blueline-media`, `<docId>` only). `<docId>` is lowercase hex, because a standard scheme lowercases the host. Ignore the query and the fragment. On the `<docId>` host, only the document's own path, matched exactly, is served, so a document whose name starts with `.` (the `blueline map` probe copy) still loads. Steps 2 to 4 apply to every path on the `-files` host and on `blueline-media`.
+     2. Split `pathname` on `/` before decoding, then percent-decode each segment once. Refuse a segment that is empty or starts with `.` (so `.`, `..` and dotfiles such as `.ssh` are refused), or that after decoding contains `/`, a backslash, `:`, NUL or any other control character. On Windows, also refuse reserved device names (`CON`, `NUL`, `COM1` and the rest) and names that end in a dot or a space.
+     3. Join the segments onto the folder's realpath, and take `fs.realpathSync.native` of the result. Accept it only if `path.relative(folderReal, fileReal)` neither starts with `..` nor is absolute. On a case-insensitive volume, compare case-insensitively. Never use a string-prefix test.
+     4. Open the file, `fstat` the descriptor, and require a regular file whose device and inode equal those of `fileReal`, so a symlink swapped in after the check is not followed.
+@@ -817,17 +817,19 @@ Electron app
+    - A string `Literal` is one unit.
+    - An untagged `TemplateLiteral` is one unit: its quasis joined with the placeholder U+E000 in place of each `${…}`.
+    - A tagged template (any `TaggedTemplateExpression`, including `String.raw`) is `none`.
+-   - If a unit contains `<`, parse it as one HTML fragment with parse5, and take its text nodes as runs. Keep a run-to-cooked offset map.
++   - If a unit holds markup (its fragment parse is not one text node equal to the whole unit: an element, a character reference, a comment or another tag), parse it as one HTML fragment with parse5, and take its text nodes as runs. Keep a run-to-cooked offset map.
+    - Otherwise the whole unit is one run.
+    - A run that contains a placeholder is pin-only (section 7).
+-   - JSON blocks: parse with a position-tracking JSON tokenizer. Each string value is a unit, and it counts as HTML if it contains `<`.
++   - JSON blocks: parse with a position-tracking JSON tokenizer. Each string value is a unit, and it counts as HTML if it holds markup.
+ 3. **Matching.**
+-   - `exact`: the DOM text node equals one whole run with no normalization, and that run occurs once in the file.
++   - `exact`: the DOM text node equals one whole run with no normalization, that run occurs once in the file, and no text the page may show from a source Blueline never writes equals it. These *shadow values* are template content, raw-text elements, script data blocks, tagged templates, attribute values, strings in inline event handlers, Strategy 1 text the walk drops, and numbers in inline scripts and JSON (`String(n)`, `-n` and the en-US grouped form). Text made only of digits and number punctuation is `exact` only if it occurs once in the file. A shadow value is never a candidate and never written.
+    - `ambiguous`: any of these:
+      - the texts are equal only after whitespace collapse and NFC;
+      - the DOM text is a substring of a run;
+      - more than one run is equal;
+-     - the cooked value also appears in the file as an `id`, `class`, `name`, `for`, `href` or `data-*` attribute value, so the deck may use it as a key.
++     - the cooked value also appears in the file as an `id`, `class`, `name`, `for`, `href` or `data-*` attribute value, so the deck may use it as a key;
++     - the cooked value is also an object key that is not a unit (a JSON key, an identifier key of an object literal or class field, a non-computed member name, an object-pattern key), so the deck may use it as a key;
++     - one literal equals the text and so does a shadow value (`shadow`).
+ 
+      The picker shows each candidate with ±40 characters of context. In the key case it warns: "This text is also used as a key at deck.html:<line>".
+    - `none`: anything else.
+@@ -836,7 +838,7 @@ Electron app
+    - If the changed span starts or ends inside a unit, widen it to the whole unit and re-encode those characters.
+    - After the author picks an `ambiguous` candidate, map the span from normalized to cooked to raw. If that fails, the edit becomes `verbatim`.
+ 5. **On edit:**
+-   1. **HTML encoding.** For HTML runs (units that contain `<`), encode `&` → `&amp;` and `<` → `&lt;` first. Other literals may reach the page through either `textContent` or `innerHTML`, so an edit that adds `<` or `&` to one of them becomes a `verbatim` note.
++   1. **HTML encoding.** For HTML runs (units that hold markup), encode `&` → `&amp;` and `<` → `&lt;` first. Other literals may reach the page through either `textContent` or `innerHTML`, so an edit that adds `<` or `&` to one of them becomes a `verbatim` note.
+    2. **JS escaping,** in this order:
+       1. `\` → `\\`;
+       2. the literal's quote → `\'`, `\"` or `` \` ``;
+@@ -859,7 +861,7 @@ Electron app
+ 
+ **Matching DOM to source at runtime.** The overlay receives the map for the current version over IPC. The map holds the stamps with their runs, and the literal runs with their ids and text.
+ 
+-- A DOM text node maps to stamped run k only if the node's `data` equals the run's decoded value exactly.
++- A DOM text node maps to stamped run k only if the node's `data` equals the run's decoded value exactly, the element's non-whitespace direct text nodes still agree with the stamp's runs (the overlay sends them with the node), and no other run of that element has the same text.
+ - Failing that, collect every stamped run and every literal run (Strategy 2) whose text equals the node's `data`, as one set of candidates.
+   - One literal run: Strategy 2's matching rules decide.
+   - One stamped run: the node is `ambiguous`, because the node is not that stamp's own text (for example, a JS-built contents list, or text that matches by coincidence).
+@@ -1128,7 +1130,7 @@ Two layers, as in Acrobat: an always-on sandbox for every document, plus Protect
+ - `sandbox: true`, `contextIsolation: true`, `nodeIntegration: false` and `webSecurity: true`, with no `contextBridge` exposure.
+ - A per-document partition. Deck views are never in the shell's session.
+ - `setPermissionRequestHandler` and `setPermissionCheckHandler` deny everything in deck partitions. Electron approves all permission requests by default, so this is required.
+-- **Device choosers are refused separately.** They are not permission requests, so the handlers above do not cover them. Without a handler, Electron picks the first Bluetooth device itself. Each deck view's `webContents` handles `select-bluetooth-device`, and its session handles `select-hid-device`, `select-serial-port` and `select-usb-device`, each with `event.preventDefault()` and no device chosen. `setDevicePermissionHandler` returns false, and `setBluetoothPairingHandler` refuses. The security fixtures call `navigator.bluetooth.requestDevice()` and the HID, serial and USB `requestDevice` calls after a real click, in both trust states.
++- **Device choosers are refused separately.** They are not permission requests, so the handlers above do not cover them. With a `select-bluetooth-device` listener that does not call `preventDefault()`, Electron picks the first Bluetooth device itself. Each deck view's `webContents` handles `select-bluetooth-device`, and its session handles `select-hid-device`, `select-serial-port` and `select-usb-device`, each with `event.preventDefault()` and no device chosen. `setDevicePermissionHandler` returns false, and `setBluetoothPairingHandler` refuses. The security fixtures call `navigator.bluetooth.requestDevice()` and the HID, serial and USB `requestDevice` calls after a real click, in both trust states.
+ - **Navigation and links.** `will-navigate` and `will-frame-navigate` cancel every top-level navigation except a fragment change within the same document, and `setWindowOpenHandler` returns `{action: 'deny'}`. For a link the user clicked, what happens next depends on its target:
+   - a local `.html` or `.htm` file opens in Blueline, in its own window, with its own session, map and trust state (Protected if this document is Protected), never inside this document's view;
+   - an `http` or `https` link opens in the system browser after a dialog that shows the full URL;
+@@ -1159,11 +1161,11 @@ Two layers, as in Acrobat: an always-on sandbox for every document, plus Protect
+     - `esm.sh`
+     - `cdn.tailwindcss.com`
+     - `code.jquery.com`
+-  - Serve the document with a `Content-Security-Policy: connect-src 'none'` response header. The browser enforces it alongside the deck's own CSP, so `fetch`, XHR, `EventSource`, WebSocket and `sendBeacon` fail for every origin, `blueline://` included. Local files are unreadable in both trust states anyway (9.1, Serving). As a second layer, the listener also cancels `blueline://` requests of type `xhr` and `ping`. Electron's webRequest has no `fetch` type: `fetch()` reports as `xhr`, and `sendBeacon` as `ping`. Electron also does not document that webRequest sees custom-scheme requests, so the security fixtures check each layer on its own.
++  - Serve the document with a `Content-Security-Policy: connect-src 'none'` response header. The browser enforces it alongside the deck's own CSP, so `fetch`, XHR, `EventSource`, WebSocket and `sendBeacon` fail for every origin, `blueline://` included. Local files are unreadable in both trust states anyway (9.1, Serving). As a second layer, the listener also cancels `blueline://` requests of type `xhr` and `ping`. Electron's webRequest has no `fetch` type: `fetch()` reports as `xhr`, and `sendBeacon` as `ping`. Electron also does not document that webRequest sees custom-scheme requests, so the security fixtures check each layer on its own: a test-only switch (`BLUELINE_TEST_DISABLE_LAYER`, honoured only in an unpackaged build started with `BLUELINE_TEST=1`) turns the CSP, the listener's Protected cancels or the proxy off, and `test/security/layers.spec.ts` asserts what each remaining layer blocks.
+   - The allowlist is user-editable in Settings › Trust. A GET to an allowlisted CDN can still carry data in its URL. This is documented, and the strict option blocks the allowlist too.
+   - **Channels that `onBeforeRequest` does not see.** Resource hints (`<link rel=dns-prefetch>` and `preconnect`) and WebRTC ICE (STUN and TURN to any host) look up names and open sockets with no request this listener can cancel, so a Protected deck could send `<data>.attacker.example` to the attacker's DNS server. In Protected view:
+     - the served copy has `dns-prefetch`, `preconnect`, `prefetch` and `prerender` removed from every `<link rel>`, and is sent with `X-DNS-Prefetch-Control: off`;
+-    - the partition gets a proxy (`ses.setProxy` with a PAC script) that returns `DIRECT` for allowlisted hosts (none when the strict option is on) and a closed loopback port for every other host, so preconnects, WebRTC's TCP fallback and any other request that escapes webRequest go nowhere;
++    - the partition gets a proxy (`ses.setProxy` with `mode: 'fixed_servers'`) that sends every host to a closed loopback port, except allowlisted hosts, which go `DIRECT` (none when the strict option is on). Its bypass list ends with `<-loopback>`, which removes Chromium's implicit proxy bypass for `localhost`, `*.localhost`, loopback and link-local addresses; a PAC script cannot, because Chromium bypasses a PAC for those hosts before consulting it. So preconnects, WebRTC's TCP fallback and any other request that escapes webRequest go nowhere, services on the computer itself included. Main verifies with `resolveProxy` that a name and the loopback and link-local hosts all go to the closed port before it loads the deck;
+     - each deck view calls `webContents.setWebRTCIPHandlingPolicy('disable_non_proxied_udp')`.
+ 
+     The Phase 0 security fixtures run their own DNS server and UDP listener. They add static and script-inserted `dns-prefetch` and `preconnect` hints to a unique subdomain, an `RTCPeerConnection` with STUN and TURN servers on the test host, `<a ping>`, `navigator.sendBeacon`, a form POST into an iframe, `<meta http-equiv=refresh>`, `EventSource`, `WebTransport` and `navigator.serviceWorker.register`. No DNS query, packet or request may reach the test host. If one does, Phase 0 adds a mitigation before Phase 1 (for example, removing `RTCPeerConnection` from the page's world before its scripts run), or states the channel in the Protected view help and in `SECURITY.md`. Section 5's "zero escapes" is measured against this suite.
+@@ -1235,13 +1237,17 @@ Prove the shell, the overlay and the mapper, and settle the risky facts. Phase 0
+   3. Walk the slides:
+      - reveal.js: call `Reveal.slide(h, v)` for each slide;
+      - generic engine: send ArrowRight until the visible slide stops changing, up to 200 times;
+-     - scrolling document: call `scrollIntoView` on each block;
+-     - single page: make one pass.
++     - scrolling document: call `scrollIntoView` on each block, and step down the document in viewport heights until each block's bottom and the page's bottom have been in view;
++     - single page: make one pass down the whole page in viewport heights.
++
++     If the walk does not reach every detected slide or block, coverage is incomplete: the report says so, `--min-coverage` is not met, and `map` exits 1.
+   4. Count each text node once across all slides, if all of these hold:
+      - its data is not whitespace-only;
+      - it is not inside the overlay host, `script`, `style`, `noscript` or `template`;
+      - its parent has a non-zero rect inside the viewport;
+      - every ancestor has `visibility: visible` and opacity above 0.
++
++     Text in open shadow roots and same-origin frames counts, as `none` (section 7: text in iframes is pin only).
+   5. Map each node with the shared matcher.
+      - Report `exact`, `ambiguous`, `none` and `total`, per slide and overall.
+      - List each string that is not `exact`, with its slide and a reason: `computed`, `multi-literal`, `substring`, `not-equal`, `no-match` or `not-utf8`.
+@@ -1468,7 +1474,7 @@ Prove the shell, the overlay and the mapper, and settle the risky facts. Phase 0
+   - the status-transition table;
+   - idempotent session merge;
+   - the deck's own CSP is honoured, and the overlay works, on every CSP fixture.
+-- **Coverage baseline.** `fixtures/expected/<deck>.json` = `{deckSha, coverage: {exact, ambiguous, none, total}, runs: [{slide, text, strategy, confidence, start, end}]}`, written by `blueline map --report --json`. CI fails when a deck's coverage drops more than 1 point below its stored value. A baseline changes only in a commit that says why. Baselines contain each run's text. So a deck that is not committed (Josh's real decks, by default; section 13, question 1) keeps its baseline in a gitignored folder such as `fixtures/local/expected/`, never in `fixtures/expected/`. CI checks only committed fixtures. The agent checks the local baselines with `blueline map --report --json` before any commit that touches the mapper or the matcher.
++- **Coverage baseline.** `fixtures/expected/<deck>.json` = `{deckSha, coverage: {exact, ambiguous, none, total, slides: {count, reached}}, runs: [{slide, text, strategy, confidence, start, end}]}`, written by `blueline map --report --json`. CI fails when a deck's coverage drops more than 1 point below its stored value. A baseline changes only in a commit that says why. Baselines contain each run's text. So a deck that is not committed (Josh's real decks, by default; section 13, question 1) keeps its baseline in a gitignored folder such as `fixtures/local/expected/`, never in `fixtures/expected/`. CI checks only committed fixtures. The agent checks the local baselines with `blueline map --report --json` before any commit that touches the mapper or the matcher.
+ - **Fuzz test.** As in Phase 2. Seeded and reproducible, and each edit is also run through the mutation probe in Chromium.
+ - **E2E tests (Playwright's Electron launcher):**
+   - open a fixture, enter Edit mode, type into a heading, and assert the file bytes;

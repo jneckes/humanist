@@ -57,15 +57,15 @@ blueline check --auto                   # automatic checks only; prints PASS/FAI
 ```
 
 **`blueline map`** launches the app headless, loads the deck in an offscreen view at 1600×900 under its own
-trust state, walks every slide (reveal.js, generic key-driven decks, scrolling documents, single pages), and
-maps each visible text node to the source as `exact`, `ambiguous` or `none`. For every `exact` node it runs
-the **mutation probe**: it writes a sentinel into a hidden copy next to the deck (`.<name>.bl-probe.html`)
-through the real patcher, reloads, checks the sentinel shows up in that node and nowhere else, undoes, and
-requires the copy's bytes to equal the original's. The copy is removed when `map` ends or is interrupted,
+trust state, walks every slide (reveal.js, generic key-driven decks, and scrolling documents and single pages
+down their whole height), and maps each visible text node to the source as `exact`, `ambiguous` or `none`.
+For every `exact` node it runs the **mutation probe**: it writes a sentinel into a hidden copy next to the
+deck (`.<name>.bl-probe.html`) through the real patcher, reloads, checks the sentinel shows up in that node
+and nowhere else, undoes, and requires the copy's bytes to equal the original's. The copy is removed when `map` ends or is interrupted,
 and the deck itself is never written. Coverage counts only nodes that pass. `--report` lists each string that
 is not `exact` with its slide and reason. The exit code is 0 on success, and 1 when a probe failed, the
-original changed, or `--min-coverage` was given and not met (or could not be verified, as in a reader-only
-build, which has no patcher).
+original changed, the walk did not reach every detected slide (coverage `INCOMPLETE`), or `--min-coverage` was
+given and not met (or could not be verified, as in a reader-only build, which has no patcher).
 
 **`blueline check`** opens the Diagnostics window: a reveal.js deck with the real key router, note card,
 ink and an editable heading, plus guided steps with Pass and Fail buttons (for Wispr Flow dictation). `Save`
@@ -74,25 +74,37 @@ runs only the automatic checks: key order and `stopImmediatePropagation` from th
 on a page that swallows every key, keys to an offscreen deck, capture size at 2x, and Fit by CSS zoom versus
 `setZoomFactor`.
 
+`blueline open` returns once the app has started and exits 1 when it could not start. `map` and `check` exit
+with the app's result. A SIGINT, SIGTERM or SIGHUP sent to the command (Ctrl+C, a CI timeout, a closed
+terminal) stops the whole run with exit 130, 143 or 129 (`map` removes its probe copy first; an interrupted
+`check` saves check.json if steps were recorded), and if the command itself is killed, the app notices within
+a second and stops.
+
 ## Test
 
 ```sh
 npm test                 # vitest: unit and fuzz tests (test/unit)
 npm run test:e2e         # builds, then Playwright's Electron launcher (test/e2e)
 npm run test:security    # builds, then the security suite in both trust states (test/security)
+npm run package:smoke    # builds, packs an unpacked test build (local Electron), checks the shell, trust bar and check --auto on it
 ```
 
 The E2E and security suites start their own Xvfb display on Linux. Run as root, the security suite runs the
 app as the unprivileged user `bltest` with the OS sandbox on, in a private mount namespace whose DNS points at
-the suite's own DNS server, so DNS leaks are observable; otherwise it says which mode it fell back to.
+the suite's own DNS server, so DNS leaks are observable; otherwise it says which mode it fell back to. The
+E2E tests launch the app the same way (as `bltest`, sandbox on); those that run the `blueline` command start
+it as root with `--no-sandbox`.
 `test/e2e/map.spec.ts` also maps every committed fixture, compares it with its
 `fixtures/decks/<name>.expect.json`, and fails when a deck's coverage drops more than 1 point below its
 baseline in `fixtures/expected/`.
 
-Phase 0 results (2026-10-15, Linux, Electron 44.7.2): 840 unit tests pass; 30 of 30 E2E tests pass; the
-security suite passes 31 of 31, of which 2 are expected failures for the two DNS channels described in
-SECURITY.md; `blueline check --auto` passes all 6 checks; and across the 18 committed fixtures every `exact`
-node (413 of 413) passes the mutation probe with byte-exact undo.
+Phase 0 results after review round 1 (2026-10-16, Linux, Electron 44.7.2): 1012 unit tests pass (56
+files); 79 of 79 E2E tests pass, of which 1 is an expected failure for the note-card ordering limit described
+in SECURITY.md; the security suite passes 45 of 45, of which 2 are expected failures for the two DNS channels
+described in SECURITY.md; `blueline check --auto` passes all 6 checks, as root and as `bltest`; `npm run
+package:smoke` passes; and across the 18 committed fixtures every `exact` node (411 of 411) passes the
+mutation probe with byte-exact undo. What the review found and fixed: `docs/PHASE0-FINDINGS.md`, Review
+round 1.
 
 ## Fixtures
 
@@ -100,6 +112,9 @@ node (413 of 413) passes the mutation probe with byte-exact undo.
   ([fixtures/README.md](fixtures/README.md)).
 - `fixtures/expected/`: coverage baselines, written by `blueline map <deck> --report --json`.
 - `fixtures/security/`: the security fixtures ([fixtures/security/README.md](fixtures/security/README.md)).
+- `fixtures/map/`, `fixtures/matching/`, `fixtures/input/`, `fixtures/slides/`: the review's reproduction decks
+  for the walk and probe, matching, the deck preload's input handling, and slide detection (each folder's
+  tests are named in [fixtures/README.md](fixtures/README.md)).
 - `fixtures/local/`: your own decks and their baselines; gitignored.
 
 To regenerate a baseline after a mapper change, in a commit that says why:

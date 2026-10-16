@@ -38,7 +38,7 @@ parallel and fit together. Where this page and SPEC.md disagree, SPEC.md wins; f
 | `packages/core/src/notes-block.ts` | find and remove the trailing notes block (section 8) | core-mapper |
 | `packages/core/src/offset-table.ts` | `OffsetTable` interface + helpers | core-mapper |
 | `packages/core/src/html-tables.ts` | decoded-to-raw tables for HTML text; `encodeHtmlText` | core-mapper |
-| `packages/core/src/mapper-html.ts` | Strategy 1 walk: stamps, runs, scripts, key values, parse errors | core-mapper |
+| `packages/core/src/mapper-html.ts` | Strategy 1 walk: stamps, runs, scripts, key values, parse errors, shadow values | core-mapper |
 | `packages/core/src/served.ts` | the served (stamped) copy | core-mapper |
 | `packages/core/src/mapper.ts` | `buildMap`, `toClientMap` | core-mapper |
 | `packages/core/src/js-literals.ts` | cooked-to-raw tables for JS strings/templates/JSON strings; escaping | core-literals |
@@ -46,11 +46,11 @@ parallel and fit together. Where this page and SPEC.md disagree, SPEC.md wins; f
 | `packages/core/src/matcher.ts` | the shared matcher (9.2 Matching DOM to source at runtime) | core-literals |
 | `packages/core/src/edit-cleanup.ts` | commit clean-up and changed-span diff (9.2 Committing an edit, 3–4) | editor |
 | `packages/core/src/slides.ts` | slide detection (9.4), DOM | preload |
-| `packages/core/src/dom-walk.ts` | visible-text walk, locators, CSS paths (section 10 step 4), DOM | preload |
+| `packages/core/src/dom-walk.ts` | visible-text walk (the document, its open shadow roots and same-origin frames), locators, CSS paths, `DomTextNode.texts` (section 10 step 4), DOM | preload |
 | `packages/core/src/index.ts` | barrel | contract |
 | `packages/editor/src/*` | patcher: plan, encode, splice, verify, undo/redo, write queue | editor |
 | `packages/app/src/main/protocol.ts`, `confine.ts`, `network-policy.ts`, `trust-hooks.ts`, `ipc-guard.ts`, `markers.ts` | protocol, confinement, trust hooks, IPC validation, internet markers | app-security |
-| `packages/app/src/preload/*` (except `shell.ts`) | deck preload: overlay, key router, card, ink, render agent, diagnostics hooks | preload |
+| `packages/app/src/preload/*` (except `shell.ts`) | deck preload: overlay, key router, input guard, card, ink, render agent, diagnostics hooks | preload |
 | `packages/app/src/main/*` (other files), `packages/app/src/preload/shell.ts`, `packages/app/src/shell/shell.*`, `packages/app/assets/`, `packages/cli/src/*` | app skeleton, windows, shell UI, menu, key chords, documents, sessions, atomic writer, editor loader, CLI | app-shell |
 | `packages/app/src/main/render-service.ts`, `map-command.ts`, `probe.ts`, `diagnostics.ts`, `packages/app/src/shell/diagnostics.*` | render service, `blueline map` + mutation probe, Diagnostics window + `check` | app-render |
 | `fixtures/decks/*`, `fixtures/README.md` | synthetic and CSP fixtures, reveal.js fixture | fixtures |
@@ -65,6 +65,7 @@ parallel and fit together. Where this page and SPEC.md disagree, SPEC.md wins; f
 decodeDeck(bytes: Uint8Array): DecodedDeck            // {utf8, src, bom, lineEnding}
 encodeDeck(src: string): Uint8Array
 isWhitespaceOnly(s: string): boolean                  // U+0020, tab, LF, CR, FF only
+looksComputed(data: string): boolean                   // digits and number punctuation only (section 7; review finding 3)
 class LineIndex { at(offset): {line, col}; lineStart(line) }
 
 // offset-table.ts
@@ -82,9 +83,14 @@ htmlTextTable(raw: string, decoded: string, opts?: { dropLeadingNewline?: boolea
 encodeHtmlText(text: string, opts: { nbspAsRef: boolean }): string  // & → &amp;, < → &lt;, U+00A0 → &nbsp; when nbspAsRef
 
 // mapper-literals.ts
-extractLiterals(src: string, scripts: ScriptInfo[], lines: LineIndex): { units: LiteralUnit[]; literals: LiteralRun[]; scripts: ScriptInfo[]; keys: { value: string; attr: string; line: number }[] }
-// keys: JSON object keys and identifier keys of JS object literals and class fields; buildMap merges them into
-// DeckMap.keys/keyValues, so a literal with the same text is ambiguous (`key`) (PHASE0-FINDINGS F15)
+extractLiterals(src: string, scripts: ScriptInfo[], lines: LineIndex): { units: LiteralUnit[]; literals: LiteralRun[]; scripts: ScriptInfo[]; keys: { value: string; attr: string; line: number }[]; shadows: FoundShadow[] }
+// keys: JSON object keys, identifier keys of JS object literals and class fields, non-computed member names and
+// object-pattern keys; buildMap merges them into DeckMap.keys/keyValues, so a literal with the same text is
+// ambiguous (`key`) (PHASE0-FINDINGS F15, F22)
+// shadows: tagged-template text and numbers; with mapper-html's (template content, raw text, data blocks,
+// attributes, handlers, dropped Strategy 1 text) buildMap makes DeckMap.shadows and toClientMap
+// ClientMap.shadowValues: a literal equal to one is `ambiguous` (`shadow`) (PHASE0-FINDINGS F22)
+isHtmlLiteral(cooked: string): boolean               // LiteralUnit.html: the fragment parse holds markup (D-d)
 
 // js-literals.ts
 jsLiteralTable(rawContent: string, kind: 'string' | 'template' | 'json-string', quote: "'" | '"' | '`'): { cooked: string; table: OffsetTable } | null
@@ -97,7 +103,9 @@ toClientMap(map: DeckMap): ClientMap
 buildServedCopy(src: string, map: DeckMap, opts: { protected: boolean }): string   // (served.ts) stamps, data-bl-e stripped, notes block removed, rel hints stripped when protected
 
 // matcher.ts
-createMatcher(map: ClientMap | DeckMap): (node: DomTextNode) => MatchResult
+createMatcher(map: ClientMap | DeckMap, opts?: { fileName?: string }): (node: DomTextNode) => MatchResult
+// step 1 trusts the own stamped run only while node.texts (the element's live non-whitespace direct text
+// nodes) agree with the stamp's source runs and no other run of the element has the same text (PHASE0-FINDINGS F22)
 
 // edit-cleanup.ts
 cleanupCommit(before: string, after: string): string     // NBSP → space unless at the same position relative to the unchanged prefix/suffix; drop U+200B/U+FEFF; line breaks → spaces
@@ -131,18 +139,42 @@ parse5 errors, Strategy 2 checks), restore on failure, and the verbatim fallback
   A Trusted file keeps its docId (and so its origin and storage, 6.10) across opens: random, generated once,
   kept in `<userData>/files/<fileKey>/origin` (`documents.ts` `trustedDocumentId`). Protected opens always get
   a fresh docId.
+- **One window per file** (6.1; `controller.ts`, `window-key.ts`). A file's window is found by the file's
+  device and inode (`fs.stat` with `bigint`) or by its realpath as returned, never case-folded. So a symlink or
+  a hard link focuses the open window, while `Deck.html` and `deck.html` on a case-sensitive volume are two
+  files. The open windows' inode keys are read again before each lookup: an atomic write gives the file a new
+  inode, and a freed inode number can be reused. A window that is closing is never listed (`all()`, the test
+  hooks) or returned: a reopen waits for its `closed` and opens a new window. A new window reads
+  `session.json` only after any write of that file still in flight has landed (6.8 One writer;
+  `SessionStore.open`).
+- **Closing a window** (`window.ts` `onClosed`). The deck partition's and view's policy callbacks read a small
+  state object (`deckPolicies`), never the `BlDocument` or the `DocWindow`. Closing does four things:
+  - clears that state, so the callbacks fail closed: Protected, no network;
+  - disposes the trust-hook handles once the deck view is gone;
+  - replaces a Protected partition's request listener and permission handlers with capture-free ones that
+    refuse everything (only `blueline:` and `blueline-media:` pass, and nothing serves them there any more);
+  - drops the document's bytes and served copies (`BlDocument.release`).
+
+  Electron keeps a partition's Session for the life of the process, so without this every closed Protected
+  window kept about three times its file's size in main memory. A Trusted `persist:` partition is never
+  reset: a reopened window of the same file installs its own policy over it.
 - **Render windows** (6.7): hidden offscreen `BrowserWindow`s (`show: false`, `offscreen: { deviceScaleFactor }`,
   `enableLargerThanScreen: true`), same partition, protocol and policy as the document, preload in
-  `--bl-mode=render`. Pool of at most 2 per document.
-- **Schemes.** `blueline` (decks; 9.1 Protocol) and `app` (shell UI from the bundle). Both are registered
-  privileged before `ready` in `protocol.ts` (`registerPrivilegedSchemes()`).
+  `--bl-mode=render`. Pool of at most 2 per document. Keys are trusted `sendInputEvent`. Whether they reach the
+  page is read from the render agent's keydown counter (`RenderCmd keydowns`), which is registered at preload
+  start. Scrolling and single-page walks step with `RenderCmd scroll-to`. The probe gives every load of its
+  copy a fresh docId.
+- **Schemes.** `blueline` (decks; 9.1 Protocol), `blueline-media` (the decks' audio and video; not
+  CORS-enabled, so a `crossorigin` media element cannot read them) and `app` (shell UI from the bundle). All
+  are registered privileged before `ready` in `protocol.ts` (`registerPrivilegedSchemes()`), and
+  `installDeckProtocol` handles both deck schemes on each deck partition.
 - **Document serving.** `protocol.ts` exports
   `installDeckProtocol(ses: Electron.Session, lookup: (docId: string) => ServedDoc | undefined): void`,
   where the lookup only returns documents that belong to that partition, and
 
   ```ts
   interface ServedDoc {
-    docId: string;          // lowercase hex
+    docId: string;          // 16 lowercase hex digits, at least one a letter (documents.ts isDocumentId)
     fileName: string;       // basename; the document is served at blueline://<docId>/<encoded fileName>
     folderReal: string;     // realpath of the document's folder
     trust(): TrustState;    // current trust (adds connect-src 'none' etc. when protected)
@@ -150,19 +182,34 @@ parse5 errors, Strategy 2 checks), restore on failure, and the verbatim fallback
   }
   ```
 - **Trust hooks** (`trust-hooks.ts`): `installDeckSessionPolicy(ses, policy)` (permission and device
-  handlers, the single `onBeforeRequest` listener, the PAC proxy) and `installDeckWebContentsPolicy(wc, opts)`
-  (navigation, window open, downloads, Bluetooth chooser, WebRTC policy, link handling), with `policy`
-  exposing live getters (`trust()`, `networkAllowed()`, `strict()`, `allowlist()`) and an
-  `update()` that re-applies the proxy after a trust change.
+  handlers, the single `onBeforeRequest` listener, the Protected proxy: `fixed_servers` to a closed port with
+  `<-loopback>`) and `installDeckWebContentsPolicy(wc, opts)` (navigation, window open, downloads, Bluetooth
+  chooser, WebRTC policy, link handling; re-installing on a view replaces every listener of the previous
+  install), with `policy` exposing live getters (`trust()`, `networkAllowed()`, `strict()`, `allowlist()`) and
+  an `update()` that re-applies the proxy after a trust change. `installShellPolicy(ses, wc)` installs the
+  shell session's part once per session and the view part per window.
 - **IPC guard** (`ipc-guard.ts`): `registerDeckChannel(channel, validate, handler)` style helpers that check
   the sender is a deck/render webContents main created (main frame, origin `blueline://<docId>`), look the
   document up from the sender (never from the payload), validate the payload with size limits, and rate-limit.
+  `validateSlides` also keeps the optional per-slide `hashes`, `revealIndices` and `ids` (dropped when their
+  length is not `count`) and `deckNav` (keys from `DECK_NAV_KEYS`, the preload's navigation keys). Main builds
+  each note's SlideRef and `Session.deckNav` from them.
 - **Editor loader** (`editor-loader.ts`): `loadEditor(): EditorModule | null` from `dist/editor.cjs`;
   `capabilities = { edit: !!editor, agent: !!editor }`.
-- **Commands.** The app accepts `--bl-cmd=<open|map|check>`, `--bl-args=<base64url JSON>` and
-  `--bl-out=<file>`. `map` and `check` are headless or diagnostic runs that write a JSON result to
-  `--bl-out` and exit (map) with its exit code. `runMapCommand(args)` lives in `map-command.ts` and
-  `openDiagnostics(opts)` in `diagnostics.ts` (app-render); app-shell creates stub versions first.
+- **Commands.** The app accepts `--bl-cmd=<open|map|check>`, `--bl-args=<base64url JSON>`, `--bl-out=<file>`
+  and `--bl-parent=<pid>`. `map` and `check` are headless or diagnostic runs that write a JSON result to
+  `--bl-out` and exit with its exit code. `runMapCommand(args)` lives in `map-command.ts` and
+  `openDiagnostics(opts)` in `diagnostics.ts`. Both stop on SIGINT, SIGTERM and SIGHUP (exit 130, 143, 129;
+  map deletes its probe copy first, check saves check.json if guided steps were recorded) and when the process
+  `--bl-parent` names (the `blueline` command) is gone. The `blueline` command starts the app in its own
+  process group and passes those signals on to the app's main process (under xvfb-run, the child of
+  xvfb-run, so xvfb-run still stops Xvfb and cleans up); a run that has not ended 10 s later is killed as a
+  group. A file macOS delivers through `open-file` to a `map` or `check` process goes to a regular instance
+  (`open-file.ts`).
+- **Packaged paths.** A packaged build reads its code from `app.asar`, but `dist/shell` and `dist/assets` ship
+  unpacked (`asarUnpack`) and main serves them from `app.asar.unpacked` (`app-paths.ts`): the confined
+  protocol handlers refuse every file inside the archive. `npm run package:smoke` packs a test build
+  (unpacked dir target, local Electron) and checks the shell, the trust bar and `check --auto` on it.
 - **userData** can be overridden with `BLUELINE_USER_DATA` (tests).
 
 ### deck preload ↔ main
