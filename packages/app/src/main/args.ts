@@ -5,6 +5,8 @@
 //   --bl-cmd=<open|map|check>      what to do (default open)
 //   --bl-args=<base64url JSON>     the command's arguments (OpenArgs, MapArgs, CheckArgs in core/ipc)
 //   --bl-out=<file>                map and check: where to write the CommandResult JSON
+//   --bl-parent=<pid>              map and check: the `blueline` command's pid; the run stops when it is
+//                                  gone (a killed command never leaves a probe run or a Diagnostics window)
 //   --protected                    open the given files in Protected view (6.10)
 //   plain paths                    files to open (Windows passes double-clicked files in argv, 6.1)
 // Everything else that starts with `-` is a Chromium or Electron switch and is ignored.
@@ -83,6 +85,20 @@ export function parseAppArgs(argv: readonly string[], opts: { defaultApp: boolea
     } else errors.push('--bl-args: not valid open arguments');
   }
   return { cmd: 'open', files: files.slice(0, MAX_FILES), protected: prot, errors };
+}
+
+/**
+ * The pid in `--bl-parent=<pid>` (the last one), or null when there is none or it is not a positive
+ * integer. Kept out of ParsedArgs: only map and check use it, and only for the watchdog in index.ts.
+ */
+export function parseParentArg(argv: readonly string[]): number | null {
+  let pid: number | null = null;
+  for (const a of argv.slice(1)) {
+    if (typeof a !== 'string' || !a.startsWith('--bl-parent=')) continue;
+    const v = a.slice('--bl-parent='.length);
+    pid = /^[1-9]\d{0,9}$/.test(v) && Number(v) <= 0x7fffffff ? Number(v) : null;
+  }
+  return pid;
 }
 
 /** base64url → JSON. */

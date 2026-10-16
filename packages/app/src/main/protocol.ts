@@ -2,6 +2,8 @@
 //
 // blueline://<docId>/<file name>        the document's served (stamped) copy, and nothing else
 // blueline://<docId>-files/<path>       its folder's display files: a second origin the page cannot read
+// blueline-media://<docId>/<path>       its folder's audio and video: a third origin, on a scheme that is not
+//                                       CORS-enabled, so no CORS-mode load can read it (finding 7)
 // app://shell/<file>                    the shell UI from the app bundle
 //
 // The request→response logic is plain functions over a minimal request shape (handleDeckRequest,
@@ -13,8 +15,11 @@ import * as electron from 'electron';
 import type { Session } from 'electron';
 import type { TrustState } from '@blueline/core/ipc';
 import { FILES_EXTENSIONS, extOf, resolveConfined } from './confine';
+import { disabledProtectedLayers, type ProtectedLayer } from './network-policy';
 
 export const DECK_SCHEME = 'blueline';
+/** The scheme sibling audio and video are served from (finding 7; see registerPrivilegedSchemes). */
+export const MEDIA_SCHEME = 'blueline-media';
 export const SHELL_SCHEME = 'app';
 export const SHELL_HOST = 'shell';
 export const SHELL_ORIGIN = 'app://shell';
@@ -25,9 +30,19 @@ export const PROTECTED_CSP = "connect-src 'none'";
 const FILES_SUFFIX = '-files';
 
 /**
- * Registers `blueline` and `app` as privileged schemes. Must run before `app.whenReady()` resolves.
- * 9.1 Registration: `blueline` is standard, secure, fetch-capable, streamable (media) and CORS-enabled
- * (for the font CORS header); `bypassCSP` is never set, so a deck's own CSP and ours both apply.
+ * Registers `blueline`, `blueline-media` and `app` as privileged schemes. Must run before
+ * `app.whenReady()` resolves.
+ * 9.1 Registration: `blueline` is standard, secure, fetch-capable, streamable and CORS-enabled (for the
+ * font CORS header); `bypassCSP` is never set, so a deck's own CSP and ours both apply.
+ *
+ * `blueline-media` (finding 7) is standard, secure and streamable (media seeks with ranges), and neither
+ * CORS-enabled nor fetch-capable. Chromium sends a `crossorigin` `<video>`/`<audio>` load in CORS mode
+ * with no Origin header and exactly the headers of a plain load (Phase 0 experiment), and Electron applies
+ * no CORS to protocol.handle responses (PHASE0-FINDINGS F7), so on a CORS-enabled scheme such a load
+ * would read the file: its canvas untainted, its Web Audio samples readable. Blink refuses every
+ * CORS-mode request, or redirect, to a scheme that is not CORS-enabled ("Cross origin requests are only
+ * supported for protocol schemes …"), so the crossorigin load fails, while a plain (no-cors) load plays
+ * and stays tainted, as with Chrome's file://.
  */
 export function registerPrivilegedSchemes(): void {
   electron.protocol.registerSchemesAsPrivileged([
@@ -35,8 +50,29 @@ export function registerPrivilegedSchemes(): void {
       scheme: DECK_SCHEME,
       privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true },
     },
+    { scheme: MEDIA_SCHEME, privileges: { standard: true, secure: true, stream: true } },
     { scheme: SHELL_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } },
   ]);
+}
+
+let layersCache: ReadonlySet<ProtectedLayer> | null = null;
+
+/**
+ * The Protected layers turned off by the test-only switch BLUELINE_TEST_DISABLE_LAYER (network-policy
+ * disabledProtectedLayers): empty unless BLUELINE_TEST=1 in an unpackaged build. Logged loudly once, since
+ * a run with a layer off is not a Protected view.
+ */
+export function testDisabledLayers(): ReadonlySet<ProtectedLayer> {
+  if (layersCache) return layersCache;
+  // Outside Electron (unit tests) `app` is undefined: treated as packaged, so the switch is never honoured.
+  const isPackaged = (electron as { app?: { isPackaged?: boolean } }).app?.isPackaged ?? true;
+  layersCache = disabledProtectedLayers(process.env, isPackaged !== false);
+  if (layersCache.size > 0) {
+    console.error(
+      `[blueline] TEST ONLY: BLUELINE_TEST_DISABLE_LAYER turned off the Protected layer(s) ${[...layersCache].join(', ')}. Protected view is NOT contained in this run.`,
+    );
+  }
+  return layersCache;
 }
 
 /** One document as a partition's handler sees it (docs/ARCHITECTURE.md, Document serving). */
@@ -117,6 +153,7 @@ const MIME: Readonly<Record<string, string>> = {
   mp4: 'video/mp4',
 };
 const FONT_EXTENSIONS: ReadonlySet<string> = new Set(['woff', 'woff2', 'ttf', 'otf']);
+/** Served only from blueline-media:// (finding 7); the blueline hosts redirect them there. */
 const MEDIA_EXTENSIONS: ReadonlySet<string> = new Set(['mp3', 'm4a', 'wav', 'ogg', 'webm', 'mp4']);
 
 /** MIME type for an extension served by the `-files` host, or undefined. */
@@ -154,7 +191,9 @@ async function routeDeckRequest(req: RequestLike, lookup: DocLookup): Promise<Re
   } catch {
     return notFound();
   }
-  if (u.protocol !== `${DECK_SCHEME}:` || u.username !== '' || u.password !== '' || u.port !== '') return notFound();
+  if (u.username !== '' || u.password !== '' || u.port !== '') return notFound();
+  if (u.protocol === `${MEDIA_SCHEME}:`) return routeMediaRequest(req, u, lookup, method);
+  if (u.protocol !== `${DECK_SCHEME}:`) return notFound();
   const host = u.hostname;
   const files = host.endsWith(FILES_SUFFIX);
   const docId = files ? host.slice(0, -FILES_SUFFIX.length) : host;
@@ -170,12 +209,12 @@ async function routeDeckRequest(req: RequestLike, lookup: DocLookup): Promise<Re
     // A CORS-mode request (it carries Origin) for anything but a font is refused here rather than
     // redirected: Electron drops the Origin header on the redirected leg, so the -files host could not
     // tell it apart from an <img>. See corsReadRefused.
-    if (corsReadRefused(req, lastSegmentExt(u.pathname))) return notFound();
+    const ext = lastSegmentExt(u.pathname);
+    if (corsReadRefused(req, ext)) return notFound();
+    // Audio and video go straight to their own scheme (finding 7, registerPrivilegedSchemes).
+    if (MEDIA_EXTENSIONS.has(ext)) return redirect(`${MEDIA_SCHEME}://${docId}${u.pathname}`);
     // 9.1 Serving: every other path is redirected to the second origin, which serves raw files.
-    return new Response(null, {
-      status: 307,
-      headers: { Location: `${DECK_SCHEME}://${docId}${FILES_SUFFIX}${u.pathname}`, 'Cache-Control': 'no-store' },
-    });
+    return redirect(`${DECK_SCHEME}://${docId}${FILES_SUFFIX}${u.pathname}`);
   }
 
   // Steps 2–4 on every -files path, with the extension allowlist.
@@ -185,7 +224,33 @@ async function routeDeckRequest(req: RequestLike, lookup: DocLookup): Promise<Re
     closeQuietly(file.fd);
     return notFound();
   }
+  // The CORS-enabled -files host never serves audio or video: a crossorigin media element could read it
+  // there (finding 7). It redirects to blueline-media://, which Blink refuses for CORS-mode loads.
+  if (MEDIA_EXTENSIONS.has(file.ext)) {
+    closeQuietly(file.fd);
+    return redirect(`${MEDIA_SCHEME}://${docId}${u.pathname}`);
+  }
   return serveFile(file, docId, method, req.headers.get('range'));
+}
+
+/**
+ * blueline-media://<docId>/<path> (finding 7): 9.1 Refusals 1–4 as on the -files host, for media
+ * extensions only. The host is the bare docId. Blink never sends a CORS-mode request to this scheme (it
+ * is not CORS-enabled); one that carries Origin anyway is refused, as a second layer.
+ */
+async function routeMediaRequest(req: RequestLike, u: URL, lookup: DocLookup, method: string): Promise<Response> {
+  const docId = u.hostname;
+  if (!isDocId(docId)) return notFound();
+  const doc = lookup(docId);
+  if (!doc || doc.docId !== docId) return notFound();
+  if (req.headers.get('origin') !== null) return notFound();
+  const file = resolveConfined(doc.folderReal, u.pathname, { allowedExtensions: MEDIA_EXTENSIONS });
+  if (!file) return notFound();
+  return serveFile(file, docId, method, req.headers.get('range'));
+}
+
+function redirect(location: string): Response {
+  return new Response(null, { status: 307, headers: { Location: location, 'Cache-Control': 'no-store' } });
 }
 
 /**
@@ -234,8 +299,9 @@ async function serveDocument(doc: ServedDoc, method: string): Promise<Response> 
   };
   if (doc.trust() === 'protected' && !(doc.networkAllowed?.() ?? false)) {
     // 9.9 Network policy, Protected: connect-src 'none' (enforced alongside the deck's own CSP), and no DNS
-    // prefetching (Channels that onBeforeRequest does not see).
-    headers['Content-Security-Policy'] = PROTECTED_CSP;
+    // prefetching (Channels that onBeforeRequest does not see). The security suite's layers spec turns the
+    // CSP off (BLUELINE_TEST builds only) to check the other layers on their own.
+    if (!testDisabledLayers().has('csp')) headers['Content-Security-Policy'] = PROTECTED_CSP;
     headers['X-DNS-Prefetch-Control'] = 'off';
   }
   return new Response(method === 'HEAD' ? null : (body as Uint8Array<ArrayBuffer>), { status: 200, headers });
@@ -282,7 +348,8 @@ function serveFile(
     'X-Content-Type-Options': 'nosniff',
     'Content-Security-Policy': 'sandbox',
   };
-  // Only fonts get a CORS header, so @font-face works; everything else stays unreadable to the page.
+  // Only fonts get a CORS header, so @font-face works; everything else stays unreadable to the page. (Media
+  // gets none either: it is served only from blueline-media://, where Blink refuses CORS-mode loads.)
   if (FONT_EXTENSIONS.has(file.ext)) headers['Access-Control-Allow-Origin'] = deckOrigin(docId);
 
   let start = 0;
@@ -382,13 +449,16 @@ function fdStream(fd: number, start: number, endExclusive: number): ReadableStre
 }
 
 /**
- * Installs the blueline:// handler on one deck partition (9.1 Per-partition handler). `lookup` returns only
- * documents that belong to this partition. Calling it again for the same session replaces the handler
- * (for example a Trusted file's persistent partition reopened with a new docId).
+ * Installs the blueline:// and blueline-media:// handlers on one deck partition (9.1 Per-partition
+ * handler). `lookup` returns only documents that belong to this partition. Calling it again for the same
+ * session replaces the handlers (for example a Trusted file's persistent partition reopened with a new
+ * docId).
  */
 export function installDeckProtocol(ses: Session, lookup: DocLookup): void {
-  if (ses.protocol.isProtocolHandled(DECK_SCHEME)) ses.protocol.unhandle(DECK_SCHEME);
-  ses.protocol.handle(DECK_SCHEME, (request) => handleDeckRequest(request, lookup));
+  for (const scheme of [DECK_SCHEME, MEDIA_SCHEME]) {
+    if (ses.protocol.isProtocolHandled(scheme)) ses.protocol.unhandle(scheme);
+    ses.protocol.handle(scheme, (request) => handleDeckRequest(request, lookup));
+  }
 }
 
 /** Files the shell may load from its bundle folder. */

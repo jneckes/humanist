@@ -153,6 +153,11 @@ function str(v: unknown, maxBytes: number, what: string): string {
   return v;
 }
 
+/** A string `str` would accept: at most `maxBytes` UTF-8 bytes, no lone surrogates. */
+function keepable(v: string, maxBytes: number): boolean {
+  return v.length <= maxBytes && utf8Length(v) <= maxBytes && !LONE_SURROGATE.test(v);
+}
+
 function int(v: unknown, min: number, max: number, what: string): number {
   if (typeof v !== 'number' || !Number.isInteger(v) || v < min || v > max) fail(`${what}: not an integer in ${min}..${max}`);
   return v;
@@ -230,18 +235,71 @@ export const validateLink: Validator<LinkClick> = (p) =>
     return { href };
   });
 
-/** DeckToMain.slides: SlideState. */
+/**
+ * The DOM `key` values the deck preload reports as having moved the deck (slide-watcher.ts NAV_KEYS; 6.7 Index
+ * replay). Anything else in SlideState.deckNav refuses the message.
+ */
+export const DECK_NAV_KEYS: readonly string[] = Object.freeze(['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp', 'PageDown', 'PageUp', ' ']);
+
+/**
+ * One optional per-slide array of SlideState (hashes, revealIndices, ids). The preload builds each from the
+ * slide list, so its length is `count`: an array of another length (or past the slide cap) is dropped
+ * without reading it. A matching array is rebuilt item by item; a malformed item refuses the message.
+ */
+function perSlide<T>(v: unknown, count: number, what: string, item: (x: unknown, what: string) => T): T[] | undefined {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || Object.getPrototypeOf(v) !== Array.prototype) fail(`${what}: not an array`);
+  if (v.length !== count || v.length > IPC_LIMITS.slides) return undefined;
+  return list(v, IPC_LIMITS.slides, what).map((x, i) => item(x, `${what}[${i}]`));
+}
+
+/**
+ * DeckToMain.slides: SlideState. The optional fields are what main builds each note's SlideRef from (section 8:
+ * the element id or hash, and nav.value as the hash or reveal's [h, v]; 9.4) and what it learns Session.deckNav
+ * from (6.7 Index replay), so they are kept, rebuilt field by field like the rest.
+ */
 export const validateSlides: Validator<SlideState> = (p) =>
   run(() => {
     const r = record(p, 'slides');
     const titles = list(r('titles'), IPC_LIMITS.slides, 'slides.titles').map((t, i) => str(t, IPC_LIMITS.slideTitle, `slides.titles[${i}]`));
-    return {
+    const out: SlideState = {
       kind: oneOf(r('kind'), SLIDE_KINDS, 'slides.kind'),
       count: int(r('count'), 0, IPC_LIMITS.slides, 'slides.count'),
       current: int(r('current'), 0, IPC_LIMITS.slides, 'slides.current'),
       titles,
       navKind: oneOf(r('navKind'), NAV_KINDS, 'slides.navKind'),
     };
+    // Element ids and hashes come from the page's own markup, so a string the guard cannot keep (longer than a
+    // title, a lone surrogate) is not a forgery: that id becomes null, and hashes are dropped as a whole (hash
+    // navigation needs every slide's hash, 9.4 step 2). A value of another type refuses the message.
+    const hashes = perSlide(r('hashes'), out.count, 'slides.hashes', (h, w) => {
+      if (typeof h !== 'string') fail(`${w}: not a string`);
+      return keepable(h, IPC_LIMITS.slideTitle) && h.startsWith('#') ? h : null;
+    });
+    if (hashes && hashes.every((h): h is string => h !== null)) out.hashes = hashes;
+    const revealIndices = perSlide(r('revealIndices'), out.count, 'slides.revealIndices', (pair, w) => {
+      const a = list(pair, 2, w);
+      if (a.length !== 2) fail(`${w}: not a pair`);
+      return [int(a[0], 0, IPC_LIMITS.slides, `${w}[0]`), int(a[1], 0, IPC_LIMITS.slides, `${w}[1]`)] as [number, number];
+    });
+    if (revealIndices) out.revealIndices = revealIndices;
+    const ids = perSlide(r('ids'), out.count, 'slides.ids', (id, w) => {
+      if (id === null) return null;
+      if (typeof id !== 'string') fail(`${w}: not a string or null`);
+      return keepable(id, IPC_LIMITS.slideTitle) ? id : null;
+    });
+    if (ids) out.ids = ids;
+    const navRaw = r('deckNav');
+    if (navRaw !== undefined) {
+      const nr = record(navRaw, 'slides.deckNav');
+      const nav: { forward?: string; back?: string } = {};
+      const forward = nr('forward');
+      if (forward !== undefined) nav.forward = oneOf(forward, DECK_NAV_KEYS, 'slides.deckNav.forward');
+      const back = nr('back');
+      if (back !== undefined) nav.back = oneOf(back, DECK_NAV_KEYS, 'slides.deckNav.back');
+      if (nav.forward !== undefined || nav.back !== undefined) out.deckNav = nav;
+    }
+    return out;
   });
 
 /** DeckToMain.mode: `{ mode: 'read' }`, the only mode a deck may ask for (6.2). */

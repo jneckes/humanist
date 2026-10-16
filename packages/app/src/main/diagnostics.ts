@@ -40,6 +40,7 @@ import { buildMap, toClientMap } from '@blueline/core/mapper';
 import { buildServedCopy } from '@blueline/core/served';
 import { decodeDeck, encodeDeck, encodeLatin1 } from '@blueline/core/text';
 import type { DeckMap, Person } from '@blueline/core/types';
+import { servedDirs, type ServedDirs } from './app-paths';
 import { atomicWriteFile, readRegularFile, sha256Hex } from './atomic-write';
 import { attachDeckView, shellRouter } from './channels';
 import { matchAppChord, SwallowedKeys } from './chords';
@@ -343,15 +344,19 @@ export function evidenceFor(stepId: string, recent: readonly LogEntry[], extra: 
     case 'dictate-body-edit': {
       // Only what happened after the user's own setup keys (the mode chord, a tool key) can be the
       // dictation's doing: a dictation in each mode changes no mode, fires no shortcut, does not move the deck.
+      // A switch main makes for Esc-Esc on the page is not a setup key.
       let from = 0;
       recent.forEach((e, i) => {
-        if (e.event === 'app-chord' || e.event === 'app-mode' || (e.event === 'shortcut' && String(e.data.action).startsWith('tool-'))) from = i + 1;
+        if (e.event === 'app-chord' || (e.event === 'app-mode' && e.data.cause !== 'esc') || (e.event === 'shortcut' && String(e.data.action).startsWith('tool-'))) from = i + 1;
       });
       const after = recent.slice(from);
       const n = (ev: string) => after.filter((e) => e.event === ev).length;
+      // The preload's own report of a switch main made (cause 'main', or 'init' on the handshake) arrives
+      // over IPC after main's app-mode entry for that switch: it is the setup chord's echo, not a new change.
+      const modeChanges = after.filter((e) => e.event === 'mode-change' && e.data.cause !== 'main' && e.data.cause !== 'init').length;
       const want = stepId.slice('dictate-body-'.length);
       const modeNote = extra.mode === want ? `mode ${extra.mode}` : `mode ${extra.mode}, NOT ${want}`;
-      return `${modeNote}; after the setup keys: ${n('mode-change')} mode change(s), ${n('shortcut')} shortcut(s), ${n('deck-moved')} deck move(s), ${n('paste')} paste`;
+      return `${modeNote}; after the setup keys: ${modeChanges} mode change(s), ${n('shortcut')} shortcut(s), ${n('deck-moved')} deck move(s), ${n('paste')} paste`;
     }
     case 'dictate-strokes':
       return extra.lastNote
@@ -882,6 +887,8 @@ export async function runAutoChecks(env: CheckEnv): Promise<void> {
 
 interface Shared {
   dist: string;
+  /** dist/shell, and the bundled deck: app.asar.unpacked in a packaged build (app-paths.ts, 9.10). */
+  served: ServedDirs;
   capabilities: Capabilities;
   blockPort: number;
 }
@@ -892,12 +899,12 @@ async function sharedEnv(): Promise<Shared> {
   if (shared) return shared;
   const dist = __dirname;
   const editor = loadEditorDetailed(dist);
-  shared = { dist, capabilities: editor.capabilities, blockPort: await pickClosedLoopbackPort() };
+  shared = { dist, served: servedDirs(dist, app.isPackaged), capabilities: editor.capabilities, blockPort: await pickClosedLoopbackPort() };
   return shared;
 }
 
-function deckFileOf(dist: string): string {
-  return fs.realpathSync.native(path.join(dist, 'assets', 'diagnostics-deck', 'index.html'));
+function deckFileOf(env: Shared): string {
+  return fs.realpathSync.native(env.served.diagnosticsDeck);
 }
 
 function log(msg: string): void {
@@ -905,6 +912,8 @@ function log(msg: string): void {
 }
 
 let current: DiagWindow | null = null;
+/** Set once `blueline check` is interrupted: the interrupt writes the CommandResult, not the closing window. */
+let interrupted = false;
 let channelsDeclared = false;
 
 function declareShellChannels(): void {
@@ -937,7 +946,7 @@ class DiagWindow {
   ) {
     this.tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'blueline-check-'));
     const shellSes = session.fromPartition(SHELL_PARTITION);
-    if (!shellSes.protocol.isProtocolHandled('app')) installShellProtocol(shellSes, path.join(env.dist, 'shell'));
+    if (!shellSes.protocol.isProtocolHandled('app')) installShellProtocol(shellSes, env.served.shellDir);
     declareShellChannels();
     this.win = new BrowserWindow({
       width: 1440,
@@ -1019,7 +1028,7 @@ class DiagWindow {
   }
 
   static async create(env: Shared): Promise<DiagWindow> {
-    const doc = new AssetDoc(deckFileOf(env.dist));
+    const doc = new AssetDoc(deckFileOf(env));
     const w = new DiagWindow(env, doc);
     w.policy = await servePartition(doc, env.blockPort);
     void w.win.webContents.loadURL(`${SHELL_ORIGIN}/diagnostics.html`).catch((e) => log(`shell failed to load: ${String(e)}`));
@@ -1097,7 +1106,7 @@ export async function openDiagnostics(opts: { auto: boolean; outFile?: string })
       visible.focus();
       await runAutoChecks({
         rec,
-        deckFile: deckFileOf(env.dist),
+        deckFile: deckFileOf(env),
         preload: path.join(env.dist, 'preload-deck.cjs'),
         capabilities: env.capabilities,
         blockPort: env.blockPort,
@@ -1118,7 +1127,7 @@ export async function openDiagnostics(opts: { auto: boolean; outFile?: string })
     }
     const ok = rec.steps.every((s) => s.result === 'pass');
     for (const s of rec.steps) log(`${s.result.toUpperCase()} ${s.id}: ${s.detail ?? ''}`);
-    if (opts.outFile) await writeCommandResult(opts.outFile, { command: 'check', exitCode: ok ? 0 : 1, text: summaryText(rec, savedTo), json: { ...rec.checkJson(), savedTo } });
+    if (opts.outFile && !interrupted) await writeCommandResult(opts.outFile, { command: 'check', exitCode: ok ? 0 : 1, text: summaryText(rec, savedTo), json: { ...rec.checkJson(), savedTo } });
     return;
   }
   if (current) {
@@ -1141,9 +1150,28 @@ export async function openDiagnostics(opts: { auto: boolean; outFile?: string })
       log(`check.json not saved: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
-  if (opts.outFile) {
+  if (opts.outFile && !interrupted) {
     const failed = w.rec.steps.some((s) => s.result === 'fail');
     await writeCommandResult(opts.outFile, { command: 'check', exitCode: failed ? 1 : 0, text: summaryText(w.rec, savedTo), json: { ...w.rec.checkJson(), savedTo } });
+  }
+}
+
+/**
+ * When `blueline check` is interrupted (index.ts: a signal, or the command that started it is gone): from
+ * now on openDiagnostics writes no CommandResult (the interrupt writes its own), and check.json is saved if
+ * the open window has recorded guided steps, so Josh's results are not lost. Returns where check.json is
+ * (null when there is none).
+ */
+export async function interruptDiagnostics(): Promise<string | null> {
+  interrupted = true;
+  const w = current;
+  if (!w) return null;
+  if (!w.rec.log.some((e) => e.event === 'step')) return w.rec.savedTo;
+  try {
+    return await w.rec.save();
+  } catch (e) {
+    log(`check.json not saved: ${e instanceof Error ? e.message : String(e)}`);
+    return w.rec.savedTo;
   }
 }
 

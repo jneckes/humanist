@@ -2,7 +2,7 @@
 // 6.10). Two entry points:
 //
 //   installDeckSessionPolicy(ses, policy)    once per deck partition: permissions, device choosers, the
-//                                            single onBeforeRequest listener, the Protected PAC proxy,
+//                                            single onBeforeRequest listener, the Protected proxy,
 //                                            downloads
 //   installDeckWebContentsPolicy(wc, opts)   once per deck view or render view: navigation, popups,
 //                                            webviews, the Bluetooth chooser, WebRTC, link handling
@@ -14,14 +14,8 @@ import * as electron from 'electron';
 import type { DownloadItem, SaveDialogOptions, Session, WebContents } from 'electron';
 import type { TrustState } from '@blueline/core/ipc';
 import { resolveConfinedPath } from './confine';
-import {
-  buildPacScript,
-  decideRequest,
-  networkOpen,
-  pacDataUrl,
-  upstreamProxyFromEnv,
-  type RequestReason,
-} from './network-policy';
+import { PROXY_CHECK_URLS, decideRequest, networkOpen, protectedProxyConfig, type RequestReason } from './network-policy';
+import { testDisabledLayers } from './protocol';
 import { writeDownloadMarker } from './markers';
 
 // ---------------------------------------------------------------------------------------------------
@@ -283,10 +277,8 @@ export interface DeckSessionPolicy {
   networkAllowed(): boolean;
   strict(): boolean;
   allowlist(): readonly string[];
-  /** Closed loopback port for the Protected PAC (network-policy pickClosedLoopbackPort, once per launch). */
+  /** Closed loopback port for the Protected proxy (network-policy pickClosedLoopbackPort, once per launch). */
   blockPort: number;
-  /** Dev/CI upstream proxy for allowlisted hosts. Default: upstreamProxyFromEnv(). null forces DIRECT. */
-  upstreamProxy?: string | null;
   /** The document's realpath, recorded as a download's source in its internet marker (9.9). */
   sourcePath?(): string | null;
   /**
@@ -312,8 +304,10 @@ export interface DeckSessionHandle {
   dispose(): void;
 }
 
-const PROBE_URL = 'https://blueline-proxy-check.invalid/';
 const sessionHandles = new WeakMap<Session, DeckSessionHandle>();
+
+/** The onBeforeRequest reasons that belong to the Protected policy alone (the `requests` layer, 9.9). */
+const PROTECTED_REQUEST_REASONS: ReadonlySet<RequestReason> = new Set<RequestReason>(['protected', 'blueline-read']);
 
 /**
  * Installs the always-on policy of one deck partition (9.9 Always, Network policy):
@@ -323,8 +317,9 @@ const sessionHandles = new WeakMap<Session, DeckSessionHandle>();
  *   `mailto:`) is denied and handed to the link handling of its webContents instead;
  * - the single `webRequest.onBeforeRequest` listener (only the last one attached is used, so nothing else
  *   may attach one) applies decideRequest with the live getters;
- * - Protected without Allow network: a PAC proxy (allowlisted hosts DIRECT, everything else to a closed
- *   loopback port), verified with resolveProxy; otherwise the system proxy;
+ * - Protected without Allow network: a fixed_servers proxy (allowlisted hosts DIRECT, every other host,
+ *   loopback and link-local included, to a closed loopback port), verified with resolveProxy; otherwise
+ *   the system proxy;
  * - downloads are cancelled in Protected, and need confirmation in Trusted, then get an internet marker.
  * Calling it again for the same session replaces the previous policy.
  */
@@ -380,6 +375,9 @@ export function installDeckSessionPolicy(ses: Session, policy: DeckSessionPolicy
       });
       cancel = d.cancel;
       reason = d.reason;
+      // Test-only (BLUELINE_TEST, unpackaged): the layers spec turns the Protected request layer off to check
+      // the CSP and the proxy on their own. Cancels that hold in both trust states stay.
+      if (cancel && PROTECTED_REQUEST_REASONS.has(reason) && testDisabledLayers().has('requests')) cancel = false;
     } catch {
       // A getter threw: refuse.
     }
@@ -439,16 +437,19 @@ export function installDeckSessionPolicy(ses: Session, policy: DeckSessionPolicy
 
   let chain: Promise<void> = Promise.resolve();
   const applyProxy = async (): Promise<void> => {
-    if (policy.trust() === 'protected' && !policy.networkAllowed()) {
-      const upstream = policy.upstreamProxy === undefined ? upstreamProxyFromEnv() : policy.upstreamProxy;
-      const script = buildPacScript(policy.allowlist(), policy.strict(), { blockPort: policy.blockPort, upstream });
-      await ses.setProxy({ mode: 'pac_script', pacScript: pacDataUrl(script) });
+    if (policy.trust() === 'protected' && !policy.networkAllowed() && !testDisabledLayers().has('proxy')) {
+      // 9.9 Channels that onBeforeRequest does not see. fixed_servers, not a PAC script: Chromium bypasses
+      // a PAC for loopback and link-local hosts, and only a fixed_servers bypass list can drop that
+      // implicit bypass ('<-loopback>'; network-policy protectedProxyConfig, finding 8).
+      await ses.setProxy(protectedProxyConfig(policy.allowlist(), policy.strict(), { blockPort: policy.blockPort }));
       await ses.closeAllConnections();
-      // Chromium falls back to DIRECT if a PAC script fails to load or run. Verify it took effect, and
-      // fail (so the caller does not load the deck) if it did not.
-      const probe = await ses.resolveProxy(PROBE_URL);
-      if (!probe.includes(`127.0.0.1:${policy.blockPort}`)) {
-        throw new Error(`Protected view proxy did not apply (got "${probe}")`);
+      // Verify it took effect, for a name and for the loopback and link-local hosts, and fail (so the caller
+      // does not load the deck) if any of them would not go to the closed port.
+      for (const url of PROXY_CHECK_URLS) {
+        const probe = await ses.resolveProxy(url);
+        if (!probe.includes(`127.0.0.1:${policy.blockPort}`)) {
+          throw new Error(`Protected view proxy did not apply for ${url} (got "${probe}")`);
+        }
       }
     } else {
       await ses.setProxy({ mode: 'system' });
@@ -544,7 +545,8 @@ interface NavDetails {
  *   a subframe redirect follows the subframe rule;
  * - setWindowOpenHandler denies every popup, and routes it to link handling;
  * - `<webview>` is refused; the Bluetooth chooser is cancelled with no device;
- * - WebRTC may not use non-proxied UDP (with the Protected PAC, its TCP fallback dies on the closed port);
+ * - WebRTC may not use non-proxied UDP (with the Protected proxy, its TCP fallback dies on the closed port,
+ *   for loopback hosts too);
  * - beforeunload cannot keep the view from closing or reloading;
  * - link handling (LinkTracker): a cancelled navigation or popup that matches a recent user click
  *   (noteLinkClick) runs onUserLink (http, https, mailto) or openLocalHtml (a local .html/.htm in the
@@ -619,6 +621,10 @@ export function installDeckWebContentsPolicy(wc: WebContents, opts: DeckWebConte
   });
   wc.setWebRTCIPHandlingPolicy('disable_non_proxied_udp');
 
+  const onDestroyed = () => {
+    tracker.dispose();
+    if (trackers.get(wc) === tracker) trackers.delete(wc);
+  };
   const handle: DeckWebContentsHandle = {
     noteLinkClick: (href) => tracker.noteClick(href),
     dispose() {
@@ -626,6 +632,7 @@ export function installDeckWebContentsPolicy(wc: WebContents, opts: DeckWebConte
       if (trackers.get(wc) === tracker) trackers.delete(wc);
       if (viewHandles.get(wc) === handle) viewHandles.delete(wc);
       if (wc.isDestroyed()) return;
+      wc.removeListener('destroyed', onDestroyed);
       wc.removeListener('will-frame-navigate', onFrameNavigate);
       wc.removeListener('will-navigate', onNavigate);
       wc.removeListener('will-redirect', onRedirect);
@@ -634,10 +641,9 @@ export function installDeckWebContentsPolicy(wc: WebContents, opts: DeckWebConte
       wc.removeListener('will-prevent-unload', onPreventUnload);
     },
   };
-  wc.once('destroyed', () => {
-    tracker.dispose();
-    if (trackers.get(wc) === tracker) trackers.delete(wc);
-  });
+  // Removed by dispose(): a render view re-installs once per probe load (a fresh docId each time), and a
+  // listener left behind per install would pile up (MaxListenersExceededWarning) until the view closes.
+  wc.once('destroyed', onDestroyed);
   viewHandles.set(wc, handle);
   return handle;
 }
@@ -656,19 +662,29 @@ export function shellRequestAllowed(url: string): boolean {
   }
 }
 
+const shellSessions = new WeakSet<Session>();
+
 /**
  * Hardens the shell's session and view (9.1 Shell view): requests other than `app://shell/…` are
  * cancelled, the shell never navigates (only main's own loadURL runs), opens no popups, attaches no
  * webviews and downloads nothing, and permissions are denied. Phase 5: the shell is granted the microphone
  * for the in-card recorder (9.9); that grant goes here, for `media` with audio only, after main's
  * askForMediaAccess.
+ *
+ * Every document window and Diagnostics window calls this with the one shared shell session. The
+ * session-level part (permission handlers, onBeforeRequest, will-download) is installed once per session
+ * (finding 22: a will-download listener per window piled up for the life of the process); the view
+ * listeners are installed for each call's webContents.
  */
 export function installShellPolicy(ses: Session, wc: WebContents): void {
-  ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
-  ses.setPermissionCheckHandler(() => false);
-  ses.setDevicePermissionHandler(() => false);
-  ses.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !shellRequestAllowed(details.url) }));
-  ses.on('will-download', (event) => event.preventDefault());
+  if (!shellSessions.has(ses)) {
+    shellSessions.add(ses);
+    ses.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
+    ses.setPermissionCheckHandler(() => false);
+    ses.setDevicePermissionHandler(() => false);
+    ses.webRequest.onBeforeRequest((details, callback) => callback({ cancel: !shellRequestAllowed(details.url) }));
+    ses.on('will-download', (event) => event.preventDefault());
+  }
   const cancel = (d: { preventDefault(): void }) => d.preventDefault();
   wc.on('will-frame-navigate', cancel);
   wc.on('will-navigate', cancel);

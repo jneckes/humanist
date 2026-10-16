@@ -13,6 +13,7 @@ import { DocumentRegistry, OpenError, loadDocument, newDocumentId, trustedDocume
 import { openDiagnostics } from './diagnostics';
 import { SessionStore, sessionFileFor, type SaveEvent } from './session-store';
 import { DocWindow, type AppPaths } from './window';
+import { FileKeyMap, fileKeys, type FileKeys } from './window-key';
 
 export interface ControllerDeps {
   capabilities: Capabilities;
@@ -32,18 +33,17 @@ export interface OpenOptions {
   protected: boolean;
 }
 
-/** Case-folding key for "one window per realpath" on case-insensitive volumes (macOS, Windows defaults). */
-function windowKey(realpath: string, platform: NodeJS.Platform): string {
-  return platform === 'darwin' || platform === 'win32' ? realpath.toLowerCase() : realpath;
-}
-
 export class AppController {
   readonly registry = new DocumentRegistry();
-  private readonly windows = new Map<string, DocWindow>();
+  /**
+   * Document windows by their file's keys (window-key.ts: device and inode, and the realpath as returned, never
+   * case-folded; 6.1 One window per file).
+   */
+  private readonly windows = new FileKeyMap<DocWindow>();
   /** Opens in flight, by the path asked for, so a double delivery opens one window. */
   private readonly opening = new Map<string, Promise<DocWindow | null>>();
-  /** Windows being created, by realpath key: two paths to one file (a symlink, another spelling) make one window. */
-  private readonly creating = new Map<string, Promise<DocWindow | null>>();
+  /** Windows being created, by their file's keys: two paths to one file (a symlink, another spelling) make one window. */
+  private readonly creating = new FileKeyMap<Promise<DocWindow | null>>();
   /** Session stores with writes that may still be pending (open windows and recently closed ones). */
   private readonly stores = new Set<SessionStore>();
   /** Error dialogs still on screen. */
@@ -51,16 +51,19 @@ export class AppController {
 
   constructor(private readonly deps: ControllerDeps) {}
 
-  /** Every open document window. */
+  /**
+   * Every open document window. A window that is closing is left out (finding 23): its deck view is closed in
+   * the window's 'close' event, and from then until 'closed' its deck webContents reads as undefined.
+   */
   all(): DocWindow[] {
-    return [...this.windows.values()].filter((w) => !w.isDestroyed());
+    return this.windows.values().filter((w) => w.usable());
   }
 
   /** The focused document window, or the most recent one. */
   focused(): DocWindow | null {
     const fw = BrowserWindow.getFocusedWindow();
-    for (const w of this.windows.values()) if (fw && w.win === fw) return w;
     const list = this.all();
+    for (const w of list) if (fw && w.win === fw) return w;
     return list.length > 0 ? list[list.length - 1] : null;
   }
 
@@ -85,7 +88,7 @@ export class AppController {
       // loadDocument reports it
     }
     if (realpath) {
-      const known = await this.existing(windowKey(realpath, this.deps.platform));
+      const known = await this.existing(await this.keysOf(realpath));
       if (known !== undefined) return known;
     }
     let doc: BlDocument;
@@ -99,40 +102,64 @@ export class AppController {
       this.reportOpenError(abs, e);
       return null;
     }
-    const key = windowKey(doc.realpath, this.deps.platform);
-    // No await between this check and creating.set: two paths to the same file make one window.
-    if (this.windows.has(key) || this.creating.has(key)) {
-      const known = await this.existing(key);
+    const keys = await this.keysOf(doc.realpath);
+    // No await between the last check and creating.set: two paths to the same file make one window.
+    while (this.windows.get(keys) !== undefined || this.creating.get(keys) !== undefined) {
+      const known = await this.existing(keys);
       if (known !== undefined) return known;
     }
-    const job = this.createWindow(doc, key).finally(() => this.creating.delete(key));
-    this.creating.set(key, job);
+    const job: Promise<DocWindow | null> = this.createWindow(doc, keys).finally(() => this.creating.delete(job));
+    this.creating.set(keys, job);
     return job;
   }
 
-  /** The window that shows (or is about to show) the file with this key, focused; undefined if none. */
-  private async existing(key: string): Promise<DocWindow | null | undefined> {
-    const w = this.windows.get(key);
-    if (w && !w.isDestroyed()) {
-      w.focus();
-      return w;
-    }
-    const pending = this.creating.get(key);
-    if (!pending) return undefined;
-    const p = await pending;
-    p?.focus();
-    return p;
+  /** A file's keys, after the open windows' inode keys were read again (window-key.ts). */
+  private async keysOf(realpath: string): Promise<FileKeys> {
+    const [keys] = await Promise.all([fileKeys(realpath), this.windows.rekey((w) => w.doc.realpath)]);
+    return keys;
   }
 
-  private async createWindow(doc: BlDocument, key: string): Promise<DocWindow | null> {
+  /**
+   * The window that shows (or is about to show) the file with these keys, focused; undefined if none. A window
+   * of the file that is closing is never returned: the open waits until it is gone (its Trusted docId and its
+   * session.json are free again then) and opens a new one.
+   */
+  private async existing(keys: FileKeys): Promise<DocWindow | null | undefined> {
+    for (;;) {
+      const w = this.windows.get(keys);
+      if (w && !w.isDestroyed()) {
+        if (!w.closing) {
+          w.focus();
+          return w;
+        }
+        await w.closed;
+        continue;
+      }
+      const pending = this.creating.get(keys);
+      if (!pending) return undefined;
+      const p = await pending;
+      if (!p) return null;
+      if (!p.closing) {
+        p.focus();
+        return p;
+      }
+      // It opened and is already closing: look again.
+    }
+  }
+
+  private async createWindow(doc: BlDocument, keys: FileKeys): Promise<DocWindow | null> {
     let win: DocWindow | null = null;
     let store: SessionStore;
     try {
       // Throws on a docId that is still registered (a Trusted file's docId is stable, 6.10); remove() below
       // then leaves the other document alone.
       this.registry.add(doc);
+      const file = sessionFileFor(this.deps.userData, doc.fileKey);
+      // 6.8 One writer (finding 24): a recently closed window of this file may still be writing its session.json.
+      // Read it only after that write landed (SessionStore.open also waits for any store's write of the file).
+      await Promise.all([...this.stores].filter((s) => s.file === file).map((s) => s.idle()));
       store = await SessionStore.open(
-        sessionFileFor(this.deps.userData, doc.fileKey),
+        file,
         { path: doc.path, realpath: doc.realpath, fileKey: doc.fileKey, sha256: doc.contentHash, title: doc.title },
         (e: SaveEvent) => win?.onSaved(e),
       );
@@ -151,7 +178,7 @@ export class AppController {
         openLocalHtml: (rp, opt) => void this.open(rp, opt),
         openInBrowser: (rp) => this.openInBrowser(rp),
         reveal: (rp) => shell.showItemInFolder(rp),
-        closed: (w) => this.onWindowClosed(key, w),
+        closed: (w) => this.onWindowClosed(w),
         log: (m) => this.deps.log(m),
       });
     } catch (e) {
@@ -159,15 +186,17 @@ export class AppController {
       this.reportOpenError(doc.path, e);
       return null;
     }
-    this.windows.set(key, win);
+    // Closed while it was being created: its 'closed' already ran, so it never goes into the window map.
+    if (win.closing) return win;
+    this.windows.set(keys, win);
     this.stores.add(store);
     win.win.once('closed', () => void store.idle().then(() => this.stores.delete(store)));
     this.deps.log(`opened ${doc.fileName} (${doc.trust()}${doc.trustReason ? `: ${doc.trustReason}` : ''}) docId=${doc.docId}`);
     return win;
   }
 
-  private onWindowClosed(key: string, w: DocWindow): void {
-    if (this.windows.get(key) === w) this.windows.delete(key);
+  private onWindowClosed(w: DocWindow): void {
+    this.windows.delete(w);
   }
 
   private reportOpenError(p: string, e: unknown): void {

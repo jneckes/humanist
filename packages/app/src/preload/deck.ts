@@ -14,6 +14,7 @@ import { ipcRenderer, webFrame } from 'electron';
 import { DeckToMain, MainToDeck, type AppMode, type DeckInit, type MapUpdate, type RenderReply } from '@blueline/core/ipc';
 import { parsePreloadArgs } from './env';
 import { KeyRouter, type KeyAction, type ShortcutAction, type TextFieldKind } from './key-router';
+import { InputGuard } from './input-guard';
 import { DeckUi } from './deck-ui';
 import { RenderAgent } from './render-agent';
 
@@ -29,6 +30,8 @@ interface RouterBridge {
   onAction(a: ShortcutAction | 'commit-edit' | 'cancel-edit' | 'close-card', e: KeyboardEvent): void;
   onDeckKey(e: KeyboardEvent): void;
   onDecision(e: KeyboardEvent, action: KeyAction, consumed: boolean): void;
+  overlayHost(): EventTarget;
+  onOverlayEvent(e: Event): void;
 }
 
 let bridge: RouterBridge | null = null;
@@ -42,6 +45,13 @@ if (env.mode !== 'render') {
     onAction: (a, e) => bridge?.onAction(a, e),
     onDecision: (e, a, c) => bridge?.onDecision(e, a, c),
     onDeckKey: (e) => bridge?.onDeckKey(e),
+  }).install();
+  // The input guard (input-guard.ts), right after the router so its key listeners never change the router's
+  // decisions: the input-event family from the overlay (card typing, paste, dictation) is handled by the
+  // overlay and stopped at window capture, before any page listener can read or cancel it.
+  new InputGuard(window, {
+    host: () => bridge?.overlayHost() ?? null,
+    onOverlayEvent: (e) => bridge?.onOverlayEvent(e),
   }).install();
 }
 

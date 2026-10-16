@@ -2,18 +2,21 @@
 // preload has no UI and no key router. It answers MainToDeck.renderRequest with DeckToMain.renderReply for
 // every RenderCmd. Navigation inside the page uses the page's own engine: reveal.js through
 // webFrame.executeJavaScript in the main world (the only call into the page's world, with integer arguments
-// only), the hash by assignment, scrolling documents by scrollIntoView. Index navigation is main's
-// (sendInputEvent); the agent only reports where the deck is.
+// only), the hash by assignment, scrolling documents by scrollIntoView (and scroll-to, for the walk's
+// viewport steps). Index navigation is main's (sendInputEvent); the agent only reports where the deck is,
+// and counts the keydowns the page saw (keydowns) from a capture listener registered before any page script.
 
 import type {
   CurrentResult,
   DetectResult,
   GotoResult,
+  KeydownsResult,
   KeyResult,
   NodeLocator,
   RenderCmd,
   RenderReply,
   ScrollBlocksResult,
+  ScrollToResult,
   SettleResult,
 } from '@blueline/core/ipc';
 import { DomWalker, cssPath } from '@blueline/core/dom-walk';
@@ -67,12 +70,26 @@ export class RenderAgent {
   private hashFormat: HashFormat | null = null;
   private pauseSheet: CSSStyleSheet | null = null;
   private readonly walker: DomWalker;
+  /** Keydowns the page's window has seen since this load (RenderCmd keydowns). */
+  private readonly keydowns: KeydownsResult = { trusted: 0, all: 0 };
 
   constructor(
     private readonly win: Window,
     private readonly mainWorld: MainWorld,
     private readonly reply: (r: RenderReply) => void,
   ) {
+    // 6.7 Index replay: whether trusted keys reach the deck. The agent is built synchronously at preload start,
+    // before any page script, so this is the first capture listener on window: a page listener that calls
+    // stopImmediatePropagation() cannot hide a key from it (review finding 33). It only counts.
+    listen(
+      win,
+      'keydown',
+      (e) => {
+        this.keydowns.all++;
+        if (e.isTrusted) this.keydowns.trusted++;
+      },
+      { capture: true, passive: true },
+    );
     this.walker = new DomWalker(win, { host: () => null });
     // 9.4 step 2 evidence, as in the visible view: a hash that names the slide after a move.
     listen(win, 'hashchange', () => {
@@ -115,7 +132,9 @@ export class RenderAgent {
       case 'settle':
         return this.settle();
       case 'collect':
-        return this.walker.collect();
+        // Each node with the slide or block that contains it (review finding 35).
+        await this.ensureModel();
+        return this.walker.collect((n) => this.slideOf(n));
       case 'find':
         if (typeof cmd.needle !== 'string') throw new Error('find: bad needle');
         await this.ensureModel();
@@ -128,6 +147,11 @@ export class RenderAgent {
         return this.scrollBlocks();
       case 'key':
         return this.key(cmd.key);
+      case 'keydowns':
+        return { trusted: this.keydowns.trusted, all: this.keydowns.all };
+      case 'scroll-to':
+        if (typeof cmd.y !== 'number' || !Number.isFinite(cmd.y) || cmd.y < 0) throw new Error('scroll-to: bad offset');
+        return this.scrollTo(cmd.y);
       default:
         throw new Error(`unknown command ${(cmd as { type: string }).type}`);
     }
@@ -282,6 +306,18 @@ export class RenderAgent {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Scrolls the document to `y` (review finding 34: a scrolling or single-page walk steps through the whole
+   * document, and the probe replays a stop at the same offset). The page may clamp it.
+   */
+  private async scrollTo(y: number): Promise<ScrollToResult> {
+    this.win.scrollTo({ left: 0, top: y, behavior: 'instant' as ScrollBehavior });
+    await frame(this.win);
+    const d = this.doc;
+    const scrollHeight = Math.max(d.documentElement?.scrollHeight ?? 0, d.body?.scrollHeight ?? 0, this.win.innerHeight);
+    return { scrollY: this.win.scrollY, innerHeight: this.win.innerHeight, scrollHeight };
   }
 
   private async scrollBlocks(): Promise<ScrollBlocksResult> {

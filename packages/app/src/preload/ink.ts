@@ -26,7 +26,7 @@ import {
   type Box,
   type Pt,
 } from './geometry';
-import { listen } from './listeners';
+import { listen, listenOn } from './listeners';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 /** Main refuses a mark path over 16 KB (ipc-guard IPC_LIMITS.markPath); leave room. */
@@ -95,17 +95,18 @@ export class InkLayer {
     listen(win, 'resize', () => this.syncScroll(), { passive: true });
 
     // 6.4: preventDefault on pointerdown and mousedown, so focus and the caret stay in the open card's
-    // textarea and a Wispr Flow dictation in progress still lands there.
-    capture.addEventListener('pointerdown', (e) => this.onDown(e));
-    capture.addEventListener('mousedown', (e) => {
+    // textarea and a Wispr Flow dictation in progress still lands there. Through listenOn(), so
+    // document.open() (which erases listeners in the shadow tree too) does not leave the ink dead.
+    listenOn(capture, 'pointerdown', (e) => this.onDown(e as PointerEvent));
+    listenOn(capture, 'mousedown', (e) => {
       if (e.isTrusted) e.preventDefault();
     });
-    capture.addEventListener('pointermove', (e) => this.onMove(e));
-    capture.addEventListener('pointerup', (e) => this.onUp(e));
-    capture.addEventListener('pointercancel', (e) => this.onCancel(e));
-    capture.addEventListener('lostpointercapture', (e) => this.onCancel(e));
-    svg.addEventListener('click', (e) => this.onSvgClick(e));
-    svg.addEventListener('mousedown', (e) => {
+    listenOn(capture, 'pointermove', (e) => this.onMove(e as PointerEvent));
+    listenOn(capture, 'pointerup', (e) => this.onUp(e as PointerEvent));
+    listenOn(capture, 'pointercancel', (e) => this.onCancel(e as PointerEvent));
+    listenOn(capture, 'lostpointercapture', (e) => this.onCancel(e as PointerEvent));
+    listenOn(svg, 'click', (e) => this.onSvgClick(e as MouseEvent));
+    listenOn(svg, 'mousedown', (e) => {
       // Clicking a mark must not take focus from an open card either.
       if (e.isTrusted) e.preventDefault();
     });

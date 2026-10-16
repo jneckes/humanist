@@ -1,20 +1,20 @@
-// Network policy (9.9), the Protected PAC script, and the navigation/link decisions of trust-hooks
-// (9.9 Navigation and links). Electron is not available here; these are the pure parts.
+// Network policy (9.9), the Protected proxy configuration, the test-only layer switch, and the
+// navigation/link decisions of trust-hooks (9.9 Navigation and links). Electron is not available here;
+// these are the pure parts.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import * as vm from 'node:vm';
 import {
   DEFAULT_ALLOWLIST,
-  buildPacScript,
+  PROXY_CHECK_URLS,
   decideRequest,
+  disabledProtectedLayers,
   hostAllowlisted,
   normalizeAllowlistHost,
-  pacDataUrl,
   pickClosedLoopbackPort,
-  upstreamProxyFromEnv,
+  protectedProxyConfig,
   type RequestFacts,
 } from '../../../packages/app/src/main/network-policy';
 import {
@@ -56,7 +56,7 @@ describe('default allowlist', () => {
   });
   it('normalizes user-entered hosts and refuses anything else', () => {
     expect(normalizeAllowlistHost('  CDN.Example.COM ')).toBe('cdn.example.com');
-    for (const bad of ['', 'localhost', '*.example.com', 'https://a.com', 'a.com/x', 'a.com:443', 'a b.com', 'a.com"; return "DIRECT', '-a.com', 'a..com']) {
+    for (const bad of ['', 'localhost', 'data.localhost', '127.0.0.1', '169.254.169.254', '10.0.0.5', '*.example.com', 'https://a.com', 'a.com/x', 'a.com:443', 'a b.com', 'a.com"; return "DIRECT', 'a.com,<-loopback>', '-a.com', 'a..com']) {
       expect(normalizeAllowlistHost(bad), bad).toBeNull();
     }
   });
@@ -167,75 +167,56 @@ describe('decideRequest — Trusted and Allow network', () => {
   });
 });
 
-/** Runs a PAC script's FindProxyForURL in a fresh V8 context with the standard helper shims. */
-function evalPac(script: string, url: string): string {
-  const host = new URL(url).hostname;
-  const shims = {
-    dnsDomainIs: (h: string, d: string) => h.toLowerCase().endsWith(d.toLowerCase()),
-    shExpMatch: (s: string, p: string) => new RegExp('^' + p.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') + '$').test(s),
-    isPlainHostName: (h: string) => !h.includes('.'),
-    dnsResolve: () => {
-      throw new Error('PAC must not resolve DNS');
-    },
-    isResolvable: () => {
-      throw new Error('PAC must not resolve DNS');
-    },
-    isInNet: () => {
-      throw new Error('PAC must not resolve DNS');
-    },
-    myIpAddress: () => '127.0.0.1',
-  };
-  const ctx = vm.createContext({ ...shims, __url: url, __host: host });
-  vm.runInContext(script, ctx, { timeout: 1000 });
-  return vm.runInContext('FindProxyForURL(__url, __host)', ctx, { timeout: 1000 }) as string;
-}
-
-describe('PAC script', () => {
-  const blockPort = 54321;
-  const pac = buildPacScript(DEFAULT_ALLOWLIST, false, { blockPort });
-  it('sends allowlisted hosts DIRECT and everything else to the closed port', () => {
-    for (const h of DEFAULT_ALLOWLIST) expect(evalPac(pac, `https://${h}/x`), h).toBe('DIRECT');
-    expect(evalPac(pac, 'https://FONTS.GSTATIC.COM/x')).toBe('DIRECT');
-    for (const u of [
-      'https://attacker.example/',
-      'http://abc.attacker.example/',
-      'wss://attacker.example/s',
-      'https://evil.fonts.gstatic.com/',
-      'https://fonts.gstatic.com.evil.example/',
-      'https://8.8.8.8/',
-      'https://[2001:db8::1]/',
-      'stun://stun.attacker.example/',
-    ]) {
-      expect(evalPac(pac, u.startsWith('stun') ? 'https://stun.attacker.example/' : u), u).toBe(`PROXY 127.0.0.1:${blockPort}`);
+describe('decideRequest — blueline-media:// (finding 7)', () => {
+  // Media is served only from blueline-media://<docId>/ (protocol.ts). Only a media element may load it:
+  // fetch, XHR, beacons, frames, images, scripts and styles are cancelled in both trust states.
+  const url = 'blueline-media://0123abcd/clip.webm';
+  it('allows media element loads in every trust state', () => {
+    for (const f of [P({ url, resourceType: 'media' }), T({ url, resourceType: 'media' }), P({ url, resourceType: 'media', networkAllowed: true })]) {
+      expect(decideRequest(f)).toEqual({ cancel: false, reason: 'blueline' });
     }
   });
-  it('strict sends every host to the closed port', () => {
-    const strict = buildPacScript(DEFAULT_ALLOWLIST, true, { blockPort });
-    for (const h of DEFAULT_ALLOWLIST) expect(evalPac(strict, `https://${h}/x`)).toBe(`PROXY 127.0.0.1:${blockPort}`);
-    expect(strict).not.toContain('DIRECT');
+  it.each(['xhr', 'ping', 'image', 'stylesheet', 'script', 'font', 'subFrame', 'mainFrame', 'object', 'other', 'webSocket', 'cspReport'])(
+    'cancels %s in every trust state',
+    (resourceType) => {
+      for (const f of [P({ url, resourceType }), T({ url, resourceType }), P({ url, resourceType, networkAllowed: true })]) {
+        expect(decideRequest(f)).toEqual({ cancel: true, reason: 'media-only' });
+      }
+    },
+  );
+});
+
+describe('Protected proxy configuration (finding 8)', () => {
+  // 9.9 Channels that onBeforeRequest does not see: a PAC script cannot cover loopback or link-local hosts,
+  // because Chromium bypasses the proxy for them before it consults the PAC (a Protected deck reached
+  // 127.0.0.1 over WebRTC TURN/TCP). fixed_servers with '<-loopback>' in the bypass list removes that
+  // implicit bypass, so every host but the allowlist goes to the closed port.
+  const blockPort = 54321;
+  it('sends every host to the closed loopback port, the allowlist DIRECT, and drops the implicit loopback bypass', () => {
+    const c = protectedProxyConfig(DEFAULT_ALLOWLIST, false, { blockPort });
+    expect(c.mode).toBe('fixed_servers');
+    expect(c.proxyRules).toBe('127.0.0.1:54321');
+    const bypass = c.proxyBypassRules.split(',');
+    expect(bypass[bypass.length - 1]).toBe('<-loopback>');
+    expect(bypass.slice(0, -1).sort()).toEqual([...DEFAULT_ALLOWLIST].sort());
   });
-  it('uses the dev upstream proxy for allowlisted hosts when given', () => {
-    const p = buildPacScript(DEFAULT_ALLOWLIST, false, { blockPort, upstream: 'PROXY 127.0.0.1:35397' });
-    expect(evalPac(p, 'https://cdn.jsdelivr.net/x')).toBe('PROXY 127.0.0.1:35397');
-    expect(evalPac(p, 'https://attacker.example/')).toBe(`PROXY 127.0.0.1:${blockPort}`);
-    expect(() => buildPacScript(DEFAULT_ALLOWLIST, false, { blockPort, upstream: 'DIRECT' })).toThrow();
-    expect(() => buildPacScript(DEFAULT_ALLOWLIST, false, { blockPort, upstream: 'PROXY a:1"; x' })).toThrow();
+  it('strict bypasses nothing: even the allowlist goes to the closed port', () => {
+    const c = protectedProxyConfig(DEFAULT_ALLOWLIST, true, { blockPort });
+    expect(c).toEqual({ mode: 'fixed_servers', proxyRules: '127.0.0.1:54321', proxyBypassRules: '<-loopback>' });
   });
-  it('drops allowlist entries that are not plain hosts, so nothing can be injected', () => {
-    const p = buildPacScript(['ok.example.com', 'x"; return "DIRECT"; //', '*.evil.com', 'a.com\n}'], false, { blockPort });
-    expect(evalPac(p, 'https://ok.example.com/')).toBe('DIRECT');
-    expect(evalPac(p, 'https://x/')).toBe(`PROXY 127.0.0.1:${blockPort}`);
-    expect(p).not.toContain('evil');
-    expect(p).not.toContain('return "DIRECT"; //');
+  it('uses the allowlist it is given, normalized, and drops entries that are not plain hosts', () => {
+    const c = protectedProxyConfig(['  CDN.Example.COM ', 'cdn.example.com', '*.evil.com', 'a.com,<-loopback>', 'x;y.com', '127.0.0.1', '169.254.169.254', 'localhost', 'x.localhost', '<local>', 'a.com:443', ''], false, { blockPort });
+    expect(c.proxyBypassRules).toBe('cdn.example.com,<-loopback>');
   });
-  it('never calls DNS helpers and refuses invalid ports', () => {
-    expect(pac).not.toMatch(/dnsResolve|isResolvable|isInNet|myIpAddress/);
-    for (const bad of [0, -1, 65536, 1.5, NaN]) expect(() => buildPacScript([], false, { blockPort: bad })).toThrow();
+  it('refuses invalid ports', () => {
+    for (const bad of [0, -1, 65536, 1.5, NaN]) expect(() => protectedProxyConfig([], false, { blockPort: bad })).toThrow();
   });
-  it('round-trips through the data: URL', () => {
-    const url = pacDataUrl(pac);
-    expect(url.startsWith('data:application/x-ns-proxy-autoconfig;base64,')).toBe(true);
-    expect(Buffer.from(url.split(',')[1], 'base64').toString('utf8')).toBe(pac);
+  it('checks a non-allowlisted name and the loopback and link-local addresses after applying it', () => {
+    // trust-hooks applyProxy resolves each of these and refuses to load the deck unless every one goes
+    // to the closed port.
+    const hosts = PROXY_CHECK_URLS.map((u) => new URL(u).hostname);
+    expect(hosts).toEqual(expect.arrayContaining(['blueline-proxy-check.invalid', '127.0.0.1', 'localhost', '[::1]', '169.254.169.254']));
+    for (const u of PROXY_CHECK_URLS) expect(hostAllowlisted(new URL(u).hostname, DEFAULT_ALLOWLIST)).toBe(false);
   });
 });
 
@@ -256,18 +237,21 @@ describe('closed loopback port', () => {
   });
 });
 
-describe('upstreamProxyFromEnv', () => {
-  it('reads HTTPS_PROXY as a PAC result', () => {
-    expect(upstreamProxyFromEnv({ HTTPS_PROXY: 'http://127.0.0.1:35397' })).toBe('PROXY 127.0.0.1:35397');
-    expect(upstreamProxyFromEnv({ https_proxy: 'http://proxy.corp:8080/' })).toBe('PROXY proxy.corp:8080');
-    expect(upstreamProxyFromEnv({ HTTPS_PROXY: 'https://proxy.corp' })).toBe('HTTPS proxy.corp:443');
-    expect(upstreamProxyFromEnv({ HTTPS_PROXY: 'http://proxy.corp' })).toBe('PROXY proxy.corp:80');
+describe('disabledProtectedLayers (test-only switch, finding 41)', () => {
+  // 9.9: "the security fixtures check each layer on its own". BLUELINE_TEST_DISABLE_LAYER turns one Protected
+  // layer off, only in an unpackaged build started with BLUELINE_TEST=1.
+  const on = { BLUELINE_TEST: '1' };
+  it('is empty unless BLUELINE_TEST=1 and the app is not packaged', () => {
+    expect(disabledProtectedLayers({ BLUELINE_TEST_DISABLE_LAYER: 'csp,requests,proxy' }, false).size).toBe(0);
+    expect(disabledProtectedLayers({ BLUELINE_TEST: 'true', BLUELINE_TEST_DISABLE_LAYER: 'csp' }, false).size).toBe(0);
+    expect(disabledProtectedLayers({ ...on, BLUELINE_TEST_DISABLE_LAYER: 'csp,requests,proxy' }, true).size).toBe(0);
+    expect(disabledProtectedLayers({ ...on }, false).size).toBe(0);
+    expect(disabledProtectedLayers({}, false).size).toBe(0);
   });
-  it('returns null when unset, unparseable, credentialed or another scheme', () => {
-    expect(upstreamProxyFromEnv({})).toBeNull();
-    expect(upstreamProxyFromEnv({ HTTPS_PROXY: 'nonsense' })).toBeNull();
-    expect(upstreamProxyFromEnv({ HTTPS_PROXY: 'http://u:p@proxy:1' })).toBeNull();
-    expect(upstreamProxyFromEnv({ HTTPS_PROXY: 'socks5://proxy:1080' })).toBeNull();
+  it('parses a comma list of csp, requests and proxy, and ignores anything else', () => {
+    expect([...disabledProtectedLayers({ ...on, BLUELINE_TEST_DISABLE_LAYER: 'csp' }, false)]).toEqual(['csp']);
+    expect([...disabledProtectedLayers({ ...on, BLUELINE_TEST_DISABLE_LAYER: ' proxy , CSP,requests,,' }, false)].sort()).toEqual(['csp', 'proxy', 'requests']);
+    expect([...disabledProtectedLayers({ ...on, BLUELINE_TEST_DISABLE_LAYER: 'all,files-read,navigation' }, false)]).toEqual([]);
   });
 });
 
@@ -332,7 +316,7 @@ describe('classifySubframeNavigation', () => {
     expect(classifySubframeNavigation('http://127.0.0.1:9/form', closed)).toBe('cancel');
     expect(classifySubframeNavigation('https://www.youtube.com/embed/x', open)).toBe('allow');
   });
-  it.each(['file:///etc/passwd', `blueline://fedcba9876543210/deck.html`, 'app://shell/index.html', 'chrome://gpu', 'zoommtg://x', 'about:config', 'nope'])(
+  it.each(['file:///etc/passwd', `blueline://fedcba9876543210/deck.html`, `blueline-media://${DOC}/clip.mp4`, 'app://shell/index.html', 'chrome://gpu', 'zoommtg://x', 'about:config', 'nope'])(
     'cancels %s',
     (u) => {
       expect(classifySubframeNavigation(u, open)).toBe('cancel');

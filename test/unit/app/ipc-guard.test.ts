@@ -30,6 +30,7 @@ import {
   type IpcMainLike,
   type WebContentsLike,
 } from '../../../packages/app/src/main/ipc-guard';
+import { slideRefFor } from '../../../packages/app/src/main/notes';
 
 const DOC = '0123456789abcdef';
 const OTHER = 'fedcba9876543210';
@@ -272,6 +273,7 @@ describe('validators', () => {
   });
 
   it('slides', () => {
+    // Unknown fields are dropped; the base fields come back rebuilt (the optional ones: next tests).
     const s = { kind: 'reveal', count: 3, current: 1, titles: ['A', 'B', 'C'], navKind: 'reveal', extra: 1 };
     expect(validateSlides(s)).toEqual({ ok: true, value: { kind: 'reveal', count: 3, current: 1, titles: ['A', 'B', 'C'], navKind: 'reveal' } });
     expect(validateSlides({ ...s, kind: 'carousel' }).ok).toBe(false);
@@ -281,6 +283,107 @@ describe('validators', () => {
     expect(validateSlides({ ...s, titles: [1] }).ok).toBe(false);
     expect(validateSlides({ ...s, titles: new Array(IPC_LIMITS.slides + 1).fill('t') }).ok).toBe(false);
     expect(validateSlides({ ...s, titles: ['x'.repeat(IPC_LIMITS.slideTitle + 1)] }).ok).toBe(false);
+  });
+
+  // Finding 10/14: the optional fields the preload sends (slide-watcher.ts report()) are what main builds every
+  // note's SlideRef from (section 8, 9.4) and what Session.deckNav is learned from (6.7 Index replay).
+  it('slides: hashes, revealIndices, ids and deckNav are validated and kept, field by field', () => {
+    const base = { kind: 'generic', count: 3, current: 0, titles: ['A', 'B', 'C'], navKind: 'hash' };
+    const full = {
+      ...base,
+      hashes: ['#a', '#b', '#c'],
+      revealIndices: [
+        [0, 0],
+        [1, 0],
+        [1, 1],
+      ],
+      ids: ['a', null, 'c'],
+      deckNav: { forward: 'ArrowRight', back: 'ArrowLeft' },
+    };
+    const v = validateSlides(full);
+    expect(v).toEqual({ ok: true, value: full });
+    // Rebuilt, never the payload's own objects.
+    expect(v.ok && v.value.hashes).not.toBe(full.hashes);
+    expect(v.ok && v.value.revealIndices?.[0]).not.toBe(full.revealIndices[0]);
+    expect(v.ok && v.value.deckNav).not.toBe(full.deckNav);
+    // deckNav with one key (the preload reports forward before the user ever goes back).
+    expect(validateSlides({ ...base, deckNav: { forward: 'PageDown', extra: 'x' } })).toEqual({ ok: true, value: { ...base, deckNav: { forward: 'PageDown' } } });
+    expect(validateSlides({ ...base, deckNav: { forward: ' ' } }).ok).toBe(true);
+    // An empty deckNav carries nothing.
+    expect(validateSlides({ ...base, deckNav: {} })).toEqual({ ok: true, value: base });
+
+    // Values of the wrong type refuse the message.
+    expect(validateSlides({ ...base, hashes: ['#a', 2, '#c'] }).ok).toBe(false);
+    expect(validateSlides({ ...base, hashes: '#a' }).ok).toBe(false);
+    expect(validateSlides({ ...base, revealIndices: [[0, 0], [1], [1, 1]] }).ok).toBe(false);
+    expect(validateSlides({ ...base, revealIndices: [[0, 0], [1, -1], [1, 1]] }).ok).toBe(false);
+    expect(validateSlides({ ...base, revealIndices: [[0, 0], [1, 0.5], [1, 1]] }).ok).toBe(false);
+    expect(validateSlides({ ...base, revealIndices: [[0, 0], [1, 0, 2], [1, 1]] }).ok).toBe(false);
+    expect(validateSlides({ ...base, ids: ['a', 1, 'c'] }).ok).toBe(false);
+    expect(validateSlides({ ...base, ids: 'a' }).ok).toBe(false);
+    // A page's own id or hash that cannot be kept (too long, a lone surrogate, not a hash) is not a forgery:
+    // that id is null, and the hashes are dropped as a whole (hash navigation needs every one).
+    expect(validateSlides({ ...base, ids: ['a', 'x'.repeat(IPC_LIMITS.slideTitle + 1), 'c'] })).toEqual({ ok: true, value: { ...base, ids: ['a', null, 'c'] } });
+    expect(validateSlides({ ...base, ids: ['a', '\uD800', 'c'] })).toEqual({ ok: true, value: { ...base, ids: ['a', null, 'c'] } });
+    expect(validateSlides({ ...base, hashes: ['#a', 'b', '#c'] })).toEqual({ ok: true, value: base });
+    expect(validateSlides({ ...base, hashes: ['#a', '#' + 'x'.repeat(IPC_LIMITS.slideTitle), '#c'] })).toEqual({ ok: true, value: base });
+    expect(validateSlides({ ...base, deckNav: { forward: 'KeyQ' } }).ok).toBe(false);
+    expect(validateSlides({ ...base, deckNav: { forward: 'ArrowRight'.repeat(4) } }).ok).toBe(false);
+    expect(validateSlides({ ...base, deckNav: { forward: 1 } }).ok).toBe(false);
+    expect(validateSlides({ ...base, deckNav: ['ArrowRight'] }).ok).toBe(false);
+    expect(validateSlides({ ...base, deckNav: JSON.parse('{"__proto__": {"forward": "ArrowRight"}}') }).ok).toBe(false);
+
+    // A per-slide array that does not match count (or exceeds the slide cap) is dropped, not trusted.
+    expect(validateSlides({ ...base, hashes: ['#a', '#b'] })).toEqual({ ok: true, value: base });
+    expect(validateSlides({ ...base, ids: ['a', null, 'c', 'd'] })).toEqual({ ok: true, value: base });
+    expect(validateSlides({ ...base, revealIndices: [[0, 0]] })).toEqual({ ok: true, value: base });
+    expect(validateSlides({ ...base, ids: new Array(IPC_LIMITS.slides + 1).fill(null) })).toEqual({ ok: true, value: base });
+  });
+
+  it('slides: a preload-shaped SlideState through the guard gives slideRefFor the id and nav (section 8 SlideRef, 9.4)', () => {
+    // As slide-watcher.ts report() builds it for fixtures/decks/reveal-hash at Reveal.slide(2, 1) after one
+    // ArrowRight, after IPC (structured clone).
+    const reveal = structuredClone({
+      kind: 'reveal',
+      count: 8,
+      current: 3,
+      titles: ['Northwind 2027', 'Where we are', 'Three bets for 2027', 'Bet one: self-serve', 'Bet two: partners', 'Bet three: platform', 'What we will stop doing', 'Questions'],
+      navKind: 'reveal',
+      hashes: ['#/title', '#/where-we-are', '#/bets', '#/bet-one', '#/bet-two', '#/bet-three', '#/stop', '#/questions'],
+      revealIndices: [
+        [0, 0],
+        [1, 0],
+        [2, 0],
+        [2, 1],
+        [2, 2],
+        [2, 3],
+        [3, 0],
+        [4, 0],
+      ],
+      ids: ['title', 'where-we-are', 'bets', 'bet-one', 'bet-two', 'bet-three', 'stop', 'questions'],
+      deckNav: { forward: 'ArrowRight' },
+    });
+    const rv = validateSlides(reveal);
+    expect(rv.ok).toBe(true);
+    if (!rv.ok) return;
+    expect(slideRefFor(3, rv.value)).toEqual({ index: 3, id: 'bet-one', title: 'Bet one: self-serve', nav: { kind: 'reveal', value: [2, 1] } });
+    expect(slideRefFor(6, rv.value)).toEqual({ index: 6, id: 'stop', title: 'What we will stop doing', nav: { kind: 'reveal', value: [3, 0] } });
+    expect(rv.value.deckNav).toEqual({ forward: 'ArrowRight' });
+
+    // A generic deck that updates the hash (generic-hash.html, '#n1' format): nav is the hash.
+    const hash = structuredClone({
+      kind: 'generic',
+      count: 3,
+      current: 1,
+      titles: ['One', 'Two', 'Three'],
+      navKind: 'hash',
+      hashes: ['#one', '#two', '#three'],
+      ids: ['one', 'two', 'three'],
+    });
+    const hv = validateSlides(hash);
+    expect(hv.ok).toBe(true);
+    if (!hv.ok) return;
+    expect(slideRefFor(1, hv.value)).toEqual({ index: 1, id: 'two', title: 'Two', nav: { kind: 'hash', value: '#two' } });
   });
 
   it('note create: rebuilt, extra fields dropped', () => {

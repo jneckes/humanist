@@ -320,9 +320,65 @@ export function readSession(raw: unknown, deck: Session['deck']): ReadResult {
   return { session: s, lossy };
 }
 
+// ------------------------------------------------------------------------------------- deckNav (6.7)
+
+/** 6.7 Index replay: the back key that goes with a forward key; otherwise the default back key, ArrowLeft. */
+const BACK_FOR: Readonly<Record<string, string>> = Object.freeze({ ArrowRight: 'ArrowLeft', PageDown: 'PageUp', ArrowDown: 'ArrowUp' });
+const DEFAULT_BACK = 'ArrowLeft';
+
+/**
+ * The Session.deckNav to store after the deck view reported the keys that moved it (SlideState.deckNav,
+ * validated by the IPC guard), or null when nothing changes. The preload reports `forward` as soon as a key
+ * moved the deck forward, often long before anyone goes back, and index replay needs only the forward key
+ * (9.4: counting from slide 0), so it is stored at once: back is the observed key, else the stored one when
+ * the forward key is the same, else forward's counterpart (ArrowRight → ArrowLeft, PageDown → PageUp). A
+ * report with only `back` updates a stored deckNav and stores nothing new.
+ */
+export function learnDeckNav(stored: Session['deckNav'], reported: { forward?: string; back?: string } | undefined): Session['deckNav'] | null {
+  if (!reported) return null;
+  let next: Session['deckNav'];
+  if (typeof reported.forward === 'string') {
+    const f = reported.forward;
+    const back = reported.back ?? (stored && stored.forward === f ? stored.back : Object.prototype.hasOwnProperty.call(BACK_FOR, f) ? BACK_FOR[f] : DEFAULT_BACK);
+    next = { forward: f, back };
+  } else if (typeof reported.back === 'string' && stored) {
+    next = { forward: stored.forward, back: reported.back };
+  } else {
+    return null;
+  }
+  return stored && stored.forward === next.forward && stored.back === next.back ? null : next;
+}
+
 // ------------------------------------------------------------------------------------- the store
 
 export type SaveEvent = { state: 'saved'; at: Date } | { state: 'error'; error: Error };
+
+/**
+ * Saves in flight, per session file, across stores. 6.8 "One writer": a window reopened while the closed
+ * window's last write of the same session.json is still running must read the file after that write lands;
+ * otherwise its next save drops that note and hands its id to another one. SessionStore.open waits for them.
+ */
+const savesInFlight = new Map<string, Set<Promise<void>>>();
+
+function trackSave(file: string, job: Promise<void>): void {
+  let set = savesInFlight.get(file);
+  if (!set) savesInFlight.set(file, (set = new Set()));
+  set.add(job);
+  void job
+    .finally(() => {
+      set.delete(job);
+      if (set.size === 0 && savesInFlight.get(file) === set) savesInFlight.delete(file);
+    })
+    .catch(() => undefined);
+}
+
+/** Resolves when no store has a save of `file` in flight (a save started while waiting is waited for too). */
+export async function sessionFileSettled(file: string): Promise<void> {
+  const key = path.resolve(file);
+  for (let set = savesInFlight.get(key); set && set.size > 0; set = savesInFlight.get(key)) {
+    await Promise.all([...set].map((j) => j.catch(() => undefined)));
+  }
+}
 
 /** One document's session: loaded at open, written atomically after each change. */
 export class SessionStore {
@@ -344,6 +400,8 @@ export class SessionStore {
    * <old path>?" for moved files (9.7).
    */
   static async open(file: string, deck: Session['deck'], onSave: (e: SaveEvent) => void = () => undefined): Promise<SessionStore> {
+    // One writer (6.8): read only after another store's write of this file has landed.
+    await sessionFileSettled(file);
     let text: string | null = null;
     try {
       const st = await fs.promises.stat(file);
@@ -364,7 +422,13 @@ export class SessionStore {
   }
 
   /** Writes the current session (coalesced). Resolves when the queue is idle; failures go to onSave. */
-  async save(): Promise<void> {
+  save(): Promise<void> {
+    const job = this.write();
+    trackSave(path.resolve(this.file), job);
+    return job;
+  }
+
+  private async write(): Promise<void> {
     if (this.lossy && !this.keptAside) {
       // Keep what could not be read before writing over it.
       this.keptAside = true;

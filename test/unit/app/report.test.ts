@@ -32,6 +32,7 @@ import {
   exitCodeFor,
   formatText,
   quoteText,
+  SUBDOCUMENT_MATCH,
   type CountedBlock,
   type CountedNode,
   type MapInputs,
@@ -79,7 +80,7 @@ const ambiguous = (reason: MatchResult['reason'], runIds: string[]): MatchResult
 const none = (reason: MatchResult['reason']): MatchResult => ({ confidence: 'none', runId: null, strategy: null, candidates: [], reason });
 
 let nextKey = 1;
-function node(slide: number, data: string, match: MatchResult, probe?: CountedNode['probe']): CountedNode {
+function node(slide: number, data: string, match: CountedNode['match'], probe?: CountedNode['probe']): CountedNode {
   const key = nextKey++;
   return { key, slide, stop: slide, locator: { stamp: `bl-${key}`, cssPath: `p:nth-of-type(${key})`, childIndex: 0 }, node: { stamp: `bl-${key}`, textIndex: 0, data }, match, probe };
 }
@@ -140,7 +141,7 @@ describe('buildReport (section 10 step 5, section 11 baseline)', () => {
   });
 
   it('coverage counts only exact nodes that passed the probe', () => {
-    expect(json.coverage).toEqual({ exact: 2, ambiguous: 1, none: 1, total: 5 });
+    expect(json.coverage).toEqual({ exact: 2, ambiguous: 1, none: 1, total: 5, slides: { count: 2, reached: 2 } });
     expect(r.coverage.probeFailed).toBe(1);
     expect(r.coverage.verified).toBe(true);
     expect(r.coverage.share).toBeCloseTo(0.4);
@@ -237,6 +238,65 @@ describe('formatText', () => {
   });
 });
 
+describe('an incomplete walk (review finding 28, decision D-j)', () => {
+  const walkOf = (count: number, reached: number): MapInputs['walk'] => ({
+    kind: 'generic',
+    navKind: 'index',
+    count,
+    titles: Array.from({ length: count }, (_, i) => `Slide ${i + 1}`),
+    designSize: { w: 1600, h: 900 },
+    reached: Array.from({ length: count }, (_, i) => i < reached),
+    keys: 'input',
+    forwardKey: 'ArrowRight',
+    notes: [],
+  });
+
+  it('builds.html: 1 of 5 slides reached is incomplete coverage, so map exits 1 with or without --min-coverage', () => {
+    const j = buildReport({ ...inputs([node(0, 'Opening slide', exact('h:bl-1:0'), { pass: true })]), walk: walkOf(5, 1) });
+    expect(j.coverage).toEqual({ exact: 1, ambiguous: 0, none: 0, total: 1, slides: { count: 5, reached: 1 } });
+    expect(j.report.coverage.complete).toBe(false);
+    expect(exitCodeFor(j.report, null)).toBe(1);
+    expect(exitCodeFor(j.report, 0.95)).toBe(1);
+    const t = formatText(j, { detailed: false, minCoverage: 0.95, exitCode: 1 });
+    expect(t).toContain('Coverage: 1 of 1 (100.0%) map exact and pass the mutation probe; INCOMPLETE: the walk reached 1 of 5 slides');
+    expect(t).toContain('Minimum coverage 95.0%: NOT met (the walk reached 1 of 5 slides)');
+    expect(t).not.toMatch(/: met\b/);
+  });
+
+  it('the 200-press cap: 201 of 300 slides reached is not a met gate, even at 100% of what was seen', () => {
+    const nodes = Array.from({ length: 201 }, (_, i) => node(i, `Slide ${i + 1} title`, exact(`h:bl-${i + 1}:0`), { pass: true }));
+    const j = buildReport({ ...inputs(nodes), walk: { ...walkOf(300, 201), notes: ['stopped after 200 keys'] } });
+    expect(j.report.coverage.share).toBe(1);
+    expect(j.coverage.slides).toEqual({ count: 300, reached: 201 });
+    expect(exitCodeFor(j.report, 0.95)).toBe(1);
+    expect(exitCodeFor(j.report, null)).toBe(1);
+    expect(formatText(j, { detailed: true, minCoverage: 0.95, exitCode: 1 })).toContain('INCOMPLETE: the walk reached 201 of 300 slides');
+  });
+
+  it('a complete walk keeps exit 0 and records slides in the baseline coverage', () => {
+    const j = buildReport(inputs([node(0, 'a', exact('h:bl-1:0'), { pass: true })]));
+    expect(j.coverage.slides).toEqual({ count: 2, reached: 2 });
+    expect(j.report.coverage.complete).toBe(true);
+    expect(exitCodeFor(j.report, null)).toBe(0);
+    expect(formatText(j, { detailed: false, minCoverage: null, exitCode: 0 })).not.toContain('INCOMPLETE');
+  });
+});
+
+describe('text the walk counts but Blueline never writes (review finding 32)', () => {
+  it('shadow-root and frame text is none (subdocument), and cross-origin frames are listed as uncounted', () => {
+    const sub = { ...SUBDOCUMENT_MATCH, candidates: [] };
+    const j = buildReport({ ...inputs([node(0, 'Light', exact('h:bl-1:0'), { pass: true }), node(0, 'In a shadow root', sub)]), uncounted: { crossOriginFrames: 2 } });
+    expect(j.coverage).toMatchObject({ exact: 1, none: 1, total: 2 });
+    expect(j.report.nonExact).toEqual([{ slide: 0, text: 'In a shadow root', confidence: 'none', reason: 'subdocument', candidates: 0 }]);
+    expect(j.runs[1]).toMatchObject({ confidence: 'none', reason: 'subdocument' });
+    expect(j.report.uncounted).toEqual({ crossOriginFrames: 2 });
+    const t = formatText(j, { detailed: true, minCoverage: null, exitCode: 0 });
+    expect(t).toContain('Uncounted visible content: 2 cross-origin frames');
+    expect(t).toMatch(/slide 1\s+none\s+subdocument\s+"In a shadow root"/);
+    expect(formatText(buildReport(inputs([])), { detailed: false, minCoverage: null, exitCode: 0 })).not.toContain('Uncounted');
+  });
+});
+
 // ------------------------------------------------------------------------------------------- probe
 
 describe('probe helpers', () => {
@@ -295,11 +355,15 @@ describe('judgeNode (section 10 Mutation probe step 4)', () => {
     const v = judgeNode({ ...base, sameRun: new Set([locatorKey(other)]), found: { matches: [match(self, `T${SENTINEL}`), match(other, `T${SENTINEL}`)], truncated: false } });
     expect(v).toEqual({ pass: true });
   });
-  it('skips a node that is neither visible nor reported (a clipped live region), but not a hidden reported one', () => {
+  it('skips an unreported node only when it is clipped to a zero area (the F17 live region), never a hidden reported one', () => {
     const live: NodeLocator = { stamp: null, cssPath: 'div.aria-status', childIndex: 0 };
-    expect(judgeNode({ ...base, found: { matches: [match(self, `T${SENTINEL}`), match(live, `T${SENTINEL} more`, false)], truncated: false } })).toEqual({ pass: true });
+    const clipped = (loc: NodeLocator, data: string) => ({ ...match(loc, data, false), clipped: true });
+    expect(judgeNode({ ...base, found: { matches: [match(self, `T${SENTINEL}`), clipped(live, `T${SENTINEL} more`)], truncated: false } })).toEqual({ pass: true });
     expect(judgeNode({ ...base, found: { matches: [match(self, `T${SENTINEL}`), match(other, `T${SENTINEL}`, false)], truncated: false } }).pass).toBe(false);
     expect(judgeNode({ ...base, found: { matches: [match(self, `T${SENTINEL}`), match(live, `T${SENTINEL}`, true)], truncated: false } }).pass).toBe(false);
+    // Review finding 31: a hidden node the walk never counted (display: none, opacity 0, off-viewport, an
+    // unreached slide) is not a reported render of the run; its text would change unseen, so the node fails.
+    expect(judgeNode({ ...base, found: { matches: [match(self, `T${SENTINEL}`), match(live, `T${SENTINEL} more`, false)], truncated: false } }).pass).toBe(false);
   });
   it('fails on a truncated search and on a new console error', () => {
     expect(judgeNode({ ...base, found: { ...base.found, truncated: true } }).pass).toBe(false);
@@ -391,7 +455,10 @@ describe('ProbeCopy and runProbe (through the real patcher)', () => {
     const out: CountedNode[] = [];
     let key = 1;
     for (const r of map.runs) {
-      const dn = { stamp: r.stamp, textIndex: r.textIndex, data: r.value };
+      // The walk sends the element's live non-whitespace text nodes (DomTextNode.texts, decision D-b); here
+      // they are the stamp's source runs, as the served copy shows them.
+      const texts = map.runs.filter((x) => x.stamp === r.stamp).sort((a, b) => a.textIndex - b.textIndex).map((x) => x.value);
+      const dn = { stamp: r.stamp, textIndex: r.textIndex, data: r.value, texts };
       out.push({ key: key++, slide: 0, stop: 0, locator: { stamp: r.stamp, cssPath: `[data-bl-e="${r.stamp}"]`, childIndex: r.textIndex }, node: dn, match: matcher(dn) });
     }
     for (const l of map.literals) {

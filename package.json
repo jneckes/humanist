@@ -23,7 +23,8 @@
     "test:e2e": "node scripts/build.mjs && playwright test -c test/e2e/playwright.config.ts",
     "test:security": "node scripts/build.mjs && playwright test -c test/security/playwright.config.ts",
     "map": "node packages/cli/dist/blueline.cjs map",
-    "dist": "node scripts/build.mjs && electron-builder --config packages/app/electron-builder.config.cjs"
+    "dist": "node scripts/build.mjs && electron-builder --config packages/app/electron-builder.config.cjs",
+    "package:smoke": "node scripts/build.mjs && node scripts/package-smoke.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",

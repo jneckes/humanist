@@ -5,6 +5,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { TrustState } from '@blueline/core/ipc';
 import {
+  MEDIA_SCHEME,
   PROTECTED_CSP,
   SHELL_CSP,
   deckOrigin,
@@ -21,6 +22,7 @@ import {
 
 const ID = '0123456789abcdef0123456789abcdef';
 const OTHER = 'fedcba9876543210fedcba9876543210';
+const MEDIA = `blueline-media://${ID}`;
 let root: string;
 let folder: string;
 let shellDir: string;
@@ -80,8 +82,12 @@ beforeAll(() => {
   const wav = Buffer.alloc(1000);
   for (let i = 0; i < wav.length; i++) wav[i] = i & 0xff;
   fs.writeFileSync(path.join(folder, 'a.wav'), wav);
+  fs.writeFileSync(path.join(folder, 'sub', 'clip.webm'), 'WEBM');
+  fs.writeFileSync(path.join(folder, '.ssh', 'k.mp3'), 'KEYMP3');
   fs.writeFileSync(path.join(root, 'outside.png'), 'OUTSIDE');
+  fs.writeFileSync(path.join(root, 'outside.mp4'), 'OUTSIDE-MP4');
   fs.symlinkSync(path.join(root, 'outside.png'), path.join(folder, 'out.png'));
+  fs.symlinkSync(path.join(root, 'outside.mp4'), path.join(folder, 'out.mp4'));
   shellDir = path.join(root, 'shell');
   fs.mkdirSync(shellDir);
   fs.writeFileSync(path.join(shellDir, 'index.html'), '<!doctype html><title>shell</title>');
@@ -312,35 +318,6 @@ describe('the -files host', () => {
     expect(body.byteLength).toBe(0);
   });
 
-  it('supports single byte ranges for media', async () => {
-    reset();
-    const all = fs.readFileSync(path.join(folder, 'a.wav'));
-    let r = await get(`blueline://${ID}-files/a.wav`);
-    expect(r.res.status).toBe(200);
-    expect(r.res.headers.get('accept-ranges')).toBe('bytes');
-    expect(Buffer.from(r.body).equals(all)).toBe(true);
-    r = await get(`blueline://${ID}-files/a.wav`, 'GET', { Range: 'bytes=10-19' });
-    expect(r.res.status).toBe(206);
-    expect(r.res.headers.get('content-range')).toBe('bytes 10-19/1000');
-    expect(r.res.headers.get('content-length')).toBe('10');
-    expect(Buffer.from(r.body).equals(all.subarray(10, 20))).toBe(true);
-    r = await get(`blueline://${ID}-files/a.wav`, 'GET', { Range: 'bytes=-5' });
-    expect(Buffer.from(r.body).equals(all.subarray(995))).toBe(true);
-    r = await get(`blueline://${ID}-files/a.wav`, 'GET', { Range: 'bytes=990-' });
-    expect(r.res.headers.get('content-range')).toBe('bytes 990-999/1000');
-    r = await get(`blueline://${ID}-files/a.wav`, 'GET', { Range: 'bytes=0-999999' });
-    expect(r.res.status).toBe(206);
-    expect(r.body.byteLength).toBe(1000);
-    r = await get(`blueline://${ID}-files/a.wav`, 'GET', { Range: 'bytes=2000-' });
-    expect(r.res.status).toBe(416);
-    expect(r.res.headers.get('content-range')).toBe('bytes */1000');
-    r = await get(`blueline://${ID}-files/a.wav`, 'GET', { Range: 'bytes=0-1,5-9' });
-    expect(r.res.status).toBe(200); // multi-range ignored
-    r = await get(`blueline://${ID}-files/img.png`, 'GET', { Range: 'bytes=0-1' });
-    expect(r.res.status).toBe(200); // not media: Range ignored
-    expect(r.text).toBe('PNGBYTES');
-  });
-
   it('parseRange', () => {
     expect(parseRange(null, 10)).toBeNull();
     expect(parseRange('bytes=0-4', 10)).toEqual({ start: 0, end: 4 });
@@ -354,6 +331,130 @@ describe('the -files host', () => {
     expect(parseRange('items=0-4', 10)).toBeNull();
     expect(parseRange('bytes=99999999999999999999-', 10)).toBeNull();
   });
+});
+
+describe('media: the blueline-media scheme (finding 7)', () => {
+  // 9.1 Serving: the page may show sibling media but never read it. Chromium sends a crossorigin <video> or
+  // <audio> load in CORS mode with no Origin header and the same headers as a plain one, and Electron applies
+  // no CORS to protocol.handle responses (PHASE0-FINDINGS F7), so on the CORS-enabled blueline scheme a
+  // crossorigin media element would read the file (canvas not tainted, Web Audio samples readable). Media
+  // is therefore served only from blueline-media://<docId>/, a scheme registered without corsEnabled: Blink
+  // refuses every CORS-mode request (or redirect) to it, while plain no-cors display loads, tainted.
+  it('is its own scheme', () => {
+    expect(MEDIA_SCHEME).toBe('blueline-media');
+    expect(MEDIA).toBe(`blueline-media://${ID}`);
+  });
+
+  it('redirects media on the document host straight to blueline-media://, path kept, query dropped', async () => {
+    reset();
+    for (const [p, loc] of [
+      ['/a.wav', '/a.wav'],
+      ['/sub/clip.webm?t=3', '/sub/clip.webm'],
+      ['/A.WAV', '/A.WAV'],
+      ['/missing.mp4', '/missing.mp4'],
+      ['/sub/%2e%2e/a.wav', '/a.wav'],
+    ]) {
+      const { res, body } = await get(`blueline://${ID}${p}`);
+      expect(res.status, p).toBe(307);
+      expect(res.headers.get('location'), p).toBe(`${MEDIA}${loc}`);
+      expect(body.byteLength).toBe(0);
+    }
+    // Non-media paths still go to the -files host.
+    expect((await get(`blueline://${ID}/img.png`)).res.headers.get('location')).toBe(`blueline://${ID}-files/img.png`);
+  });
+
+  it('never serves media from the CORS-enabled -files host: it redirects there too', async () => {
+    reset();
+    for (const p of ['/a.wav', '/sub/clip.webm']) {
+      for (const headers of [{}, { Range: 'bytes=0-' }] as Record<string, string>[]) {
+        const { res, body } = await get(`blueline://${ID}-files${p}`, 'GET', headers);
+        expect(res.status, p).toBe(307);
+        expect(res.headers.get('location'), p).toBe(`${MEDIA}${p}`);
+        expect(body.byteLength, p).toBe(0);
+      }
+    }
+    // A media path the -files host refuses anyway (dotfile, symlink out, missing) is still a plain 404.
+    for (const p of ['/.ssh/k.mp3', '/out.mp4', '/missing.ogg']) {
+      expect((await get(`blueline://${ID}-files${p}`)).res.status, p).toBe(404);
+    }
+  });
+
+  it('serves media files with the right MIME, nosniff, CSP sandbox and no CORS header', async () => {
+    reset();
+    const { res, text } = await get(`${MEDIA}/sub/clip.webm`);
+    expect(res.status).toBe(200);
+    expect(text).toBe('WEBM');
+    expect(res.headers.get('content-type')).toBe('video/webm');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('content-security-policy')).toBe('sandbox');
+    expect(res.headers.get('accept-ranges')).toBe('bytes');
+    expect(res.headers.get('access-control-allow-origin')).toBeNull();
+    expect((await get(`${MEDIA}/a.wav`, 'HEAD')).res.status).toBe(200);
+  });
+
+  it.each([
+    [`${MEDIA}/img.png`, 'not media'],
+    [`${MEDIA}/f.woff2`, 'a font'],
+    [`${MEDIA}/sub/a.css`, 'a stylesheet'],
+    [`${MEDIA}/deck.html`, 'the document'],
+    [`${MEDIA}/secret.txt`, 'not allowlisted'],
+    [`${MEDIA}/.ssh/k.mp3`, 'a dotfile'],
+    [`${MEDIA}/%2essh/k.mp3`, 'an encoded dotfile'],
+    [`${MEDIA}/out.mp4`, 'a symlink out of the folder'],
+    [`${MEDIA}/..%2foutside.mp4`, 'an encoded slash'],
+    [`${MEDIA}/missing.mp3`, 'missing'],
+    [`blueline-media://${ID}-files/a.wav`, 'the -files host'],
+    [`blueline-media://${OTHER}/a.wav`, 'another partition'],
+    [`blueline-media://${ID.toUpperCase()}/a.wav`, 'upper-case host'],
+    [`blueline-media://${ID}:8080/a.wav`, 'port'],
+    [`blueline-media://u:p@${ID}/a.wav`, 'credentials'],
+    [`blueline-media:///a.wav`, 'no host'],
+  ])('%s → 404 (%s)', async (url) => {
+    reset();
+    const { res, text } = await get(url);
+    expect(res.status).toBe(404);
+    expect(text).toBe('');
+    expect(res.headers.get('location')).toBeNull();
+  });
+
+  it('refuses a request that carries Origin, and every method but GET and HEAD', async () => {
+    // Blink never sends a CORS-mode request to a scheme without corsEnabled; refusing Origin here is a
+    // second layer should that ever change.
+    reset();
+    expect((await get(`${MEDIA}/a.wav`, 'GET', { Origin: `blueline://${ID}` })).res.status).toBe(404);
+    expect((await get(`${MEDIA}/a.wav`, 'GET', { Origin: 'null' })).res.status).toBe(404);
+    for (const m of ['POST', 'PUT', 'OPTIONS']) expect((await get(`${MEDIA}/a.wav`, m)).res.status, m).toBe(404);
+  });
+
+  it('supports single byte ranges for media (on blueline-media://)', async () => {
+    reset();
+    const all = fs.readFileSync(path.join(folder, 'a.wav'));
+    let r = await get(`${MEDIA}/a.wav`);
+    expect(r.res.status).toBe(200);
+    expect(r.res.headers.get('accept-ranges')).toBe('bytes');
+    expect(Buffer.from(r.body).equals(all)).toBe(true);
+    r = await get(`${MEDIA}/a.wav`, 'GET', { Range: 'bytes=10-19' });
+    expect(r.res.status).toBe(206);
+    expect(r.res.headers.get('content-range')).toBe('bytes 10-19/1000');
+    expect(r.res.headers.get('content-length')).toBe('10');
+    expect(Buffer.from(r.body).equals(all.subarray(10, 20))).toBe(true);
+    r = await get(`${MEDIA}/a.wav`, 'GET', { Range: 'bytes=-5' });
+    expect(Buffer.from(r.body).equals(all.subarray(995))).toBe(true);
+    r = await get(`${MEDIA}/a.wav`, 'GET', { Range: 'bytes=990-' });
+    expect(r.res.headers.get('content-range')).toBe('bytes 990-999/1000');
+    r = await get(`${MEDIA}/a.wav`, 'GET', { Range: 'bytes=0-999999' });
+    expect(r.res.status).toBe(206);
+    expect(r.body.byteLength).toBe(1000);
+    r = await get(`${MEDIA}/a.wav`, 'GET', { Range: 'bytes=2000-' });
+    expect(r.res.status).toBe(416);
+    expect(r.res.headers.get('content-range')).toBe('bytes */1000');
+    r = await get(`${MEDIA}/a.wav`, 'GET', { Range: 'bytes=0-1,5-9' });
+    expect(r.res.status).toBe(200); // multi-range ignored
+    r = await get(`blueline://${ID}-files/img.png`, 'GET', { Range: 'bytes=0-1' });
+    expect(r.res.status).toBe(200); // not media: Range ignored
+    expect(r.text).toBe('PNGBYTES');
+  });
+
 });
 
 describe('app://shell', () => {

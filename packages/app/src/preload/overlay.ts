@@ -3,6 +3,7 @@
 // (inside). It loads nothing by URL, runs no inline code, never uses innerHTML, <style> or style attributes,
 // so it works under the page's CSP (which applies to the isolated world) and under Trusted Types.
 
+import { listenOn } from './listeners';
 import { OVERLAY_CSS } from './styles';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -73,10 +74,14 @@ export class Overlay {
     this.parts = this.build();
     // Overlay clicks, pointer and wheel events must not bubble out to the deck's own listeners (a deck that
     // advances on click would move while the user draws or types). Capture-phase page listeners on window
-    // and document still see them, retargeted to the host: only a listener that runs before them could stop
-    // them there, and stopping them there would also stop the overlay's own listeners.
-    for (const type of ['pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu', 'wheel', 'touchstart', 'touchmove', 'touchend', 'input', 'beforeinput', 'paste', 'cut', 'copy', 'focusin', 'focusout']) {
-      this.shadow.addEventListener(type, (e) => e.stopPropagation(), { passive: type === 'wheel' || type.startsWith('touch') });
+    // and document still see pointer events, retargeted to the host (where the user draws, not what they
+    // write). The input-event family (beforeinput, input, textInput, composition, clipboard) and keys are
+    // stopped before any page listener by the input guard and the key router, at window capture
+    // (input-guard.ts); stopping them here too keeps the overlay's events out of bubble listeners if a page
+    // ever gets its capture listeners ahead of the guard. Through listenOn(), so document.open() does not
+    // erase them for good.
+    for (const type of ['pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup', 'click', 'dblclick', 'auxclick', 'contextmenu', 'wheel', 'touchstart', 'touchmove', 'touchend', 'input', 'beforeinput', 'textInput', 'compositionstart', 'compositionupdate', 'compositionend', 'paste', 'cut', 'copy', 'focusin', 'focusout']) {
+      listenOn(this.shadow, type, (e) => e.stopPropagation(), { passive: type === 'wheel' || type.startsWith('touch') });
     }
   }
 

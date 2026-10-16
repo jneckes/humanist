@@ -18,7 +18,7 @@ import { NotesController } from './notes';
 import { Overlay } from './overlay';
 import { SlideWatcher } from './slide-watcher';
 import { elementAt } from './targets';
-import { listen, reinstall } from './listeners';
+import { listen, listenOn, reinstall } from './listeners';
 
 const APP_MODES: readonly AppMode[] = ['read', 'review', 'edit'];
 
@@ -118,7 +118,8 @@ export class DeckUi {
 
     this.overlay.mount();
     this.overlay.whenRootReplaced(() => {
-      // document.open() erased every window listener, the key router's included (listeners.ts).
+      // document.open() erased every window listener (the key router's and the input guard's included) and
+      // every listener in the overlay's shadow tree: the card, the ink layer, the focus reports (listeners.ts).
       reinstall(win);
       this.slides.rootReplaced();
     });
@@ -126,7 +127,7 @@ export class DeckUi {
     installLinkReporter(win, (c, p) => opts.send(c, p));
     this.installFocusReports();
     this.installPointerTracking();
-    this.keyProbe = this.diag ? new KeyOrderProbe(doc, this.diag) : null;
+    this.keyProbe = this.diag ? new KeyOrderProbe(doc, this.diag, win) : null;
     if (this.diag) {
       const diag = this.diag;
       installDiagnosticsHeading(
@@ -282,6 +283,40 @@ export class DeckUi {
     this.keyProbe?.onDecision(e, action, consumed);
   }
 
+  // ------------------------------------------------------------------------------------------- input guard bridge
+
+  /** The overlay host: events from its closed shadow root reach window retargeted to it. */
+  overlayHost(): EventTarget {
+    return this.overlay.host;
+  }
+
+  /**
+   * A trusted event from inside the overlay, seen by the input guard at window capture before it stops the
+   * event there (input-guard.ts). The card textarea's own handling runs here, since its listeners never see
+   * the event: beforeinput arms the card's gate, input saves the text only if a trusted beforeinput announced
+   * it (6.5, 9.1). In Diagnostics the card logs beforeinput and paste as the heading does (section 10:
+   * Wispr pastes, so expect insertFromPaste and a paste event).
+   */
+  onOverlayEvent(e: Event): void {
+    if (this.overlay.shadowRoot.activeElement !== this.card.textarea) return;
+    switch (e.type) {
+      case 'beforeinput': {
+        const ie = e as InputEvent;
+        this.card.beforeInput(ie);
+        this.diag?.('beforeinput', { inputType: ie.inputType, data: ie.data, trusted: ie.isTrusted, field: 'card' });
+        break;
+      }
+      case 'input':
+        this.card.input(e as InputEvent);
+        break;
+      case 'paste': {
+        const text = (e as ClipboardEvent).clipboardData?.getData('text/plain') ?? '';
+        this.diag?.('paste', { length: text.length, field: 'card' });
+        break;
+      }
+    }
+  }
+
   // ------------------------------------------------------------------------------------------- internals
 
   private applyTool(): void {
@@ -323,8 +358,8 @@ export class DeckUi {
     const schedule = () => queueMicrotask(() => this.reportFocus());
     listen(this.win, 'focusin', schedule, true);
     listen(this.win, 'focusout', schedule, true);
-    this.overlay.shadowRoot.addEventListener('focusin', schedule, true);
-    this.overlay.shadowRoot.addEventListener('focusout', schedule, true);
+    listenOn(this.overlay.shadowRoot, 'focusin', schedule, true);
+    listenOn(this.overlay.shadowRoot, 'focusout', schedule, true);
   }
 
   private textFieldFocused(): boolean {

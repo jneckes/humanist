@@ -4,6 +4,7 @@ import {
   decodeArgs,
   encodeArgs,
   parseAppArgs,
+  parseParentArg,
   validateCheckArgs,
   validateMapArgs,
   validateOpenArgs,
@@ -60,6 +61,22 @@ describe('parseAppArgs', () => {
     expect(parseAppArgs(['e', 'app', '--bl-cmd=pwn'], DEV).errors[0]).toMatch(/unknown --bl-cmd/);
     expect(parseAppArgs(['e', 'app', '--bl-args=***'], DEV).errors[0]).toMatch(/base64url/);
     expect(parseAppArgs(['e', 'app', `--bl-args=${Buffer.from('{nope').toString('base64url')}`], DEV).errors[0]).toMatch(/JSON/);
+  });
+});
+
+describe('parseParentArg (the watchdog of map and check)', () => {
+  it('reads the command pid from --bl-parent, and parseAppArgs ignores it', () => {
+    const argv = ['e', 'app', '--bl-cmd=check', '--bl-out=/o', '--bl-parent=4242'];
+    expect(parseParentArg(argv)).toBe(4242);
+    expect(parseAppArgs(argv, DEV)).toEqual({ cmd: 'check', check: { auto: false }, out: '/o', errors: [] });
+    expect(parseAppArgs(['e', 'app', '--bl-parent=7', 'deck.html'], DEV)).toMatchObject({ cmd: 'open', files: ['deck.html'] });
+  });
+
+  it('anything but a positive integer is no parent', () => {
+    for (const v of ['', '0', '-1', '12x', '1.5', '0x10', ' 3', '99999999999']) expect(parseParentArg(['e', `--bl-parent=${v}`]), v).toBeNull();
+    expect(parseParentArg(['e', 'app'])).toBeNull();
+    // The executable itself (argv[0]) is never read.
+    expect(parseParentArg(['--bl-parent=5'])).toBeNull();
   });
 });
 

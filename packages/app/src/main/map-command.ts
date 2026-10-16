@@ -4,9 +4,12 @@
 //      protocol and session policy, as the visible view would have).
 //   2. Walk the slides: reveal.js, Reveal.slide(h, v) for each; generic engine, ArrowRight until the visible
 //      slide stops changing, up to 200 times; scrolling document, scrollIntoView on each block; single page,
-//      one pass.
+//      one pass. Scrolling and single-page documents are also stepped through in viewport heights until
+//      their bottom has been in view, so text below the first viewport of a block or page is counted
+//      (decision D-j, review finding 34).
 //   3. Count each visible text node once across slides (the render agent's collect applies the step 4
-//      visibility rules) and map it with the shared matcher.
+//      visibility rules, in the document, its open shadow roots and its same-origin frames) and map it with
+//      the shared matcher; shadow-root and frame text is `none` (`subdocument`, section 7).
 //   4. Mutation probe for every exact node (probe.ts), unless the deck is not UTF-8 or the build is
 //      reader-only.
 //   5. Report (report.ts), write the CommandResult to --bl-out, and exit with its code.
@@ -24,11 +27,13 @@ import { DEFAULT_ALLOWLIST, pickClosedLoopbackPort } from './network-policy';
 import { normalizeConsoleMessage, onInterrupt, ProbeCopy, ProbeRefused, runProbe } from './probe';
 import { installDeckProtocol } from './protocol';
 import { DEFAULT_VIEWPORT, RenderView, type ConsoleError, type NavKey } from './render-service';
-import { buildReport, exitCodeFor, formatText, type CountedBlock, type CountedNode, type ProbeSummary, type WalkSummary } from './report';
+import { buildReport, exitCodeFor, formatText, SUBDOCUMENT_MATCH, type CountedBlock, type CountedNode, type ProbeSummary, type WalkSummary } from './report';
 import { installDeckSessionPolicy } from './trust-hooks';
 
 /** Section 10 step 3: a generic engine gets at most 200 forward keys. */
 export const MAX_PRESSES = 200;
+/** Viewport-height steps through one scrolling or single-page document (a document 900 viewports tall). */
+export const MAX_SCROLL_STEPS = 900;
 
 function log(msg: string): void {
   console.error(`[blueline map] ${msg}`);
@@ -38,9 +43,10 @@ function log(msg: string): void {
 
 /** How to show one stop of the walk again after a reload (the probe's "go to the same slide"). */
 export type StopNav =
-  | { kind: 'start' } // as loaded (single page, a scrolling document's top, a generic deck's first slide)
+  | { kind: 'start' } // as loaded (a generic deck's first slide)
   | { kind: 'goto'; index: number } // RenderCmd goto: Reveal.slide, the hash, or scrollIntoView
-  | { kind: 'keys'; key: NavKey; presses: number }; // forward keys pressed from the start
+  | { kind: 'keys'; key: NavKey; presses: number } // forward keys pressed from the start
+  | { kind: 'scroll'; y: number }; // RenderCmd scroll-to: a scrolling or single-page document at this offset
 
 export interface WalkStop {
   /** The slide that was current when the stop was collected. */
@@ -62,6 +68,19 @@ export interface WalkResult {
   notes: string[];
   consoleErrors: ConsoleError[];
   start: StartNav;
+  /** Visible frames whose document the page cannot read, seen anywhere in the walk (review finding 32). */
+  crossOriginFrames: number;
+}
+
+/** True when the intervals [a, b) of `list` together cover [from, to). */
+export function covers(list: readonly [number, number][], from: number, to: number): boolean {
+  let at = from;
+  for (const [a, b] of [...list].sort((x, y) => x[0] - y[0])) {
+    if (a > at) break;
+    if (b > at) at = b;
+    if (at >= to) return true;
+  }
+  return at >= to;
 }
 
 /** Walks a deck in a render view (section 10 steps 2–4) and replays its stops for the probe. */
@@ -112,16 +131,46 @@ export class DeckWalker {
     const nodes = new Map<number, { w: WalkNode; slide: number; stop: number }>();
     const blocks = new Map<number, CountedBlock>();
     const stops: WalkStop[] = [];
+    const opaqueFrames = new Set<number>();
     let keys: WalkResult['keys'] = null;
     let forwardKey: NavKey | null = null;
+    const scrolling = det.kind === 'scroll' || det.kind === 'single';
+    /** Document offsets [top, bottom) that a collect has seen (scrolling and single-page documents). */
+    const seen: [number, number][] = [];
+    let innerH = view.viewport.h;
+    /** The scrolling document's blocks as last measured (document offsets). */
+    let blockBoxes: { top: number; height: number }[] = [];
+
+    /**
+     * A scrolling document's block is reached when its box meets the viewport at a stop (review finding 35);
+     * a block with no height counts once the viewport holds its position (it shows nothing of its own).
+     */
+    const markBlocksInView = async (scrollY: number): Promise<void> => {
+      blockBoxes = (await view.scrollBlocks()).blocks.map((b) => ({ top: b.top, height: b.height }));
+      blockBoxes.forEach((b, i) => {
+        if (i >= count) return;
+        const meets = b.height > 0 ? b.top < scrollY + innerH && b.top + b.height > scrollY : b.top >= scrollY && b.top <= scrollY + innerH;
+        if (meets) reached[i] = true;
+      });
+    };
 
     const collectAt = async (nav: StopNav): Promise<number> => {
       await view.waitStable();
       const cur = Math.min(Math.max(0, await this.current()), count - 1);
       const stop = stops.push({ slide: cur, nav }) - 1;
-      reached[cur] = true;
+      if (scrolling) {
+        const scrollY = (await view.current()).scrollY;
+        seen.push([scrollY, scrollY + innerH]);
+        if (det.kind === 'scroll') await markBlocksInView(scrollY);
+        else reached[cur] = true;
+      } else reached[cur] = true;
       const res = await view.collect();
-      for (const w of res.nodes) if (!nodes.has(w.key)) nodes.set(w.key, { w, slide: cur, stop });
+      for (const w of res.nodes) {
+        if (nodes.has(w.key)) continue;
+        // The slide or block that contains the node (review finding 35), else the one current now.
+        const own = typeof w.slide === 'number' ? Math.min(w.slide, count - 1) : cur;
+        nodes.set(w.key, { w, slide: own, stop });
+      }
       for (const b of res.blocks) {
         const had = blocks.get(b.key);
         if (!had) blocks.set(b.key, { key: b.key, hasInline: b.hasInline, nodeKeys: b.nodeKeys.slice() });
@@ -130,8 +179,38 @@ export class DeckWalker {
           for (const k of b.nodeKeys) if (!had.nodeKeys.includes(k)) had.nodeKeys.push(k);
         }
       }
+      for (const k of res.crossOriginFrames ?? []) opaqueFrames.add(k);
       this.say(`slide ${cur + 1}/${count}: ${res.nodes.length} visible text nodes`);
       return cur;
+    };
+
+    /**
+     * Steps down a scrolling or single-page document from `from`, one viewport height at a time, collecting at
+     * every offset no earlier collect has seen, until `to` (or the document's bottom) has been in view
+     * (decision D-j, review finding 34). Each stop records its offset, so the probe replays it exactly.
+     */
+    let steps = 0;
+    const scrollThrough = async (from: number, to: number): Promise<void> => {
+      let y = Math.max(0, from);
+      let last = -1;
+      while (steps < MAX_SCROLL_STEPS) {
+        if (covers(seen, y, y + innerH)) {
+          if (y + innerH >= to) return;
+          y += innerH;
+          continue;
+        }
+        steps++;
+        const r = await view.scrollTo(y);
+        innerH = r.innerHeight > 0 ? r.innerHeight : innerH;
+        // The page did not move (it scrolls inside a container, or has ended above `y`): nothing more to show.
+        if (r.scrollY <= last) return;
+        last = r.scrollY;
+        if (!covers(seen, r.scrollY, r.scrollY + innerH)) await collectAt({ kind: 'scroll', y: r.scrollY });
+        const end = Math.min(to, r.scrollHeight);
+        if (r.scrollY + innerH >= end - 1) return;
+        y = r.scrollY + innerH;
+      }
+      if (steps >= MAX_SCROLL_STEPS) notes.push(`stopped after ${MAX_SCROLL_STEPS} viewport heights`);
     };
 
     switch (det.kind) {
@@ -145,14 +224,21 @@ export class DeckWalker {
         break;
       }
       case 'scroll': {
-        // scrollIntoView on each block; the top of the page first, since content above the first block (a
-        // masthead, a contents list) is never in view otherwise (fixtures/README, Open points).
-        await view.scrollToTop();
-        await collectAt({ kind: 'start' });
+        // The top of the page first, since content above the first block (a masthead, a contents list) is never
+        // in view otherwise (fixtures/README, Open points). Then scrollIntoView on each block (section 10 step 3)
+        // and on down through the block until its bottom has been in view; then whatever no stop has shown yet
+        // (a tall masthead, text between blocks, a footer).
+        const top = await view.scrollTo(0);
+        innerH = top.innerHeight > 0 ? top.innerHeight : innerH;
+        await collectAt({ kind: 'scroll', y: top.scrollY });
         for (let i = 0; i < det.count; i++) {
           await view.goto(i);
           await collectAt({ kind: 'goto', index: i });
+          const b = blockBoxes[i];
+          const at = (await view.current()).scrollY;
+          if (b && b.height > 0) await scrollThrough(at + innerH, b.top + b.height);
         }
+        await scrollThrough(0, Number.MAX_SAFE_INTEGER);
         break;
       }
       case 'generic': {
@@ -193,8 +279,13 @@ export class DeckWalker {
         }
         break;
       }
-      default:
-        await collectAt({ kind: 'start' });
+      default: {
+        // Single page: one pass down the whole page, a viewport height at a time.
+        const top = await view.scrollTo(0);
+        innerH = top.innerHeight > 0 ? top.innerHeight : innerH;
+        await collectAt({ kind: 'scroll', y: top.scrollY });
+        await scrollThrough(0, Number.MAX_SAFE_INTEGER);
+      }
     }
     for (let i = 0; i < count; i++) if (!reached[i]) notes.push(`slide ${i + 1} was never shown`);
     // The nav kind as known after the walk: a generic deck that opens with no hash shows that it is
@@ -215,21 +306,19 @@ export class DeckWalker {
       notes,
       consoleErrors: view.consoleErrors().slice(),
       start: this.start,
+      crossOriginFrames: opaqueFrames.size,
     };
   }
 
-  /** After a fresh load: the walk's starting point (probe step 3). */
+  /**
+   * After a fresh load: the walk's starting point (probe step 3). A generic deck is brought to slide 1
+   * explicitly on every load, by hash or by back keys, whatever the walk's own load did: a deck that restores
+   * the slide it was on (or behaves differently on a later visit) may open elsewhere (review finding 30).
+   */
   async startReplay(): Promise<void> {
     this.pos = 0;
-    const s = this.start;
-    if (this.kind === 'scroll') await this.view.scrollToTop();
-    if (s.kind === 'goto') await this.view.goto(s.index);
-    else if (s.kind === 'keys') {
-      for (let i = 0; i < s.presses; i++) {
-        const p = await this.view.pressKey(s.key);
-        if (!p.moved) break;
-      }
-    }
+    if (this.kind === 'scroll' || this.kind === 'single') await this.view.scrollToTop();
+    else if (this.kind === 'generic') await this.toStart(await this.view.detect(), null);
   }
 
   /** Shows stop `i` again (stops are replayed in ascending order after startReplay); true when its slide is current. */
@@ -242,6 +331,15 @@ export class DeckWalker {
       if (this.kind === 'scroll') await this.view.scrollToTop();
     } else if (nav.kind === 'goto') {
       await this.view.goto(nav.index);
+    } else if (nav.kind === 'scroll') {
+      // The same offset is the same stop: which block counts as current there can change with a line the
+      // sentinel wrapped, so it is not compared.
+      const r = await this.view.scrollTo(nav.y);
+      if (Math.abs(r.scrollY - nav.y) > 1) {
+        this.say(`replay: stop ${i} needs the document at ${nav.y} px, it is at ${r.scrollY}`);
+        return false;
+      }
+      return true;
     } else {
       while (this.pos < nav.presses) {
         // Every key settles before the next: a slide read mid-transition is unreliable (two slides visible).
@@ -327,7 +425,8 @@ export async function runMapCommand(args: MapArgs, outFile: string): Promise<num
     return fail(`Protected view could not block the network, so ${doc.fileName} was not loaded (${e instanceof Error ? e.message : String(e)})`);
   }
   let copy: ProbeCopy | null = null;
-  installDeckProtocol(ses, (id) => (id === doc.docId ? doc : copy && id === copy.docId ? copy : undefined));
+  // The probe copy answers every docId it was given: each probe load is a fresh origin (review finding 30).
+  installDeckProtocol(ses, (id) => (id === doc.docId ? doc : (copy?.servedAs(id) ?? undefined)));
 
   const view = RenderView.create({
     partition: doc.partition,
@@ -393,7 +492,9 @@ export async function runMapCommand(args: MapArgs, outFile: string): Promise<num
       stop,
       locator: w.locator,
       node: w.node,
-      match: matcher(w.node),
+      // Text in an open shadow root or a same-origin frame is counted, never written or probed (section 7:
+      // text in iframes is pin only; review finding 32).
+      match: w.tree === 'shadow' || w.tree === 'frame' ? { ...SUBDOCUMENT_MATCH, candidates: [] } : matcher(w.node),
     }));
     const warnings: string[] = [];
     const exactCount = nodes.filter((n) => n.match.confidence === 'exact').length;
@@ -418,7 +519,7 @@ export async function runMapCommand(args: MapArgs, outFile: string): Promise<num
       if (copy && !interrupted) {
         const c = copy;
         const baseline = (e: ConsoleError) =>
-          normalizeConsoleMessage(e.message, { docIds: [doc.docId, c.docId], rename: [[c.fileName, doc.fileName]] });
+          normalizeConsoleMessage(e.message, { docIds: [doc.docId, ...c.docIds], rename: [[c.fileName, doc.fileName]] });
         try {
           const t1 = Date.now();
           const r = await runProbe({
@@ -432,6 +533,7 @@ export async function runMapCommand(args: MapArgs, outFile: string): Promise<num
             normalize: baseline,
             start: () => walker.startReplay(),
             replay: (i) => walker.replay(i),
+            newDocId: () => newDocumentId(),
             log,
             interrupted: () => interrupted,
           });
@@ -482,6 +584,7 @@ export async function runMapCommand(args: MapArgs, outFile: string): Promise<num
       probe,
       consoleErrors: walk.consoleErrors.length,
       warnings,
+      uncounted: { crossOriginFrames: walk.crossOriginFrames },
     });
     if (interrupted) return halt();
     const exitCode = exitCodeFor(json.report, args.minCoverage);

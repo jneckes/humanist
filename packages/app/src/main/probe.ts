@@ -5,7 +5,9 @@
 //      is deleted when map finishes or is interrupted, and at the end map asserts the original's bytes are
 //      unchanged (map-command.ts).
 //   2. Append the sentinel ⟦bl⟧ to the node's run through the real patcher (EditorModule.createWriteQueue).
-//   3. Reload the copy and go to the same slide.
+//   3. Reload the copy and go to the same slide. Every load is on a fresh origin (a new docId for the copy), so
+//      no localStorage, sessionStorage or IndexedDB of an earlier load carries over, as the walk's own load
+//      had none (review finding 30; PHASE0-FINDINGS F13).
 //   4. The node passes only if the sentinel appears in that DOM text node, in no other node except reported
 //      renders of the same run, there is no new console error, and the slide count is unchanged.
 //   5. Undo through the patcher, and assert that the copy's bytes equal the original.
@@ -52,10 +54,12 @@ export interface ProbeOriginal {
 /**
  * The probe copy: a hidden file next to the deck, served at blueline://<docId>/<copy name> in the
  * original's partition and under its trust state. Its served copy is rebuilt from the bytes on disk on
- * every load, so each reload shows the patcher's latest write.
+ * every load, so each reload shows the patcher's latest write. Each probe load gets a docId of its own
+ * (addDocId), so each load is a fresh origin with empty storage (review finding 30).
  */
 export class ProbeCopy implements ServedDoc {
   private removed = false;
+  private readonly ids: string[];
 
   private constructor(
     readonly docId: string,
@@ -63,7 +67,49 @@ export class ProbeCopy implements ServedDoc {
     readonly folderReal: string,
     readonly path: string,
     private readonly original: ProbeOriginal,
-  ) {}
+  ) {
+    this.ids = [docId];
+  }
+
+  /** Serves the copy under one more docId (a fresh origin for one probe load); returns it. */
+  addDocId(id: string): string {
+    if (!this.ids.includes(id)) this.ids.push(id);
+    return id;
+  }
+
+  /** The copy answers blueline://<id>/ for every docId it was given, and only those. */
+  servesDocId(id: string): boolean {
+    return this.ids.includes(id);
+  }
+
+  private readonly views = new Map<string, ServedDoc>();
+
+  /**
+   * The copy as the protocol handler sees it under one of its docIds (the handler requires the served
+   * document's docId to equal the host it was asked for), or undefined for any other id.
+   */
+  servedAs(id: string): ServedDoc | undefined {
+    if (id === this.docId) return this;
+    if (!this.servesDocId(id)) return undefined;
+    let v = this.views.get(id);
+    if (!v) {
+      v = {
+        docId: id,
+        fileName: this.fileName,
+        folderReal: this.folderReal,
+        trust: () => this.trust(),
+        networkAllowed: () => this.networkAllowed(),
+        documentBody: () => this.documentBody(),
+      };
+      this.views.set(id, v);
+    }
+    return v;
+  }
+
+  /** Every docId the copy has been served under, the first one first (console messages are normalized over all). */
+  get docIds(): readonly string[] {
+    return this.ids;
+  }
 
   /**
    * Creates the copy with O_EXCL and O_NOFOLLOW. A file already at that path is never overwritten: it is
@@ -237,11 +283,13 @@ export interface NodeCheck {
  * Section 10 Mutation probe step 4 for one node.
  *
  * "In no other node except reported renders of the same run": another node with the sentinel fails the
- * node, unless the report maps it to the same run (exact, or that run among its ambiguous candidates). A
- * node the walk never counted and that is not visible now is not a reported node of the page, and is
- * skipped: reveal.js's clipped `.aria-status` live region repeats every run of the slide (fixtures/README,
- * Open points), and text that is never visible (display: none) cannot surprise anyone. A hidden node the
- * walk did count elsewhere (another slide) is checked like any other.
+ * node, unless the report maps it to the same run (exact, or that run among its ambiguous candidates). The
+ * one exception is a node the walk never counted that sits inside an absolutely or fixed positioned element
+ * clipped to a zero area (the walk's skipClipped rule): reveal.js's `.aria-status` live region repeats every
+ * run of the slide (PHASE0-FINDINGS F17). Any other node the report does not count fails the node, hidden or
+ * not: a display:none copy, an opacity-0 fragment, text off the viewport or on a slide the walk never showed
+ * is not a reported render, and an edit would change it unseen (review finding 31). So does a copy in a
+ * shadow root or a frame (review finding 32).
  */
 export function judgeNode(c: NodeCheck): ProbeVerdict {
   if (!c.reached) return { pass: false, why: 'could not go back to its slide after the reload' };
@@ -256,9 +304,14 @@ export function judgeNode(c: NodeCheck): ProbeVerdict {
   for (const m of c.found.matches) {
     const k = locatorKey(m.locator);
     if (k === self || c.sameRun.has(k)) continue;
-    if (!m.visible && !c.reported.has(k)) continue;
+    const reported = c.reported.has(k);
+    if (!reported && m.clipped === true) continue;
     const where = m.slide === null ? '' : ` on slide ${m.slide + 1}`;
-    return { pass: false, why: `the sentinel also appears in another node${where}: ${JSON.stringify(m.node.data.slice(0, 80))}` };
+    const tree = m.tree === 'shadow' ? ' in a shadow root' : m.tree === 'frame' ? ' in a frame' : '';
+    const text = JSON.stringify(m.node.data.slice(0, 80));
+    if (reported) return { pass: false, why: `the sentinel also appears in another node${tree}${where}: ${text}` };
+    const hidden = m.visible ? '' : ' (hidden now)';
+    return { pass: false, why: `the sentinel also appears in a node the report does not count${tree}${where}${hidden}; an edit would change it unseen: ${text}` };
   }
   if (c.newErrors.length > 0) return { pass: false, why: `new console error: ${c.newErrors[0].slice(0, 200)}` };
   return { pass: true };
@@ -305,6 +358,11 @@ export interface ProbeContext {
   start(): Promise<void>;
   /** Shows a stop of the walk (stops are replayed in ascending order after start()); true when it reached the stop's slide. */
   replay(stop: number): Promise<boolean>;
+  /**
+   * A new docId for each load of the copy (a fresh origin: review finding 30). Without it every load uses the
+   * copy's first docId.
+   */
+  newDocId?(): string;
   log(msg: string): void;
   interrupted(): boolean;
   /**
@@ -333,7 +391,9 @@ export async function runProbe(ctx: ProbeContext): Promise<ProbeRun> {
   }
   const reported = new Set(ctx.nodes.map((n) => locatorKey(n.locator)));
   const queue: WriteQueue = ctx.editor.createWriteQueue(ctx.copy.io());
-  const target = { docId: ctx.copy.docId, fileName: ctx.copy.fileName };
+  // Every load on its own origin: storage a deck wrote on an earlier probe load (the slide it was on, a "seen"
+  // flag) never changes where or how the next load opens (review finding 30).
+  const target = () => ({ docId: ctx.newDocId ? ctx.copy.addDocId(ctx.newDocId()) : ctx.copy.docId, fileName: ctx.copy.fileName });
   let runs = 0;
   let aborted: string | null = null;
   let i = 0;
@@ -367,7 +427,7 @@ export async function runProbe(ctx: ProbeContext): Promise<ProbeRun> {
     runs++;
     if (outcome.ok) {
       try {
-        await checkRun(ctx, target, group, sameRun, reported);
+        await checkRun(ctx, target(), group, sameRun, reported);
       } catch (e) {
         fail(`the probe could not check it: ${e instanceof Error ? e.message : String(e)}`);
       }

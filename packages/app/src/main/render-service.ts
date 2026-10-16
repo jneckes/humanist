@@ -14,9 +14,11 @@
 // - At most 2 render windows per document (RenderPool).
 //
 // Keys (6.7 Index replay) are sent as trusted input with sendInputEvent after webContents.focus(), using
-// Electron Accelerator names. Whether a key reached the deck is read from a keydown counter in a separate
-// isolated world (RENDER_WORLD_ID), which the page cannot see; if trusted keys do not reach it, the preload
-// dispatches a synthetic KeyboardEvent, and a deck that ignores untrusted keys gets navOk: false.
+// Electron Accelerator names. Whether a key reached the deck is read from the render agent's keydown counter
+// (RenderCmd keydowns), a window capture listener the preload registers before any page script, so a page
+// cannot hide keys from it; if trusted keys do not reach the deck, the preload dispatches a synthetic
+// KeyboardEvent, and a deck that ignores untrusted keys gets navOk: false. A trusted press that moved the deck
+// never switches later presses to the fallback, and every load starts over (review finding 33).
 //
 // Later phases build on this module:
 // - Phase 1: a RenderPool per open document for thumbnails, PDF pages and Find's text index, with the
@@ -34,18 +36,23 @@ import {
   type DetectResult,
   type FindResult,
   type GotoResult,
+  type KeydownsResult,
   type KeyResult,
   type LocateResult,
   type NodeLocator,
   type RenderCmd,
   type RenderReply,
   type ScrollBlocksResult,
+  type ScrollToResult,
   type SettleResult,
+  type WalkBlock,
   type WalkNode,
+  type WalkTree,
 } from '@blueline/core/ipc';
+import { TEXTS_MAX_CHARS, TEXTS_MAX_NODES } from '@blueline/core/dom-walk';
 import type { DomTextNode } from '@blueline/core/types';
 import { attachDeckView } from './channels';
-import { validateCollectResult, validateDetectResult } from './ipc-guard';
+import { validateDetectResult } from './ipc-guard';
 import { deckUrl } from './protocol';
 import { installDeckWebContentsPolicy } from './trust-hooks';
 
@@ -64,13 +71,15 @@ export const POOL_LIMIT = 2;
 /** 6.7 Index replay: after each key, wait up to 1 s for the visible slide to change. */
 export const NAV_WAIT_MS = 1000;
 /**
- * The isolated world main uses for its own read-only probes of a render view (a trusted-keydown counter, a
- * fonts/animations wait, scrollTo). It is neither the page's world (0) nor the preload's (999), so the page
- * can see none of it. Electron accepts world ids 1..536870911.
+ * The isolated world main uses for its own read-only probes of a render view (a fonts/animations wait,
+ * scrollTo). It is neither the page's world (0) nor the preload's (999), so the page can see none of it.
+ * Electron accepts world ids 1..536870911.
  */
 export const RENDER_WORLD_ID = 1029;
 
 const LOAD_TIMEOUT_MS = 30_000;
+/** Most walk nodes and blocks one collect reply may hold (as ipc-guard's IPC_LIMITS.walkNodes). */
+const WALK_NODES_MAX = 200_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const COLLECT_TIMEOUT_MS = 60_000;
 const POLL_MS = 40;
@@ -148,21 +157,54 @@ function locatorOf(v: unknown, what: string): NodeLocator {
   if (stamp !== null && !STAMP.test(stamp)) throw new BadResult(`${what}.stamp: bad stamp`);
   return { stamp, cssPath: str(r.cssPath, `${what}.cssPath`, 8192), childIndex: int(r.childIndex, `${what}.childIndex`, 0, 1_000_000) };
 }
+/**
+ * DomTextNode.texts (decision D-b): a fresh array of at most TEXTS_MAX_NODES strings and TEXTS_MAX_CHARS of
+ * text, else undefined. Never an error: without texts the matcher's step 1 falls through to step 2 (safe).
+ */
+function textsOf(v: unknown): string[] | undefined {
+  if (!Array.isArray(v) || v.length > TEXTS_MAX_NODES) return undefined;
+  const out: string[] = [];
+  let chars = 0;
+  for (const t of v) {
+    if (typeof t !== 'string') return undefined;
+    chars += t.length;
+    if (chars > TEXTS_MAX_CHARS) return undefined;
+    out.push(t);
+  }
+  return out;
+}
 function domNodeOf(v: unknown, what: string): DomTextNode {
   const r = rec(v, what);
   const stamp = r.stamp === null ? null : str(r.stamp, `${what}.stamp`, 12);
   if (stamp !== null && !STAMP.test(stamp)) throw new BadResult(`${what}.stamp: bad stamp`);
-  return { stamp, textIndex: int(r.textIndex, `${what}.textIndex`, -1, 1_000_000), data: str(r.data, `${what}.data`, 1024 * 1024) };
+  const out: DomTextNode = { stamp, textIndex: int(r.textIndex, `${what}.textIndex`, -1, 1_000_000), data: str(r.data, `${what}.data`, 1024 * 1024) };
+  const texts = textsOf(r.texts);
+  if (texts) out.texts = texts;
+  return out;
+}
+const TREES: readonly WalkTree[] = ['document', 'shadow', 'frame'];
+function treeOf(v: unknown, what: string): WalkTree | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v !== 'string' || !(TREES as readonly string[]).includes(v)) throw new BadResult(`${what}: not a tree`);
+  return v as WalkTree;
 }
 function walkNodeOf(v: unknown, what: string): WalkNode {
   const r = rec(v, what);
   const rr = rec(r.rect, `${what}.rect`);
-  return {
+  const out: WalkNode = {
     key: int(r.key, `${what}.key`),
     locator: locatorOf(r.locator, `${what}.locator`),
     node: domNodeOf(r.node, `${what}.node`),
     rect: { x: num(rr.x, 'x'), y: num(rr.y, 'y'), w: num(rr.w, 'w'), h: num(rr.h, 'h') },
   };
+  const tree = treeOf(r.tree, `${what}.tree`);
+  if (tree) out.tree = tree;
+  if (r.slide !== undefined) out.slide = slideOrNull(r.slide, `${what}.slide`);
+  return out;
+}
+function keyList(v: unknown, what: string): number[] {
+  if (!Array.isArray(v) || v.length > WALK_NODES_MAX) throw new BadResult(`${what}: not a list`);
+  return v.map((k, i) => int(k, `${what}[${i}]`));
 }
 
 export const resultCheck = {
@@ -193,15 +235,44 @@ export const resultCheck = {
       truncated: bool(r.truncated, 'find.truncated'),
       matches: r.matches.map((m, i) => {
         const mr = rec(m, `find.matches[${i}]`);
-        return {
+        const out: FindResult['matches'][number] = {
           key: int(mr.key, 'key'),
           locator: locatorOf(mr.locator, 'locator'),
           node: domNodeOf(mr.node, 'node'),
           visible: bool(mr.visible, 'visible'),
           slide: slideOrNull(mr.slide, 'slide'),
         };
+        if (mr.clipped !== undefined) out.clipped = bool(mr.clipped, 'clipped');
+        const tree = treeOf(mr.tree, 'tree');
+        if (tree) out.tree = tree;
+        return out;
       }),
     };
+  },
+  /**
+   * `collect` (section 10 step 4), checked here rather than by ipc-guard's validateCollectResult so the walk's
+   * optional fields reach the map: each node's texts (D-b), tree and slide, and the cross-origin frames.
+   */
+  collect(v: unknown): CollectResult {
+    const r = rec(v, 'collect');
+    if (!Array.isArray(r.nodes) || r.nodes.length > WALK_NODES_MAX) throw new BadResult('collect.nodes: not a list');
+    if (!Array.isArray(r.blocks) || r.blocks.length > WALK_NODES_MAX) throw new BadResult('collect.blocks: not a list');
+    const nodes = r.nodes.map((n, i) => walkNodeOf(n, `collect.nodes[${i}]`));
+    const blocks: WalkBlock[] = r.blocks.map((b, i) => {
+      const br = rec(b, `collect.blocks[${i}]`);
+      return { key: int(br.key, `collect.blocks[${i}].key`), hasInline: bool(br.hasInline, `collect.blocks[${i}].hasInline`), nodeKeys: keyList(br.nodeKeys, `collect.blocks[${i}].nodeKeys`) };
+    });
+    const out: CollectResult = { nodes, blocks };
+    if (r.crossOriginFrames !== undefined) out.crossOriginFrames = keyList(r.crossOriginFrames, 'collect.crossOriginFrames');
+    return out;
+  },
+  keydowns(v: unknown): KeydownsResult {
+    const r = rec(v, 'keydowns');
+    return { trusted: int(r.trusted, 'keydowns.trusted'), all: int(r.all, 'keydowns.all') };
+  },
+  scrollTo(v: unknown): ScrollToResult {
+    const r = rec(v, 'scroll-to');
+    return { scrollY: num(r.scrollY, 'scroll-to.scrollY'), innerHeight: num(r.innerHeight, 'scroll-to.innerHeight'), scrollHeight: num(r.scrollHeight, 'scroll-to.scrollHeight') };
   },
   locate(v: unknown): LocateResult {
     const r = rec(v, 'locate');
@@ -305,11 +376,6 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
-const KEY_COUNTER_JS =
-  '(function(){var w=window;if(!w.__blRenderKeys){var c={all:0,trusted:0};' +
-  'w.addEventListener("keydown",function(e){c.all++;if(e.isTrusted)c.trusted++;},{capture:true,passive:true});' +
-  'w.__blRenderKeys=c;}return w.__blRenderKeys.trusted;})()';
-
 /**
  * fonts.ready and two animation frames, then up to `maxMs` for finite animations and transitions to end
  * (a slide's entrance). Unlike the agent's `settle` it pauses nothing: the walk of `blueline map` goes on to
@@ -338,7 +404,10 @@ export class RenderView {
   private readonly pending = new Map<number, Pending>();
   private errors: ConsoleError[] = [];
   private gone: string | null = null;
-  /** Whether trusted input reaches this deck: null until a key press tells (6.7 Index replay, Phase 0 check). */
+  /**
+   * Whether trusted input reaches this deck: null until a key press tells (6.7 Index replay, Phase 0 check).
+   * Per load: load() forgets it.
+   */
   trustedKeys: boolean | null = null;
 
   private constructor(private readonly opts: RenderViewOptions) {
@@ -459,6 +528,8 @@ export class RenderView {
     this.errors = [];
     this.gone = null;
     this.target = target;
+    // A new page: what the last one taught about keys does not carry over (review finding 33).
+    this.trustedKeys = null;
     const url = deckUrl(target.docId, target.fileName);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -519,7 +590,7 @@ export class RenderView {
   }
 
   collect(): Promise<CollectResult> {
-    return this.checked({ type: 'collect' }, (v) => fromValidator(validateCollectResult(v)), COLLECT_TIMEOUT_MS);
+    return this.checked({ type: 'collect' }, resultCheck.collect, COLLECT_TIMEOUT_MS);
   }
 
   find(needle: string): Promise<FindResult> {
@@ -570,6 +641,12 @@ export class RenderView {
     await this.inProbeWorld('window.scrollTo(0,0);true', 2000, false);
   }
 
+  /** Scrolls the document to `y` CSS px from its top, through the render agent (review finding 34). */
+  scrollTo(y: number): Promise<ScrollToResult> {
+    if (!Number.isFinite(y) || y < 0) throw new RenderError('invalid scroll offset');
+    return this.checked({ type: 'scroll-to', y: Math.round(y) }, resultCheck.scrollTo);
+  }
+
   /**
    * Sets CSS `zoom` on the page's root element, as the deck view's Fit does (6.9: "Fit uses a CSS zoom on the
    * deck view's root, set by the preload"; the Diagnostics Fit check compares it with setZoomFactor). A
@@ -592,10 +669,16 @@ export class RenderView {
     return typeof r === 'string' ? r : null;
   }
 
-  /** How many trusted keydowns the page's window has seen since this load (installs the counter once per load). */
+  /**
+   * How many trusted keydowns the page's window has seen since this load: the render agent's counter, which
+   * the preload registers before any page script (review finding 33). Null when it cannot be read.
+   */
   async trustedKeydowns(): Promise<number | null> {
-    const n = await this.inProbeWorld<unknown>(KEY_COUNTER_JS, 2000, null);
-    return typeof n === 'number' && Number.isInteger(n) ? n : null;
+    try {
+      return (await this.checked({ type: 'keydowns' }, resultCheck.keydowns)).trusted;
+    } catch {
+      return null;
+    }
   }
 
   /** The current slide, re-detected (a deck that rebuilds its slides would leave a cached model stale). */
@@ -643,10 +726,14 @@ export class RenderView {
       const to = await this.waitForChange(from, NAV_WAIT_MS, settleMs);
       const after = before === null ? null : await this.trustedKeydowns();
       const delivered = before === null || after === null ? null : after > before;
-      if (delivered !== null) this.trustedKeys = delivered;
-      if (to !== from || delivered !== false) {
-        return { key, from, to, moved: to !== from, via: 'input', delivered, navOk: to !== from };
+      if (to !== from) {
+        // The deck moved on trusted input: trusted keys reach it. Never latch the synthetic fallback after a
+        // press that moved the deck (review finding 33), whatever the counter read.
+        this.trustedKeys = true;
+        return { key, from, to, moved: true, via: 'input', delivered, navOk: true };
       }
+      if (delivered !== null) this.trustedKeys = delivered;
+      if (delivered !== false) return { key, from, to, moved: false, via: 'input', delivered, navOk: false };
       this.log('render view: trusted keys do not reach this offscreen deck; using synthetic keys');
     }
     // The agent waits up to 1 s for the slide to change after its synthetic key.

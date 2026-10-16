@@ -1,6 +1,7 @@
 // Notes in the deck view, Phase 0 (6.4, 6.5): turns marks into NoteOps, keeps the open card in step with
 // main, and draws every note's marks. Main assigns ids, authors, timestamps and statuses (ipc.ts NoteOp);
-// this side only proposes `create`, `update` (text and the full mark list) and `close`.
+// this side only proposes `create`, `update` (text and the full mark list), `close`, and `delete` for a note
+// N opened that the user left empty.
 
 import type { DeckToMain as DeckToMainT, NoteOp, NoteOpMark, NotesUpdate } from '@blueline/core/ipc';
 import type { Note, Status } from '@blueline/core/types';
@@ -37,7 +38,15 @@ interface Session {
   text: string;
   sentText: string;
   marks: NoteOpMark[];
-  sentMarks: number;
+  /** The mark list changed since main last got it. */
+  marksDirty: boolean;
+  /** The first mark's path in the create (binds a bare Note[] reply to this session). */
+  createPath: string | null;
+  /**
+   * marks[0] is the pin N placed as the note's anchor (Phase 0), not a mark the user made: the first stroke
+   * takes its place, and the note is discarded when it closes with no text (6.4).
+   */
+  syntheticPin: boolean;
   header: string;
   createdAt: number;
   closing: boolean;
@@ -101,11 +110,11 @@ export class NotesController {
     }
     // Fallback for a bare Note[]: a new note whose first mark's path is the one this view created.
     for (const s of this.sessions.values()) {
-      if (s.id || s.marks.length === 0) continue;
+      if (s.id || s.createPath === null) continue;
       for (const id of order) {
         if (known.has(id)) continue;
         const n = next.get(id)!;
-        if (n.marks?.[0]?.path === s.marks[0].path) {
+        if (n.marks?.[0]?.path === s.createPath) {
           this.bind(s.clientId, id);
           break;
         }
@@ -147,7 +156,14 @@ export class NotesController {
       this.card.open(this.view(s), m.box, true);
       this.deps.onCardChange?.(true);
     } else {
-      s.marks.push(opMark);
+      if (s.syntheticPin) {
+        // 6.4: the user's marks are numbered from ① ("make ① match ②"). The pin N placed only anchored the
+        // note, so the first stroke takes its place, keeping the element N anchored to among its targets.
+        opMark.targets = mergeTargets(opMark.targets, s.marks[0]?.targets ?? []);
+        s.marks = [opMark];
+        s.syntheticPin = false;
+      } else s.marks.push(opMark);
+      s.marksDirty = true;
       this.flush(s);
       this.card.update(this.view(s));
       // Keep the caret in the card (6.4): the ink layer prevented the pointer's default, so focus never left.
@@ -174,7 +190,9 @@ export class NotesController {
 
   /**
    * N (6.2): a new note on the current text selection or the hovered element. Phase 0 anchors it with a pin
-   * mark at the selection (or element) center; the TextQuoteSelector target without a mark is Phase 3.
+   * mark at the selection (or element) center; the TextQuoteSelector target without a mark is Phase 3. The
+   * pin is synthetic: the first stroke on the open card replaces it, and closing the card with no text
+   * discards the note (6.4: a note that is empty and has no marks is discarded).
    */
   newNoteAt(hovered: Element | null): void {
     const sel = this.win.getSelection();
@@ -210,19 +228,18 @@ export class NotesController {
       box: { x: rect.left, y: rect.top, w: rect.width, h: rect.height },
       separate: true,
     };
-    if (el) {
-      // The selection's element is the target, not whatever lies under the pin's center.
-      const opMark: NoteOpMark = { tool: 'pin', path: mark.path, targets: [describeTarget(el)] };
-      if (this.open) this.closeCard();
-      const s = this.newSession(this.headerFor(opMark));
-      s.marks.push(opMark);
-      this.sendCreate(s);
-      this.open = s;
-      this.card.open(this.view(s), mark.box, true);
-      this.deps.onCardChange?.(true);
-      this.deps.diag?.('mark-added', { noteId: null, n: 1 });
-      this.redraw();
-    } else this.addMark(mark);
+    // The selection's element is the target, not whatever lies under the pin's center.
+    const opMark: NoteOpMark = { tool: 'pin', path: mark.path, targets: el ? [describeTarget(el)] : this.targetsFor(mark) };
+    if (this.open) this.closeCard();
+    const s = this.newSession(this.headerFor(opMark));
+    s.marks.push(opMark);
+    s.syntheticPin = true;
+    this.sendCreate(s);
+    this.open = s;
+    this.card.open(this.view(s), mark.box, true);
+    this.deps.onCardChange?.(true);
+    this.deps.diag?.('mark-added', { noteId: null, n: 1 });
+    this.redraw();
   }
 
   // ----------------------------------------------------------------------------------------------- card
@@ -260,9 +277,15 @@ export class NotesController {
   }
 
   private finishClose(s: Session): void {
-    this.flush(s);
-    // Main decides: draft -> open, or deleted when empty with no marks (6.4, 6.6).
-    if (s.id) this.deps.send('bl:deck:note', { op: 'close', id: s.id });
+    if (s.syntheticPin && s.text.trim() === '') {
+      // An N note the user left empty: its only mark is the pin N placed, so it is an empty note with no
+      // marks, and main discards a draft on `delete` (6.4, 6.6).
+      if (s.id) this.deps.send('bl:deck:note', { op: 'delete', id: s.id });
+    } else {
+      this.flush(s);
+      // Main decides: draft -> open, or deleted when empty with no marks (6.4, 6.6).
+      if (s.id) this.deps.send('bl:deck:note', { op: 'close', id: s.id });
+    }
     this.dropSession(s);
   }
 
@@ -285,7 +308,6 @@ export class NotesController {
     s.text = typeof note.text === 'string' ? note.text : '';
     s.sentText = s.text;
     s.marks = this.opMarksOf(note);
-    s.sentMarks = s.marks.length;
     this.open = s;
     const box = this.ink.boxOf(id) ?? { x: this.win.innerWidth / 2 - 160, y: 80, w: 0, h: 0 };
     this.card.open(this.view(s), box, true);
@@ -320,7 +342,9 @@ export class NotesController {
       text: '',
       sentText: '',
       marks: [],
-      sentMarks: 0,
+      marksDirty: false,
+      createPath: null,
+      syntheticPin: false,
       header,
       createdAt: Date.now(),
       closing: false,
@@ -333,7 +357,8 @@ export class NotesController {
   private sendCreate(s: Session): void {
     this.deps.send('bl:deck:note', { op: 'create', clientId: s.clientId, text: s.text, marks: s.marks.slice(), slide: this.deps.currentSlide() });
     s.sentText = s.text;
-    s.sentMarks = s.marks.length;
+    s.marksDirty = false;
+    s.createPath = s.marks[0]?.path ?? null;
     setTimeout(() => {
       if (!s.id && this.sessions.get(s.clientId) === s) {
         this.dropSession(s);
@@ -351,14 +376,14 @@ export class NotesController {
       op.text = s.text;
       any = true;
     }
-    if (s.marks.length !== s.sentMarks) {
+    if (s.marksDirty) {
       op.marks = s.marks.slice();
       any = true;
     }
     if (!any) return;
     this.deps.send('bl:deck:note', op);
     s.sentText = s.text;
-    s.sentMarks = s.marks.length;
+    s.marksDirty = false;
   }
 
   /** NoteOpMarks of an existing note, rebuilt from its marks and targets (for `update` with the full list). */
@@ -468,6 +493,16 @@ export class NotesController {
   refreshInk(): void {
     this.redraw();
   }
+}
+
+/** A stroke's targets plus the anchor's (N's element), without duplicates, within main's 50 per mark. */
+function mergeTargets(own: NoteOpMark['targets'], anchor: NoteOpMark['targets']): NoteOpMark['targets'] {
+  const out = own.slice();
+  for (const t of anchor) {
+    if (out.length >= 50) break;
+    if (!out.some((o) => o.css === t.css && o.stamp === t.stamp && o.text === t.text)) out.push(t);
+  }
+  return out;
 }
 
 function statusLabel(s: Status | 'draft'): string {

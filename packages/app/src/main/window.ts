@@ -17,6 +17,7 @@ import {
   type Input,
   type MenuItemConstructorOptions,
   type Session,
+  type WebContents,
 } from 'electron';
 import {
   MainToDeck,
@@ -42,8 +43,8 @@ import { validateNoArgs, validateSetMode, type ArgsValidator, type ShellSender }
 import { computeLayout, deckBounds } from './layout';
 import { DEFAULT_ALLOWLIST } from './network-policy';
 import { NotesStore } from './notes';
-import { deckUrl, installDeckProtocol, installShellProtocol, SHELL_ORIGIN } from './protocol';
-import type { SaveEvent, SessionStore } from './session-store';
+import { DECK_SCHEME, MEDIA_SCHEME, deckUrl, installDeckProtocol, installShellProtocol, SHELL_ORIGIN } from './protocol';
+import { learnDeckNav, type SaveEvent, type SessionStore } from './session-store';
 import {
   installDeckSessionPolicy,
   installDeckWebContentsPolicy,
@@ -51,7 +52,9 @@ import {
   openExternalConfirmed,
   type BlockReason,
   type DeckSessionHandle,
+  type DeckSessionPolicy,
   type DeckWebContentsHandle,
+  type DeckWebContentsOptions,
 } from './trust-hooks';
 
 export const SHELL_PARTITION = 'shell';
@@ -78,7 +81,7 @@ export interface DocWindowDeps {
   /** BLUELINE_TEST=1: deck views get --bl-test=1 (the security suite's forged-payload hook). */
   test: boolean;
   devTools: boolean;
-  /** Closed loopback port for the Protected PAC (pickClosedLoopbackPort, once per launch). */
+  /** Closed loopback port for the Protected proxy (pickClosedLoopbackPort, once per launch). */
   blockPort: number;
   platform: NodeJS.Platform;
   person(): Person;
@@ -155,6 +158,125 @@ export function docWindowByKey(key: string): DocWindow | undefined {
   return windowsByKey.get(key);
 }
 
+// ------------------------------------------------------------------------------------------- partition policy
+
+/**
+ * What the deck partition's and the deck view's policy callbacks may reach (finding 21). Electron keeps a
+ * partition's Session, and every handler and listener set on it, for the life of the process (and the trust
+ * hooks keep a handle per Session), so a callback that reached the BlDocument or the DocWindow kept each closed
+ * window's document (its bytes, served copies and map) in memory for good. The callbacks are built by
+ * deckPolicies below, which closes over this object only; the window sets `live` to null when it closes, and
+ * every getter then fails closed: Protected, network not allowed, nothing opened, shown or logged.
+ */
+interface DeckPolicyState {
+  live: {
+    doc: BlDocument;
+    toast(text: string, kind: 'info' | 'warn' | 'error'): void;
+    confirmExternal(url: string): void;
+    openLocalHtml(realpath: string, o: { protected: boolean }): void;
+    onBlocked(url: string, why: BlockReason): void;
+    log(msg: string): void;
+  } | null;
+}
+
+/** The session policy (9.9 Always, Network policy) and view policy of one document window, over `state` only. */
+function deckPolicies(
+  state: DeckPolicyState,
+  o: { docId: string; folderReal: string; blockPort: number; test: boolean },
+): { session: DeckSessionPolicy; view: DeckWebContentsOptions } {
+  const { docId, folderReal, blockPort, test } = o;
+  return {
+    session: {
+      trust: () => state.live?.doc.trust() ?? 'protected',
+      networkAllowed: () => state.live?.doc.networkAllowed() ?? false,
+      strict: () => false, // Phase 1: Settings › Trust "Block all network in Protected view"
+      allowlist: () => DEFAULT_ALLOWLIST, // Phase 1: user-editable in Settings › Trust
+      blockPort,
+      sourcePath: () => state.live?.doc.realpath ?? null,
+      onDownloadBlocked: () => state.live?.toast('Downloads are blocked in Protected view.', 'warn'),
+      onRequest: test
+        ? (d, dec) => {
+            if (dec.cancel) state.live?.log(`request cancelled (${dec.reason}) ${d.resourceType} ${d.url.slice(0, 200)}`);
+          }
+        : undefined,
+    },
+    view: {
+      docId,
+      folderReal,
+      isProtected: () => (state.live ? state.live.doc.trust() === 'protected' : true),
+      networkOpen: () => (state.live ? state.live.doc.trust() === 'trusted' || state.live.doc.networkAllowed() : false),
+      onUserLink: (url) => state.live?.confirmExternal(url),
+      openLocalHtml: (realpath, opts) => state.live?.openLocalHtml(realpath, opts),
+      onBlocked: (url, why) => state.live?.onBlocked(url, why),
+      onSubframeBlocked: (url) => {
+        if (test) state.live?.log(`subframe navigation blocked: ${url.slice(0, 200)}`);
+      },
+    },
+  };
+}
+
+// Capture-free handlers for a closed Protected partition (finding 21): they hold nothing, and refuse everything.
+// The request listener lets only Blueline's own deck schemes through: their handlers are removed with the
+// partition, so nothing serves them there and nothing leaves; the security suite still loads its own probe
+// page there to check that the storage was cleared (test/security/storage.spec.ts).
+const RETIRED_PASS = [`${DECK_SCHEME}:`, `${MEDIA_SCHEME}:`];
+const cancelEveryRequest = (d: { url: string }, callback: (r: { cancel: boolean }) => void): void =>
+  callback({ cancel: !RETIRED_PASS.some((scheme) => d.url.startsWith(scheme)) });
+const denyPermissionRequest = (_wc: unknown, _p: unknown, callback: (granted: boolean) => void): void => callback(false);
+const denyCheck = (): boolean => false;
+const refusePairing = (_d: unknown, callback: (r: { confirmed: boolean }) => void): void => callback({ confirmed: false });
+const cancelEvent = (event: Electron.Event): void => event.preventDefault();
+const cancelHid = (event: Electron.Event, _d: unknown, callback: (deviceId?: string | null) => void): void => {
+  event.preventDefault();
+  callback();
+};
+const cancelSerial = (event: Electron.Event, _ports: unknown, _wc: unknown, callback: (portId: string) => void): void => {
+  event.preventDefault();
+  callback('');
+};
+const cancelUsb = (event: Electron.Event, _d: unknown, callback: (deviceId?: string) => void): void => {
+  event.preventDefault();
+  callback();
+};
+
+/**
+ * A closed Protected window's partition is never used again (a new open gets a new docId and partition, 9.1),
+ * but Electron keeps its Session, and its handlers, until the app quits. Replace them with the capture-free
+ * ones above, so they keep no closure of the window alive, and anything that still ran there is refused.
+ */
+function retireProtectedPartition(ses: Session): void {
+  ses.webRequest.onBeforeRequest(cancelEveryRequest);
+  ses.setPermissionRequestHandler(denyPermissionRequest);
+  ses.setPermissionCheckHandler(denyCheck);
+  ses.setDevicePermissionHandler(denyCheck);
+  if (typeof ses.setBluetoothPairingHandler === 'function') {
+    try {
+      ses.setBluetoothPairingHandler(refusePairing);
+    } catch {
+      // not supported on this platform
+    }
+  }
+  ses.on('will-download', cancelEvent);
+  ses.on('select-hid-device', cancelHid);
+  ses.on('select-serial-port', cancelSerial);
+  ses.on('select-usb-device', cancelUsb);
+}
+
+/** Disposes policy handles once the deck view is gone (they guard it until then). Holds only its arguments. */
+function disposeWhenGone(wc: WebContents | undefined, handles: ({ dispose(): void } | null)[]): void {
+  const run = () => {
+    for (const h of handles) {
+      try {
+        h?.dispose();
+      } catch {
+        // already gone
+      }
+    }
+  };
+  if (!wc || wc.isDestroyed()) run();
+  else wc.once('destroyed', run);
+}
+
 export class DocWindow {
   readonly win: BrowserWindow;
   readonly deck: WebContentsView;
@@ -173,8 +295,14 @@ export class DocWindow {
   private layoutNow: ShellLayout;
   private readonly swallowed = new SwallowedKeys();
   private readonly deckSession: Session;
+  /** What the partition's and view's policy callbacks reach; cleared when the window closes (finding 21). */
+  private readonly policyState: DeckPolicyState;
+  private readonly policies: { session: DeckSessionPolicy; view: DeckWebContentsOptions };
   private sessionPolicy: DeckSessionHandle | null = null;
   private webPolicy: DeckWebContentsHandle | null = null;
+  /** Resolves when the window has closed and released its document (the controller waits for it on a reopen). */
+  readonly closed: Promise<void>;
+  private resolveClosed!: () => void;
   private linkDialogOpen = false;
   private closedOnce = false;
   private deckCloseRequested = false;
@@ -184,6 +312,20 @@ export class DocWindow {
   private constructor(private readonly deps: DocWindowDeps) {
     const doc = deps.doc;
     this.doc = doc;
+    this.closed = new Promise<void>((resolve) => {
+      this.resolveClosed = resolve;
+    });
+    this.policyState = {
+      live: {
+        doc,
+        toast: (text, kind) => this.toast(text, kind),
+        confirmExternal: (url) => this.confirmExternal(url),
+        openLocalHtml: (realpath, o) => deps.openLocalHtml(realpath, o),
+        onBlocked: (url, why) => this.onBlocked(url, why),
+        log: (msg) => deps.log(msg),
+      },
+    };
+    this.policies = deckPolicies(this.policyState, { docId: doc.docId, folderReal: doc.folderReal, blockPort: deps.blockPort, test: deps.test });
     this.notes = new NotesStore(deps.session.session, {
       me: () => deps.person(),
       now: () => new Date().toISOString(),
@@ -265,18 +407,7 @@ export class DocWindow {
       },
       note: (_f, op) => this.onNoteOp(op),
     });
-    this.webPolicy = installDeckWebContentsPolicy(deckWc, {
-      docId: doc.docId,
-      folderReal: doc.folderReal,
-      isProtected: () => doc.trust() === 'protected',
-      networkOpen: () => doc.trust() === 'trusted' || doc.networkAllowed(),
-      onUserLink: (url) => this.confirmExternal(url),
-      openLocalHtml: (realpath, o) => deps.openLocalHtml(realpath, o),
-      onBlocked: (url, why) => this.onBlocked(url, why),
-      onSubframeBlocked: (url) => {
-        if (deps.test) deps.log(`subframe navigation blocked: ${url.slice(0, 200)}`);
-      },
-    });
+    this.webPolicy = installDeckWebContentsPolicy(deckWc, this.policies.view);
     deckWc.on('before-input-event', (event, input) => this.onDeckInput(event, input));
     deckWc.on('render-process-gone', (_e, details) => {
       deps.log(`deck renderer gone (${details.reason}) for ${doc.fileName}`);
@@ -317,21 +448,10 @@ export class DocWindow {
   }
 
   private async startDeck(): Promise<void> {
-    const doc = this.doc;
-    this.sessionPolicy = installDeckSessionPolicy(this.deckSession, {
-      trust: () => doc.trust(),
-      networkAllowed: () => doc.networkAllowed(),
-      strict: () => false, // Phase 1: Settings › Trust "Block all network in Protected view"
-      allowlist: () => DEFAULT_ALLOWLIST, // Phase 1: user-editable in Settings › Trust
-      blockPort: this.deps.blockPort,
-      sourcePath: () => doc.realpath,
-      onDownloadBlocked: () => this.toast('Downloads are blocked in Protected view.', 'warn'),
-      onRequest: this.deps.test
-        ? (d, dec) => {
-            if (dec.cancel) this.deps.log(`request cancelled (${dec.reason}) ${d.resourceType} ${d.url.slice(0, 200)}`);
-          }
-        : undefined,
-    });
+    // The window closed before its policy was installed (a close during create): nothing to load.
+    if (this.closing) return;
+    // Callbacks built over policyState only (deckPolicies; finding 21).
+    this.sessionPolicy = installDeckSessionPolicy(this.deckSession, this.policies.session);
     try {
       // 9.9: the Protected proxy must be in place and verified before the deck loads.
       await this.sessionPolicy.ready;
@@ -340,13 +460,38 @@ export class DocWindow {
       this.toast('Protected view could not block the network, so the document was not loaded.', 'error');
       return;
     }
-    if (this.deck.webContents.isDestroyed()) return;
+    // Closed while the proxy was set up: the deck view is gone (its webContents reads as undefined then).
+    if (this.closing || !this.liveDeck()) return;
     void this.loadDeck();
   }
 
+  /**
+   * The deck view's webContents while it is alive, else null. Electron 44 types it as always present, but once
+   * the view's webContents is destroyed (closeDeck, in the window's 'close') it reads as undefined.
+   */
+  private liveDeck(): WebContents | null {
+    const wc = this.deck.webContents as WebContents | undefined;
+    return wc && !wc.isDestroyed() ? wc : null;
+  }
+
+  /**
+   * The window is closing or closed: its deck view was closed in 'close' (closeDeck), or it is gone. The
+   * controller lists and returns only windows that are not (finding 23).
+   */
+  get closing(): boolean {
+    return this.deckCloseRequested || this.closedOnce || this.win.isDestroyed();
+  }
+
+  /** Open, and its deck view alive: what the controller lists (all(), focused(), the test hooks). */
+  usable(): boolean {
+    return !this.closing && this.liveDeck() !== null;
+  }
+
   private async loadDeck(): Promise<void> {
+    const wc = this.liveDeck();
+    if (!wc) return;
     try {
-      await this.deck.webContents.loadURL(deckUrl(this.doc.docId, this.doc.fileName));
+      await wc.loadURL(deckUrl(this.doc.docId, this.doc.fileName));
     } catch (e) {
       // did-fail-load reports it; an aborted load (a reload replacing it) is not an error.
       this.deps.log(`deck load: ${e instanceof Error ? e.message : String(e)}`);
@@ -360,8 +505,7 @@ export class DocWindow {
   // ------------------------------------------------------------------------------------------- deck → main
 
   private sendDeck(channel: string, payload?: unknown): void {
-    const wc = this.deck.webContents;
-    if (!wc.isDestroyed()) wc.send(channel, payload);
+    this.liveDeck()?.send(channel, payload);
   }
 
   private sendInit(): void {
@@ -392,14 +536,13 @@ export class DocWindow {
 
   private onSlides(p: SlideState): void {
     this.slides = p;
-    // 6.7 Index replay: the keys that moved this deck, kept as Session.deckNav (when the guard passes them).
-    const nav = p.deckNav;
-    if (nav && typeof nav.forward === 'string' && typeof nav.back === 'string' && nav.forward.length <= 32 && nav.back.length <= 32) {
-      const s = this.deps.session.session;
-      if (!s.deckNav || s.deckNav.forward !== nav.forward || s.deckNav.back !== nav.back) {
-        s.deckNav = { forward: nav.forward, back: nav.back };
-        this.save();
-      }
+    // 6.7 Index replay: the keys that moved this deck, kept as Session.deckNav. The guard checked them
+    // (ipc-guard DECK_NAV_KEYS); forward is stored as soon as it is known, back defaulting (learnDeckNav).
+    const s = this.deps.session.session;
+    const nav = learnDeckNav(s.deckNav, p.deckNav);
+    if (nav) {
+      s.deckNav = nav;
+      this.save();
     }
     this.pushState();
   }
@@ -527,7 +670,7 @@ export class DocWindow {
     }
     this.pushState();
     // The served copy and its headers change (no connect-src 'none', resource hints kept): reload it.
-    if (!this.deck.webContents.isDestroyed()) void this.loadDeck();
+    if (!this.closing) void this.loadDeck();
   }
 
   /** 6.10 Enable editing. Network keeps its current policy. */
@@ -653,14 +796,13 @@ export class DocWindow {
   closeDeck(): void {
     if (this.deckCloseRequested) return;
     this.deckCloseRequested = true;
-    const wc = this.deck.webContents;
-    if (!wc.isDestroyed()) wc.close();
+    this.liveDeck()?.close();
   }
 
   /** Gives the keyboard back to the deck view after a click in the shell (deck keys, Wispr Flow). */
   focusDeck(): void {
-    const wc = this.deck.webContents;
-    if (!this.win.isDestroyed() && !wc.isDestroyed()) wc.focus();
+    if (this.win.isDestroyed()) return;
+    this.liveDeck()?.focus();
   }
 
   focus(): void {
@@ -675,24 +817,38 @@ export class DocWindow {
     this.closedOnce = true;
     const doc = this.doc;
     if (windowsByKey.get(doc.docId) === this) windowsByKey.delete(doc.docId);
-    // The trust hooks stay installed until the view is destroyed (they clean up on 'destroyed'): disposing
-    // them first would leave the closing view unguarded for a moment. A Trusted partition's session policy is
-    // replaced when the file opens again.
     // Backstop for win.destroy(), which skips 'close'.
     this.closeDeck();
     this.deps.registry.remove(doc);
+    // Finding 21: nothing the partition keeps for the rest of the process may reach this window or its
+    // document. The policy callbacks read policyState only: clearing it makes them fail closed at once
+    // (Protected, no network). The handles are disposed once the deck view is gone (they guard it until
+    // then), which removes their session listeners and the handle the trust hooks keep per Session. The
+    // permission handlers and the request listener stay, failing closed: a Protected partition's are replaced
+    // below by capture-free ones; a Trusted persist: partition is never reset here, because a reopened window
+    // of the same file uses it and installs its own policy over them.
+    this.policyState.live = null;
+    disposeWhenGone(this.liveDeck() ?? undefined, [this.sessionPolicy, this.webPolicy]);
+    this.sessionPolicy = null;
+    this.webPolicy = null;
     if (doc.trust() === 'protected') {
       // 6.10 Storage (Protected): cleared when the window closes. The partition is never used again (a new
-      // open gets a new docId and partition).
+      // open gets a new docId and partition), so its handlers are replaced with ones that hold nothing.
       const ses = this.deckSession;
+      retireProtectedPartition(ses);
       void ses.clearStorageData().catch(() => undefined);
       void ses.clearCache().catch(() => undefined);
-      try {
-        if (ses.protocol.isProtocolHandled('blueline')) ses.protocol.unhandle('blueline');
-      } catch {
-        // already gone
+      for (const scheme of [DECK_SCHEME, MEDIA_SCHEME]) {
+        try {
+          if (ses.protocol.isProtocolHandled(scheme)) ses.protocol.unhandle(scheme);
+        } catch {
+          // already gone
+        }
       }
     }
+    // The bytes read at open and the served copies are not needed any more (finding 21).
+    doc.release();
     this.deps.closed(this);
+    this.resolveClosed();
   }
 }

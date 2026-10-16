@@ -59,12 +59,25 @@ export function fileKeyOf(realpath: string): string {
   return sha256Hex(new TextEncoder().encode(realpath)).slice(0, 16);
 }
 
-/** A fresh docId: 16 lowercase hex digits from the CSPRNG (9.1 URLs: a random id that main maps to the folder). */
-export function newDocumentId(): string {
-  return randomBytes(8).toString('hex');
+/**
+ * True when `id` is a docId Blueline can serve: 16 lowercase hex digits, at least one of them a letter. A host of
+ * decimal digits only is read as an IPv4 number in a standard scheme's URL, so blueline://8117861969109379/…
+ * is an invalid URL (ERR_INVALID_URL in Electron 44) and the deck would never load.
+ */
+export function isDocumentId(id: string): boolean {
+  return /^[0-9a-f]{16}$/.test(id) && /[a-f]/.test(id);
 }
 
-const DOC_ID_RE = /^[0-9a-f]{16}$/;
+/**
+ * A fresh docId: 16 lowercase hex digits from the CSPRNG (9.1 URLs: a random id that main maps to the folder),
+ * drawn again in the rare case (about 1 in 1,850) that they are all decimal digits (isDocumentId).
+ */
+export function newDocumentId(random: (n: number) => Uint8Array = (n) => randomBytes(n)): string {
+  for (;;) {
+    const id = Buffer.from(random(8)).toString('hex');
+    if (isDocumentId(id)) return id;
+  }
+}
 
 /** `<userData>/files/<fileKey>/origin`: the docId a Trusted file is served under on every open. */
 export function originFileFor(userData: string, fileKey: string): string {
@@ -95,7 +108,7 @@ const originLookups = new Map<string, Promise<string>>();
 async function readOrMakeOrigin(file: string): Promise<string> {
   try {
     const text = (await fs.promises.readFile(file, 'utf8')).trim();
-    if (DOC_ID_RE.test(text)) return text;
+    if (isDocumentId(text)) return text;
   } catch {
     // none yet, or unreadable: make one
   }
@@ -165,7 +178,6 @@ export class BlDocument implements ServedDoc {
   readonly fileName: string;
   readonly fileKey: string;
   readonly partition: string;
-  readonly bytes: Uint8Array;
   readonly decoded: DecodedDeck;
   /** sha256 hex of the bytes read at open: the map version (9.2 Write protocol step 1). */
   readonly version: string;
@@ -186,16 +198,18 @@ export class BlDocument implements ServedDoc {
   private network = false;
   private editing: boolean;
   private readonly servedCache = new Map<boolean, Uint8Array>();
+  private bytesRead: Uint8Array;
+  private released = false;
 
   constructor(init: DocumentInit) {
-    if (!/^[0-9a-f]{16}$/.test(init.docId)) throw new Error('invalid docId');
+    if (!isDocumentId(init.docId)) throw new Error('invalid docId');
     this.docId = init.docId;
     this.path = init.path;
     this.realpath = init.realpath;
     this.folderReal = path.dirname(init.realpath);
     this.fileName = path.basename(init.realpath);
     this.fileKey = fileKeyOf(init.realpath);
-    this.bytes = init.bytes;
+    this.bytesRead = init.bytes;
     this.version = sha256Hex(init.bytes);
     this.knownHash = this.version;
     this.decoded = decodeDeck(init.bytes);
@@ -210,6 +224,28 @@ export class BlDocument implements ServedDoc {
     // 6.10: editing is on for a Trusted file, and off in Protected view until Enable editing.
     this.editing = this.trustState === 'trusted';
     this.partition = partitionFor(this.trustState, this.docId, this.fileKey);
+  }
+
+  /** The bytes read at open (their sha256 is `version`); empty once the window closed (release). */
+  get bytes(): Uint8Array {
+    return this.bytesRead;
+  }
+
+  /** How many served copies are cached (one per Protected/Trusted variant; tests). */
+  get servedCopies(): number {
+    return this.servedCache.size;
+  }
+
+  /**
+   * The document's window closed (finding 21): drop the bytes read at open and the served copies, which are
+   * each the size of the file, so a document something still references does not keep them. It is gone from
+   * the registry by then, so the protocol handler never asks for it again; if anything did, documentBody
+   * refuses (the handler answers 404). Identity, map and trust stay readable.
+   */
+  release(): void {
+    this.released = true;
+    this.bytesRead = new Uint8Array(0);
+    this.servedCache.clear();
   }
 
   /** Current trust (ServedDoc). Trust never changes while the document is open; Allow network and Enable editing are separate switches. */
@@ -276,6 +312,7 @@ export class BlDocument implements ServedDoc {
 
   /** The served copy (9.1 Serving): stamps, notes block removed, resource hints removed while Protected. */
   async documentBody(): Promise<{ body: Uint8Array; utf8: boolean }> {
+    if (this.released) throw new Error(`${this.fileName} was closed`);
     const prot = this.servedProtected();
     let body = this.servedCache.get(prot);
     if (!body) {

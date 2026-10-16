@@ -47,32 +47,65 @@ function cap(s: string): string {
  * Key order and stopImmediatePropagation (6.2; section 10 Diagnostics: "the preload's capture listener runs
  * before the deck's own, and stopImmediatePropagation() from the isolated world stops the deck's listeners").
  * The reveal fixture's own capture listeners count keydown events in data-bl-key-log; read inside the router
- * (before the page's listeners could run if the router is first) and again after the event finished.
+ * (before the page's listeners could run if the router is first) and again when the event's dispatch ended.
+ *
+ * The end of a dispatch is read synchronously, not in a timer: input events outrank timers, so a second
+ * keydown sent with no gap (Wispr Flow's Cmd+V: Meta, then V) is dispatched before a timer set by the first
+ * one runs, and comparing with a value from before the first key would blame the page. A bubble-phase
+ * keydown listener on window, registered at preload start (before any page listener there), reads the seq
+ * after the page's capture listeners for every key that was not stopped; a key the router stopped ends where
+ * the router read it. Only the report is deferred.
  */
 export class KeyOrderProbe {
+  /** The page's seq when the last keydown's dispatch ended. */
   private lastSeq: number | null;
+  /** The keydown the router decided last: the seq when the router ran, and when its dispatch ended. */
+  private cur: { e: KeyboardEvent; seqNow: number; end: number } | null = null;
 
   constructor(
     private readonly doc: Document,
     private readonly send: DiagSend,
+    win: Window,
   ) {
-    this.lastSeq = parseKeyLogSeq(doc.documentElement?.dataset.blKeyLog);
+    this.lastSeq = this.read();
+    listen(win, 'keydown', (e) => this.onDispatched(e));
+  }
+
+  private read(): number | null {
+    return parseKeyLogSeq(this.doc.documentElement?.dataset.blKeyLog);
+  }
+
+  /** Bubble phase on window: the page's capture listeners for this key have run. */
+  private onDispatched(e: KeyboardEvent): void {
+    const s = this.read();
+    if (s === null) return;
+    this.lastSeq = s;
+    if (this.cur && this.cur.e === e) this.cur.end = s;
   }
 
   onDecision(e: KeyboardEvent, action: KeyAction, consumed: boolean): void {
     if (!e.isTrusted) return;
     // No log yet counts as seq 0: the page's listeners write it on the first keydown they see.
-    const seqNow = parseKeyLogSeq(this.doc.documentElement?.dataset.blKeyLog) ?? 0;
+    const seqNow = this.read() ?? 0;
     const before = this.lastSeq ?? 0;
+    const first = seqNow === before ? 'preload' : 'page';
+    // Until the bubble listener says otherwise, the dispatch ends here: nothing runs after a stopped key.
+    const rec = { e, seqNow, end: seqNow };
+    this.cur = rec;
+    this.lastSeq = seqNow;
     const key = e.key;
     setTimeout(() => {
-      const after = parseKeyLogSeq(this.doc.documentElement?.dataset.blKeyLog);
+      const after = this.read();
+      // With no newer keydown, the value now is this key's own end (it also covers a page listener that
+      // stopped the key before it reached window's bubble phase).
+      if (this.cur === rec && after !== null) {
+        rec.end = after;
+        this.lastSeq = after;
+      }
       // A page without logging listeners (after stays null) tells us nothing.
-      const first = after === null ? 'unknown' : seqNow === before ? 'preload' : 'page';
-      if (after !== null) this.lastSeq = after;
-      this.send('key-order', { first, key, code: e.code, action: action.kind });
+      this.send('key-order', { first: after === null ? 'unknown' : first, key, code: e.code, action: action.kind });
       if (consumed) {
-        this.send('stop-propagation', { pageListenerRan: after === null ? null : after !== seqNow, key, code: e.code });
+        this.send('stop-propagation', { pageListenerRan: after === null ? null : rec.end !== seqNow, key, code: e.code });
       }
     }, 0);
   }

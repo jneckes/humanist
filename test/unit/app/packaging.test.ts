@@ -22,6 +22,25 @@ describe('electron-builder config', () => {
     expect(builder.extraResources[0].from).toBe(path.join(repo, 'packages/cli/dist'));
   });
 
+  it('ships the served folders (dist/shell, dist/assets) unpacked, outside app.asar (9.10; app-paths.ts)', () => {
+    // Inside the archive the confined protocol handlers refuse every file: a blank shell, no trust bar.
+    expect(builder.asarUnpack).toEqual(expect.arrayContaining(['dist/shell/**', 'dist/assets/**']));
+    // The build resources (entitlements, icons) never ship.
+    expect(builder.files).toContain('!dist/assets/build/**');
+    // A Linux build's executable is where the `blueline` command looks for it (packages/cli/src/launch.ts).
+    expect(builder.linux.executableName).toBe('blueline');
+  });
+
+  it('main builds every served path through app-paths.ts, never from __dirname alone', () => {
+    const main = path.join(repo, 'packages/app/src/main');
+    for (const f of fs.readdirSync(main).filter((n) => n.endsWith('.ts') && n !== 'app-paths.ts')) {
+      const src = fs.readFileSync(path.join(main, f), 'utf8');
+      expect(src, f).not.toMatch(/path\.join\([^)]*['"](?:shell|assets)['"]/);
+    }
+    const sources = ['index.ts', 'diagnostics.ts'].map((f) => fs.readFileSync(path.join(main, f), 'utf8'));
+    for (const s of sources) expect(s).toMatch(/servedDirs\(/);
+  });
+
   it('macOS: hardened runtime; the microphone entitlement in both entitlements files; NSMicrophoneUsageDescription (9.10)', () => {
     expect(builder.mac.hardenedRuntime).toBe(true);
     expect(builder.mac.extendInfo.NSMicrophoneUsageDescription).toMatch(/\S/);

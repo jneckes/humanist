@@ -1,43 +1,52 @@
 // Electron main entry (dist/main.cjs). Order matters:
 //   1. `open-file` is listened for at once, before anything async (6.1: macOS delivers files through
-//      open-file, which must be listened for early);
+//      open-file, which must be listened for early); in `map` and `check` the file goes to a regular
+//      instance (open-file.ts);
 //   2. the blueline and app schemes are registered privileged before `ready` (9.1 Registration);
 //   3. BLUELINE_USER_DATA overrides userData before `ready` (tests);
 //   4. `open` takes the single-instance lock and hands a second launch's files to the running instance
 //      (6.1 Mechanics). `map` and `check` never forward: they run standalone, with their own Chromium
 //      storage, write their CommandResult to --bl-out and exit.
 
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { app, session, webContents as allWebContents } from 'electron';
 import type { CommandResult } from '@blueline/core/ipc';
-import { parseAppArgs, validateSecondInstanceData, type ParsedArgs, type SecondInstanceData } from './args';
+import { servedDirs } from './app-paths';
+import { parseAppArgs, parseParentArg, validateSecondInstanceData, type ParsedArgs, type SecondInstanceData } from './args';
 import { ConfigStore } from './config';
 import { AppController } from './controller';
-import { openDiagnostics } from './diagnostics';
+import { interruptDiagnostics, openDiagnostics } from './diagnostics';
 import { loadEditorDetailed } from './editor-loader';
 import { gitUserName, osUserName, resolvePerson } from './identity';
 import { runMapCommand } from './map-command';
 import { installAppMenu } from './menu';
 import { pickClosedLoopbackPort } from './network-policy';
+import { OpenFileRouter, handOffToRegularInstance, type PendingOpen } from './open-file';
 import { registerPrivilegedSchemes } from './protocol';
 import type { AppPaths } from './window';
 
 // ------------------------------------------------------------------------------------------- 1. open-file
 
-interface PendingOpen {
-  path: string;
-  protected: boolean;
-}
-const early: PendingOpen[] = [];
-let deliver: ((o: PendingOpen) => void) | null = null;
-app.on('open-file', (event, p) => {
-  event.preventDefault();
-  const o = { path: p, protected: false };
-  if (deliver) deliver(o);
-  else early.push(o);
-});
+// parseAppArgs is pure and synchronous: the command decides where an open-file path goes (open-file.ts).
+const parsed: ParsedArgs = parseAppArgs(process.argv, { defaultApp: process.defaultApp === true });
+const openFiles = new OpenFileRouter(
+  () => parsed.cmd,
+  // map and check never open documents: a file macOS routes to them goes to a regular instance (6.1).
+  (file) =>
+    handOffToRegularInstance(file, {
+      spawn,
+      execPath: process.execPath,
+      defaultApp: process.defaultApp === true,
+      appPath: app.getAppPath(),
+      noSandbox: app.commandLine.hasSwitch('no-sandbox'),
+      env: process.env,
+      log,
+    }),
+);
+app.on('open-file', (event, p) => openFiles.onOpenFile(event, p));
 
 // ------------------------------------------------------------------------------------------- 2–3. before ready
 
@@ -45,6 +54,10 @@ const TEST = process.env.BLUELINE_TEST === '1';
 const log = (msg: string): void => {
   console.error(`[blueline] ${msg}`);
 };
+// `blueline map` and `check` read the app's stdout and stderr through pipes. When the command dies first, a
+// write gets EPIPE; unhandled, that is an uncaught exception, and Electron shows a modal error dialog that
+// blocks main for good (map would never delete its probe copy, check never close). Nobody is reading: drop it.
+for (const stream of [process.stdout, process.stderr]) stream.on('error', () => undefined);
 
 app.setName('Blueline');
 registerPrivilegedSchemes();
@@ -55,7 +68,6 @@ registerPrivilegedSchemes();
 if (app.commandLine.hasSwitch('no-sandbox')) log('--no-sandbox: the OS sandbox is off (development only)');
 else app.enableSandbox();
 
-const parsed: ParsedArgs = parseAppArgs(process.argv, { defaultApp: process.defaultApp === true });
 const tempDirs: string[] = [];
 
 function makeTempDir(prefix: string): string {
@@ -115,7 +127,8 @@ const distDir = __dirname;
 const paths: AppPaths = {
   preloadShell: path.join(distDir, 'preload-shell.cjs'),
   preloadDeck: path.join(distDir, 'preload-deck.cjs'),
-  shellDir: path.join(distDir, 'shell'),
+  // Served through the confined app:// handler, so a packaged build reads it from app.asar.unpacked (9.10).
+  shellDir: servedDirs(distDir, app.isPackaged).shellDir,
 };
 
 function denyDefaultSession(): void {
@@ -177,12 +190,71 @@ async function runCommand(p: Extract<ParsedArgs, { cmd: 'map' | 'check' }>): Pro
   return readExitCode(p.out) ?? 0;
 }
 
+const SIGNAL_EXIT: Readonly<Record<string, number>> = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
+
+/**
+ * `check` stops on SIGINT, SIGTERM and SIGHUP (the `blueline` command passes on the ones it receives)
+ * instead of Electron's default quit, which closed the window and reported success: check.json is saved if
+ * guided steps were recorded, the result says the run was interrupted (128 + n), and the app exits. `map`
+ * handles the same signals itself (map-command.ts: it deletes its probe copy first).
+ */
+function installCheckInterrupts(cmd: Extract<ParsedArgs, { cmd: 'check' }>): (why: string, code: number) => void {
+  let stopping = false;
+  const stop = (why: string, code: number): void => {
+    if (stopping) return;
+    stopping = true;
+    void (async () => {
+      const savedTo = await Promise.race([interruptDiagnostics(), new Promise<null>((r) => setTimeout(() => r(null), 3000))]).catch(() => null);
+      const text = `blueline check: interrupted (${why})${savedTo ? `; check.json: ${savedTo}` : '.'}`;
+      log(text);
+      writeResult(cmd.out, { command: 'check', exitCode: code, text, json: { error: 'interrupted', why, savedTo } });
+      removeTempDirs();
+      app.exit(code);
+    })();
+  };
+  for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(sig, () => stop(sig, SIGNAL_EXIT[sig]));
+  return stop;
+}
+
+/**
+ * Calls `onGone` once the process `pid` (the `blueline` command, --bl-parent) no longer exists. Under
+ * xvfb-run the app's parent is xvfb-run, not the command, so a command killed outright (SIGKILL, a crash)
+ * is noticed only this way; the run stops instead of leaving a probe run or a Diagnostics window behind.
+ */
+function watchParent(pid: number, onGone: () => void): void {
+  const timer = setInterval(() => {
+    try {
+      process.kill(pid, 0);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'ESRCH') return; // EPERM: it exists
+      clearInterval(timer);
+      onGone();
+    }
+  }, 500);
+  timer.unref();
+}
+
 if (parsed.cmd === 'map' || parsed.cmd === 'check') {
   const cmd = parsed;
   // Windows a command opens close on their own; the command decides when the app exits.
   app.on('window-all-closed', () => undefined);
   void app.whenReady().then(async () => {
     denyDefaultSession();
+    // Installed after ready: while it starts, Electron installs its own SIGINT, SIGTERM and SIGHUP handlers
+    // (a graceful quit), which would replace handlers installed earlier.
+    const stopCheck = cmd.cmd === 'check' ? installCheckInterrupts(cmd) : null;
+    const parent = parseParentArg(process.argv);
+    if (parent !== null) {
+      watchParent(parent, () => {
+        const why = `the command that started blueline ${cmd.cmd} went away`;
+        log(why);
+        // map stops through its own SIGHUP handler, which deletes the probe copy first (section 10, Mutation
+        // probe step 1); before or after the probe there is nothing to delete, and SIGHUP ends the app. On
+        // Windows (no xvfb-run) map's own parent watchdog covers it.
+        if (stopCheck) stopCheck(why, SIGNAL_EXIT.SIGHUP);
+        else if (process.platform !== 'win32') process.kill(process.pid, 'SIGHUP');
+      });
+    }
     let code: number;
     try {
       code = await runCommand(cmd);
@@ -212,7 +284,7 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
     app.quit();
     return;
   }
-  for (const f of files) early.push({ path: f, protected: p.protected });
+  for (const f of files) openFiles.queue({ path: f, protected: p.protected });
 
   app.on('second-instance', (_e, argv, workingDirectory, additionalData) => {
     const d = validateSecondInstanceData(additionalData);
@@ -227,10 +299,7 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
       controllerRef?.focused()?.focus();
       return;
     }
-    for (const o of opens) {
-      if (deliver) deliver(o);
-      else early.push(o);
-    }
+    for (const o of opens) openFiles.queue(o);
   });
 
   let controllerRef: AppController | null = null;
@@ -273,8 +342,7 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
     installAppMenu({ run: (a) => controller.run(a), platform: process.platform, devTools: !app.isPackaged || TEST });
     if (TEST) exposeTestHooks(controller);
 
-    deliver = (o) => void controller.open(o.path, { protected: o.protected });
-    const queued = early.splice(0);
+    const queued = openFiles.start((o) => void controller.open(o.path, { protected: o.protected }));
     for (const o of queued) await controller.open(o.path, { protected: o.protected });
 
     if (controller.all().length === 0 && queued.length === 0) {

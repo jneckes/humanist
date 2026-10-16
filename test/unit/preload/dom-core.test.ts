@@ -2,7 +2,7 @@
 // parts (visibility, collect, detection on the fixtures) are checked in real Electron by
 // test/e2e/preload-render.spec.ts.
 import { describe, expect, it } from 'vitest';
-import { childTextIndexOf, cssEscape, cssPath, describeTextNode, stampOf, textIndexOf } from '@blueline/core/dom-walk';
+import { childTextIndexOf, cssEscape, cssPath, describeTextNode, stampOf, textIndexOf, type TextsCache } from '@blueline/core/dom-walk';
 import { hashFor, inferHashFormat, slideTitle, trimTitle } from '@blueline/core/slides';
 
 const HTML_NS = 'http://www.w3.org/1999/xhtml';
@@ -99,8 +99,36 @@ describe('textIndex and locators (section 10 step 4; 9.2 Strategy 1 step 2)', ()
   it('describes a node with its parent stamp; a malformed data-bl-e is not a stamp', () => {
     const a = el('h2', { 'data-bl-e': 'bl-12' }, 'Title');
     const b = el('h2', { 'data-bl-e': 'bl-x"]' }, 'Title');
-    expect(describeTextNode(a.childNodes[0] as unknown as Text)).toEqual({ stamp: 'bl-12', textIndex: 0, data: 'Title' });
+    expect(describeTextNode(a.childNodes[0] as unknown as Text)).toEqual({ stamp: 'bl-12', textIndex: 0, data: 'Title', texts: ['Title'] });
     expect(stampOf(b as unknown as Element)).toBeNull();
+  });
+
+  it("sends the parent's live non-whitespace text nodes in order, so texts[textIndex] is the node (decision D-b)", () => {
+    // A script prepended ' / ' to a stamped breadcrumb (review finding 2): the live list shows the shift.
+    const p = el('nav', { 'data-bl-e': 'bl-4' }, ' / ', '\n  ', 'Home', el('b', {}, 'x'), ' / ', 'Docs', ' \t');
+    const texts = p.childNodes.filter((c): c is FText => c instanceof FText && c.data.trim() !== '');
+    const cache: TextsCache = new Map();
+    const described = texts.map((t) => describeTextNode(t as unknown as Text, cache));
+    for (const d of described) {
+      expect(d.texts).toEqual([' / ', 'Home', ' / ', 'Docs']);
+      expect(d.texts![d.textIndex]).toBe(d.data);
+    }
+    // Computed once per parent per call: every node of the element shares one list.
+    expect(described[1].texts).toBe(described[0].texts);
+    // NBSP is not whitespace (9.2 Strategy 1 step 2), so an NBSP-only node is listed.
+    const q = el('p', {}, 'a', el('br'), '\u00a0', el('br'), 'b');
+    expect(describeTextNode(q.childNodes[0] as unknown as Text).texts).toEqual(['a', '\u00a0', 'b']);
+  });
+
+  it('omits texts for a parent with more than 256 non-whitespace text nodes or more than 256 KiB of text (step 1 then falls through)', () => {
+    const many = el('div', {}, ...Array.from({ length: 257 }, (_, i) => `t${i}`));
+    expect(describeTextNode(many.childNodes[0] as unknown as Text).texts).toBeUndefined();
+    const edge = el('div', {}, ...Array.from({ length: 256 }, (_, i) => `t${i}`));
+    expect(describeTextNode(edge.childNodes[0] as unknown as Text).texts).toHaveLength(256);
+    const big = el('div', {}, 'x'.repeat(200 * 1024), 'y'.repeat(57 * 1024));
+    expect(describeTextNode(big.childNodes[0] as unknown as Text).texts).toBeUndefined();
+    const fits = el('div', {}, 'x'.repeat(200 * 1024), 'y'.repeat(56 * 1024));
+    expect(describeTextNode(fits.childNodes[0] as unknown as Text).texts).toHaveLength(2);
   });
 
   it('builds CSS paths from the nearest unique id with :nth-of-type steps', () => {

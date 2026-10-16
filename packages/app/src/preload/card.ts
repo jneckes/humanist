@@ -4,6 +4,8 @@
 // The thread (Phase 4) and recordings (Phase 5) are not part of the Phase 0 card.
 
 import { circled } from './geometry';
+import { CardInputGate, type InputLike } from './input-guard';
+import { listenOn } from './listeners';
 
 export interface CardView {
   header: string;
@@ -15,7 +17,7 @@ export interface CardView {
 }
 
 export interface CardDeps {
-  /** Every input event (typing, dictation, paste): the controller debounces the save (300 ms, 6.5). */
+  /** Every accepted edit (typing, dictation, paste): the controller debounces the save (300 ms, 6.5). */
   onInput(text: string): void;
   /** Hovering a mark entry: highlight mark n on the page, or none (null). */
   onHoverMark(n: number | null): void;
@@ -27,12 +29,15 @@ const GAP = 14;
 
 export class NoteCard {
   readonly el: HTMLDivElement;
-  readonly textarea: HTMLTextAreaElement;
+  /** The textarea now: each note, and each refused edit, gets a fresh one (see renew()). */
+  private ta: HTMLTextAreaElement;
   private readonly targetEl: HTMLDivElement;
   private readonly authorEl: HTMLSpanElement;
   private readonly marksEl: HTMLDivElement;
   private readonly statusEl: HTMLSpanElement;
   private readonly hintEl: HTMLSpanElement;
+  /** Accepts only edits a trusted beforeinput announced (input-guard.ts). */
+  private readonly gate: CardInputGate;
 
   constructor(
     private readonly doc: Document,
@@ -52,11 +57,7 @@ export class NoteCard {
     this.authorEl = d.createElement('span');
     this.authorEl.className = 'author';
     head.append(this.targetEl, this.authorEl);
-    this.textarea = d.createElement('textarea');
-    this.textarea.rows = 2;
-    this.textarea.spellcheck = true;
-    this.textarea.setAttribute('aria-label', 'Note text');
-    this.textarea.placeholder = 'Type or dictate a note';
+    this.ta = this.makeTextarea();
     this.marksEl = d.createElement('div');
     this.marksEl.className = 'marks';
     const foot = d.createElement('div');
@@ -67,15 +68,75 @@ export class NoteCard {
     this.hintEl.className = 'hint';
     this.hintEl.textContent = 'Esc or Cmd+Enter to close';
     foot.append(this.statusEl, this.hintEl);
-    this.el.append(head, this.textarea, this.marksEl, foot);
+    this.el.append(head, this.ta, this.marksEl, foot);
     container.append(this.el);
 
-    this.textarea.addEventListener('input', (e) => {
-      // A page cannot reach into the closed shadow root, but keep the rule: only trusted input drives the card.
+    this.gate = new CardInputGate(
+      () => this.ta,
+      (value, caret) => this.renew(value, caret),
+    );
+    // The textarea has no input listener of its own: the input guard stops the card's input events at window
+    // (capture), before they reach the textarea, and calls beforeInput() and input() (input-guard.ts).
+    // Hovering a mark entry highlights its mark (6.5); one delegated listener, since the entries are rebuilt on
+    // every update and listenOn() keeps it across document.open().
+    listenOn(this.marksEl, 'mouseover', (e) => {
       if (!e.isTrusted) return;
-      this.fit();
-      this.deps.onInput(this.textarea.value);
+      const item = e.target instanceof Element ? e.target.closest('.mark-item') : null;
+      const n = item instanceof HTMLElement ? Number(item.dataset.n) : NaN;
+      this.deps.onHoverMark(Number.isInteger(n) ? n : null);
     });
+    listenOn(this.marksEl, 'mouseleave', (e) => {
+      if (e.isTrusted) this.deps.onHoverMark(null);
+    });
+  }
+
+  get textarea(): HTMLTextAreaElement {
+    return this.ta;
+  }
+
+  private makeTextarea(): HTMLTextAreaElement {
+    const ta = this.doc.createElement('textarea');
+    ta.rows = 2;
+    ta.spellcheck = true;
+    ta.setAttribute('aria-label', 'Note text');
+    ta.placeholder = 'Type or dictate a note';
+    return ta;
+  }
+
+  /**
+   * Puts `value` in a fresh textarea in place of the current one, keeping focus and putting the caret at
+   * `caret`. Chromium keeps one undo history per frame, whose steps still apply after a script sets `value`:
+   * native undo and redo in the card would replay another note's typing, or an edit the gate refused
+   * (Cmd+Shift+Z after a refused execCommand brought the forged words back as a trusted historyRedo). A new
+   * element leaves those steps behind.
+   */
+  private renew(value: string, caret: number): void {
+    const old = this.ta;
+    const focused = (old.getRootNode() as ShadowRoot | Document).activeElement === old;
+    const next = this.makeTextarea();
+    next.value = value;
+    this.ta = next;
+    old.replaceWith(next);
+    if (focused) next.focus({ preventScroll: true });
+    next.setSelectionRange(caret, caret);
+  }
+
+  /** A trusted beforeinput for the textarea (from the input guard). */
+  beforeInput(e: InputLike): void {
+    this.gate.beforeInput(e);
+  }
+
+  /**
+   * An input for the textarea (from the input guard), after the edit happened: saved when a trusted
+   * beforeinput announced it; otherwise (document.execCommand from the page) the textarea is restored to
+   * the last accepted text and nothing is saved (9.1: page scripts cannot drive the card). Returns whether
+   * the edit was accepted.
+   */
+  input(e: InputLike): boolean {
+    const ok = this.gate.input(e);
+    this.fit();
+    if (ok) this.deps.onInput(this.textarea.value);
+    return ok;
   }
 
   get isOpen(): boolean {
@@ -87,7 +148,8 @@ export class NoteCard {
    * the textarea, ready for typing or Wispr Flow dictation (6.4 A new note).
    */
   open(view: CardView, anchor: { x: number; y: number; w: number; h: number }, focus: boolean): void {
-    this.textarea.value = view.text;
+    this.renew(view.text, view.text.length);
+    this.gate.reset(view.text);
     this.update(view);
     this.el.hidden = false;
     this.fit();
@@ -113,12 +175,7 @@ export class NoteCard {
       const s = this.doc.createElement('span');
       s.className = 'mark-item';
       s.textContent = circled(n);
-      s.addEventListener('mouseenter', (e) => {
-        if (e.isTrusted) this.deps.onHoverMark(n);
-      });
-      s.addEventListener('mouseleave', (e) => {
-        if (e.isTrusted) this.deps.onHoverMark(null);
-      });
+      s.dataset.n = String(n);
       items.push(s);
     }
     this.marksEl.replaceChildren(...items);

@@ -1,7 +1,11 @@
-// electron-builder configuration (SPEC 9.10, 6.1). Not run in Phase 0; `npm run dist` uses it from the repo
-// root, so every path is absolute (from this file's folder).
+// electron-builder configuration (SPEC 9.10, 6.1). `npm run dist` uses it from the repo root, so every path
+// is absolute (from this file's folder). `npm run package:smoke` (scripts/package-smoke.mjs) packs an unpacked
+// test build with it and checks the shell, the trust bar and `blueline check --auto` on the packaged app.
 //
-// - The app ships its esbuild bundles (dist/) in app.asar.
+// - The app ships its esbuild bundles (dist/) in app.asar. dist/shell and dist/assets (the shell UI and the
+//   bundled decks) ship unpacked, in app.asar.unpacked: main serves them through the confined protocol
+//   handlers (resolveConfined, 9.9), which refuse every file inside an archive (Electron's fs gives lstat
+//   synthetic stats there), so main resolves them to the unpacked copy when packaged (src/main/app-paths.ts).
 // - The `blueline` command ships outside app.asar, in Resources/cli, because the system's Node cannot read
 //   app.asar (6.1). blueline-editor.cjs is left out of reader-only builds by the build itself.
 // - fileAssociations declare html and htm with role Editor, so Blueline appears in Open With (6.1).
@@ -28,6 +32,7 @@ module.exports = {
     buildResources,
   },
   files: ['package.json', 'dist/**/*', '!dist/**/*.map', '!dist/assets/build/**'],
+  asarUnpack: ['dist/shell/**', 'dist/assets/**'],
   extraResources: [
     {
       from: path.join(root, 'packages', 'cli', 'dist'),
@@ -49,6 +54,10 @@ module.exports = {
       // 6.8 / 9.10: the in-card recorder (Phase 5) records in the shell; main asks for access first.
       NSMicrophoneUsageDescription: 'Blueline records voice notes on your documents when you press the microphone button on a note.',
     },
+  },
+  linux: {
+    // Linux packages are Later (9.10); the name is where the `blueline` command looks (packages/cli/src/launch.ts).
+    executableName: 'blueline',
   },
   win: {
     target: ['nsis'],

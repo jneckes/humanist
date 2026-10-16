@@ -4,7 +4,8 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Note, Session } from '@blueline/core/types';
-import { SessionStore, emptySession, readNote, readSession, sessionFileFor } from '../../../packages/app/src/main/session-store';
+import { NotesStore } from '../../../packages/app/src/main/notes';
+import { SessionStore, emptySession, learnDeckNav, readNote, readSession, sessionFileFor } from '../../../packages/app/src/main/session-store';
 
 let ud: string;
 const DECK: Session['deck'] = { path: '/d/deck.html', realpath: '/d/deck.html', fileKey: '0123456789abcdef', sha256: 'f'.repeat(64), title: 'Deck' };
@@ -105,5 +106,54 @@ describe('SessionStore', () => {
     expect(aside).toHaveLength(1);
     expect(fs.readFileSync(path.join(path.dirname(file), aside[0]), 'utf8')).toBe('{"version": 2, "notes": [{"id": "broken"}]');
     expect(JSON.parse(fs.readFileSync(file, 'utf8')).version).toBe(2);
+  });
+
+  // Finding 24 (6.8 One writer): a window reopened while the closed window's write of the same session.json is in
+  // flight must read the file after that write lands, or its next save drops the note and reuses its id.
+  it('a store opened while another store is writing the same file reads after that write lands', async () => {
+    const file = sessionFileFor(ud, 'cccccccccccccccc');
+    const me = { id: 'josh-ab12', name: 'Josh', color: '#2563eb' };
+    const deps = { me: () => me, now: () => new Date().toISOString(), version: () => 'f'.repeat(64), slides: () => null };
+    const a = await SessionStore.open(file, DECK);
+    const notesA = new NotesStore(a.session, deps);
+    expect(notesA.apply({ op: 'create', clientId: 'a1', text: 'first', marks: [], slide: null })).toMatchObject({ ok: true, created: { id: 'n-0001' } });
+    const aSaved = a.save(); // the closing window's write, not awaited
+    const b = await SessionStore.open(file, DECK);
+    await aSaved;
+    const notesB = new NotesStore(b.session, deps);
+    const r = notesB.apply({ op: 'create', clientId: 'b1', text: 'second', marks: [], slide: null });
+    expect(r.ok && r.created?.id, 'the reopened window must not reuse n-0001').toBe('n-0002');
+    await b.save();
+    const disk = JSON.parse(fs.readFileSync(file, 'utf8')) as Session;
+    expect(disk.notes.map((n) => [n.id, n.text])).toEqual([
+      ['n-0001', 'first'],
+      ['n-0002', 'second'],
+    ]);
+  });
+});
+
+// Finding 10/14 (6.7 Index replay): Session.deckNav is learned as soon as the forward key is known.
+describe('learnDeckNav', () => {
+  it('stores forward as soon as it is known, back defaulting to its counterpart', () => {
+    expect(learnDeckNav(undefined, { forward: 'ArrowRight' })).toEqual({ forward: 'ArrowRight', back: 'ArrowLeft' });
+    expect(learnDeckNav(undefined, { forward: 'PageDown' })).toEqual({ forward: 'PageDown', back: 'PageUp' });
+    expect(learnDeckNav(undefined, { forward: 'ArrowDown' })).toEqual({ forward: 'ArrowDown', back: 'ArrowUp' });
+    // No counterpart: the 6.7 default back key.
+    expect(learnDeckNav(undefined, { forward: ' ' })).toEqual({ forward: ' ', back: 'ArrowLeft' });
+    expect(learnDeckNav(undefined, { forward: 'PageDown', back: 'ArrowLeft' })).toEqual({ forward: 'PageDown', back: 'ArrowLeft' });
+  });
+
+  it('keeps an observed back key, and changes nothing it does not know', () => {
+    const stored = { forward: 'PageDown', back: 'ArrowUp' };
+    // Same forward seen again in a new page load (back not seen yet): the stored back stays.
+    expect(learnDeckNav(stored, { forward: 'PageDown' })).toBeNull();
+    // Only back seen: it updates the stored back; with nothing stored there is no forward to keep.
+    expect(learnDeckNav(stored, { back: 'PageUp' })).toEqual({ forward: 'PageDown', back: 'PageUp' });
+    expect(learnDeckNav(undefined, { back: 'PageUp' })).toBeNull();
+    expect(learnDeckNav(stored, undefined)).toBeNull();
+    expect(learnDeckNav(stored, {})).toBeNull();
+    expect(learnDeckNav(stored, { forward: 'PageDown', back: 'ArrowUp' })).toBeNull();
+    // A different forward key: its own counterpart.
+    expect(learnDeckNav(stored, { forward: 'ArrowRight' })).toEqual({ forward: 'ArrowRight', back: 'ArrowLeft' });
   });
 });

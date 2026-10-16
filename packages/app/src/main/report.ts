@@ -3,10 +3,15 @@
 // counts them, formats the text report and builds the JSON (the baseline format plus the detailed report).
 //
 // Counting rules:
-// - Each visible text node is counted once across slides, on the slide where the walk first saw it.
-// - `exact`, `ambiguous`, `none` and `total` are the shared matcher's verdicts, per slide and overall.
+// - Each visible text node is counted once across slides, on the slide or block that contains it (else the
+//   slide that was current when the walk first saw it).
+// - `exact`, `ambiguous`, `none` and `total` are the shared matcher's verdicts, per slide and overall. Text
+//   in an open shadow root or a same-origin frame is counted `none` (`subdocument`): section 7 makes text in
+//   iframes pin only, and Blueline never writes it (review finding 32).
 // - Coverage counts only nodes that are `exact` AND pass the mutation probe (section 10). When the probe
 //   could not run (a reader-only build), coverage is the matcher's `exact` count and is marked unverified.
+// - Coverage is a figure over the whole deck: when the walk did not reach every detected slide or block, it
+//   is incomplete, says so, and fails the run (decision D-j, review finding 28).
 // - The JSON never holds an absolute path, a time or a duration, so a baseline only changes when the
 //   mapping does (section 11: "A baseline changes only in a commit that says why").
 
@@ -16,17 +21,29 @@ import type { NodeLocator } from '@blueline/core/ipc';
 
 export type ProbeVerdict = { pass: true } | { pass: false; why: string };
 
+/**
+ * Why a counted node is not `exact`: the matcher's reasons, plus `subdocument` for text in an open shadow
+ * root or a same-origin frame, which the report counts but never maps or probes (section 7; finding 32).
+ */
+export type ReportReason = MatchReason | 'subdocument';
+
+/** The matcher's result for a counted node, or a `none` (`subdocument`) the report gives itself. */
+export type CountedMatch = Omit<MatchResult, 'reason'> & { reason?: ReportReason };
+
+/** The verdict of a node in a shadow root or a frame (review finding 32). */
+export const SUBDOCUMENT_MATCH: Readonly<CountedMatch> = Object.freeze({ confidence: 'none', runId: null, strategy: null, candidates: [], reason: 'subdocument' });
+
 /** One visible text node of the walk, matched (and probed when exact). */
 export interface CountedNode {
   /** WalkNode.key of the walk's page load. */
   key: number;
-  /** 0-based slide where the walk first counted it. */
+  /** 0-based slide or block that contains it, else the slide current when the walk first counted it. */
   slide: number;
   /** Index into the walk's stops (how to show this node again after a reload). */
   stop: number;
   locator: NodeLocator;
   node: DomTextNode;
-  match: MatchResult;
+  match: CountedMatch;
   /** Set for every `exact` node when the probe ran. */
   probe?: ProbeVerdict;
 }
@@ -80,6 +97,13 @@ export interface MapInputs {
   /** Console errors the page logged during the walk's load. */
   consoleErrors: number;
   warnings: string[];
+  /** Visible content the walk could not count (review finding 32). */
+  uncounted?: Uncounted;
+}
+
+/** Visible content the walk could not count: frames whose document the page cannot read (cross-origin). */
+export interface Uncounted {
+  crossOriginFrames: number;
 }
 
 export interface Counts {
@@ -99,7 +123,7 @@ export interface NonExact {
   slide: number;
   text: string;
   confidence: Exclude<Confidence, 'exact'>;
-  reason: MatchReason | null;
+  reason: ReportReason | null;
   candidates: number;
 }
 
@@ -134,7 +158,14 @@ export interface MapReport {
     probeFailed: number;
     /** False when the probe did not run, so `exact` is the matcher's count, not verified. */
     verified: boolean;
+    /**
+     * False when the walk did not reach every detected slide or block: the text of the slides it never showed
+     * is missing from the figure, so it cannot pass a gate (decision D-j, review finding 28).
+     */
+    complete: boolean;
   };
+  /** Visible content the walk could not count (review finding 32). */
+  uncounted: Uncounted;
   nonExact: NonExact[];
   inline: {
     blocks: number;
@@ -160,14 +191,20 @@ export interface BaselineRun {
   /** The source range (UTF-16 offsets into the decoded file) of the run an exact node maps to, else null. */
   start: number | null;
   end: number | null;
-  reason?: MatchReason;
+  reason?: ReportReason;
   probe?: 'pass' | 'fail';
 }
+
+/**
+ * Section 11's `coverage`, plus how many of the detected slides the walk reached: a baseline written from an
+ * incomplete walk shows it, and a later navigation regression changes the baseline (decision D-j).
+ */
+export type BaselineCoverage = Counts & { slides: { count: number; reached: number } };
 
 /** What `blueline map --report --json` prints: section 11's baseline format plus the detailed report. */
 export interface MapJson {
   deckSha: string;
-  coverage: Counts;
+  coverage: BaselineCoverage;
   runs: BaselineRun[];
   report: MapReport;
 }
@@ -245,7 +282,10 @@ export function buildReport(i: MapInputs): MapJson {
     if (members.every((n) => covered(n, probeRan))) allPassed++;
   }
 
-  const coverage: Counts = { exact: exactCovered, ambiguous: totals.ambiguous, none: totals.none, total: totals.total };
+  const reached = i.walk.reached.filter(Boolean).length;
+  const complete = reached >= i.walk.count;
+  const coverage: BaselineCoverage = { exact: exactCovered, ambiguous: totals.ambiguous, none: totals.none, total: totals.total, slides: { count: i.walk.count, reached } };
+  const counts: Counts = { exact: coverage.exact, ambiguous: coverage.ambiguous, none: coverage.none, total: coverage.total };
   const report: MapReport = {
     deck: i.deck,
     utf8: i.utf8,
@@ -255,7 +295,7 @@ export function buildReport(i: MapInputs): MapJson {
       kind: i.walk.kind,
       navKind: i.walk.navKind,
       count: i.walk.count,
-      reached: i.walk.reached.filter(Boolean).length,
+      reached,
       designSize: { ...i.walk.designSize },
       keys: i.walk.keys,
       forwardKey: i.walk.forwardKey,
@@ -263,7 +303,8 @@ export function buildReport(i: MapInputs): MapJson {
     },
     perSlide,
     totals,
-    coverage: { ...coverage, share: ratio(coverage.exact, coverage.total), probeFailed: failures.length, verified: probeRan },
+    coverage: { ...counts, share: ratio(counts.exact, counts.total), probeFailed: failures.length, verified: probeRan, complete },
+    uncounted: { crossOriginFrames: i.uncounted?.crossOriginFrames ?? 0 },
     nonExact,
     inline: {
       blocks,
@@ -285,17 +326,25 @@ export function buildReport(i: MapInputs): MapJson {
  * 2 in map-command). 1 when:
  * - the original's bytes changed (section 10 Mutation probe step 1: an assertion);
  * - a node reported exact failed the probe (a write to the wrong place, section 10 Exit gate);
+ * - the walk did not reach every detected slide or block: the figure leaves out the slides it never showed
+ *   (section 10 step 4: "count each text node once across all slides"; decision D-j);
  * - `--min-coverage` is given and coverage is below it, or unverified (no probe), since an unverified
  *   figure cannot pass a gate.
  */
 export function exitCodeFor(r: MapReport, minCoverage: number | null): number {
   if (r.probe.originalUnchanged === false) return 1;
   if (r.probe.failed > 0) return 1;
+  if (!r.coverage.complete) return 1;
   if (minCoverage !== null) {
     if (!r.coverage.verified) return 1;
     if (r.coverage.share < minCoverage) return 1;
   }
   return 0;
+}
+
+/** "the walk reached 1 of 5 slides" */
+function incompleteWhy(r: MapReport): string {
+  return `the walk reached ${r.slides.reached} of ${r.slides.count} slide${r.slides.count === 1 ? '' : 's'}`;
 }
 
 // ------------------------------------------------------------------------------------------- text
@@ -340,8 +389,11 @@ export function formatText(json: MapJson, opts: { detailed: boolean; minCoverage
   const t = r.totals;
   out.push(`Nodes: ${t.total} visible text node${t.total === 1 ? '' : 's'} · exact ${t.exact} · ambiguous ${t.ambiguous} · none ${t.none}`);
   const c = r.coverage;
-  if (c.verified) out.push(`Coverage: ${c.exact} of ${c.total} (${pct(c.share)}) map exact and pass the mutation probe`);
-  else out.push(`Coverage: ${c.exact} of ${c.total} (${pct(c.share)}) map exact; NOT verified: ${r.probe.why ?? 'the probe did not run'}`);
+  const incomplete = c.complete ? '' : `; INCOMPLETE: ${incompleteWhy(r)}`;
+  if (c.verified) out.push(`Coverage: ${c.exact} of ${c.total} (${pct(c.share)}) map exact and pass the mutation probe${incomplete}`);
+  else out.push(`Coverage: ${c.exact} of ${c.total} (${pct(c.share)}) map exact; NOT verified: ${r.probe.why ?? 'the probe did not run'}${incomplete}`);
+  const frames = r.uncounted.crossOriginFrames;
+  if (frames > 0) out.push(`Uncounted visible content: ${frames} cross-origin frame${frames === 1 ? '' : 's'} (the page cannot read their text)`);
   const p = r.probe;
   if (p.ran) {
     const orig = p.originalUnchanged === true ? 'original unchanged' : p.originalUnchanged === false ? 'ORIGINAL CHANGED' : 'original not checked';
@@ -358,8 +410,11 @@ export function formatText(json: MapJson, opts: { detailed: boolean; minCoverage
   );
   if (r.consoleErrors > 0) out.push(`Console errors during the walk: ${r.consoleErrors}`);
   if (opts.minCoverage !== null) {
-    const ok = c.verified && c.share >= opts.minCoverage;
-    out.push(`Minimum coverage ${pct(opts.minCoverage)}: ${ok ? 'met' : 'NOT met'}`);
+    const why: string[] = [];
+    if (!c.complete) why.push(incompleteWhy(r));
+    if (!c.verified) why.push('not verified');
+    const ok = why.length === 0 && c.share >= opts.minCoverage;
+    out.push(`Minimum coverage ${pct(opts.minCoverage)}: ${ok ? 'met' : `NOT met${why.length ? ` (${why.join('; ')})` : ''}`}`);
   }
 
   if (opts.detailed) {

@@ -57,6 +57,18 @@ describe('identity helpers', () => {
     expect(partitionFor('trusted', '0123456789abcdef', 'ffffffffffffffff')).toBe('persist:deck-ffffffffffffffff');
   });
 
+  // Found while testing finding 21/29: a docId of decimal digits only is read as an IPv4 number in the host of
+  // a standard scheme, so blueline://8117861969109379/deck.html is an invalid URL (ERR_INVALID_URL in
+  // Electron 44) and the deck never loads. One random id in about 1,850 is all digits.
+  it('docId: never decimal digits only (the deck URL would be invalid)', () => {
+    const draws = [Buffer.from('8117861969109379', 'hex'), Buffer.from('0123456789012345', 'hex'), Buffer.from('8117861969109a79', 'hex')];
+    let n = 0;
+    expect(newDocumentId(() => draws[n++])).toBe('8117861969109a79');
+    expect(n).toBe(3);
+    for (let i = 0; i < 2000; i++) expect(newDocumentId()).toMatch(/[a-f]/);
+    expect(() => new BlDocument({ docId: '8117861969109379', path: '/d.html', realpath: '/d.html', bytes: new Uint8Array(0), trust: { trust: 'protected', reason: null, marker: null }, received: true })).toThrow(/docId/);
+  });
+
   it('extractTitle', () => {
     expect(extractTitle('<html><head><title>Q4 &amp; beyond\n  plan&#x2014;draft</title>')).toBe('Q4 & beyond plan—draft');
     expect(extractTitle('<p>none</p>')).toBe('');
@@ -159,6 +171,28 @@ describe('loadDocument', () => {
   });
 });
 
+// Finding 21: a closed window's document drops what it holds that is the size of the file.
+describe('BlDocument.release (window closed)', () => {
+  it('drops the bytes read at open and the served copies, and serves nothing any more', async () => {
+    const p = write('released.html', '<!doctype html><title>R</title><h1>Hello</h1>' + 'x'.repeat(100_000));
+    const d = await loadDocument(p, opts);
+    expect(d.bytes.byteLength).toBeGreaterThan(100_000);
+    await d.documentBody();
+    expect(d.servedCopies).toBe(1);
+    d.release();
+    expect(d.bytes.byteLength).toBe(0);
+    expect(d.servedCopies).toBe(0);
+    await expect(d.documentBody()).rejects.toThrow(/closed/);
+    expect(d.servedCopies).toBe(0);
+    // The protocol handler answers 404 for it (it is also gone from the registry by then).
+    const r = await handleDeckRequest({ url: `blueline://${d.docId}/released.html`, method: 'GET', headers: { get: () => null } }, (id) => (id === d.docId ? d : undefined));
+    expect(r.status).toBe(404);
+    // Identity and the map stay readable for anything that still holds the document.
+    expect(d.fileName).toBe('released.html');
+    expect(d.version).toBe(sha256Hex(fs.readFileSync(p)));
+  });
+});
+
 describe('DocumentRegistry: a partition sees only its own documents (9.1 Refusals step 1)', () => {
   it('lookupIn / lookupFor', async () => {
     const a = await loadDocument(write('a.html', '<p>a</p>'), { ...opts, protectedRequested: true });
@@ -238,6 +272,12 @@ describe('trustedDocumentId: a Trusted file keeps its origin across opens (6.10 
       const b = await trustedDocumentId(ud, key);
       expect(b).toMatch(/^[0-9a-f]{16}$/);
       expect(await trustedDocumentId(ud, key)).toBe(b);
+      // So is a kept id of decimal digits only: its deck URL never loaded.
+      fs.writeFileSync(file, '8117861969109379\n');
+      const c = await trustedDocumentId(ud, key);
+      expect(c).toMatch(/^[0-9a-f]{16}$/);
+      expect(c).toMatch(/[a-f]/);
+      expect(await trustedDocumentId(ud, key)).toBe(c);
     } finally {
       fs.rmSync(ud, { recursive: true, force: true });
     }
