@@ -51,7 +51,7 @@ blueline deck.html                      # open in Blueline
 blueline open deck.html --protected     # open in Protected view
 blueline map deck.html --report         # map the deck and probe every exact node (section 10)
 blueline map deck.html --report --json  # the same as JSON: the coverage baseline format (section 11)
-blueline map deck.html --min-coverage 0.95
+blueline map deck.html --min-coverage 0.95 # exit 1 below 95% of the wording (numbers and glyphs aside)
 blueline map deck.html --reduced-motion # map it as prefers-reduced-motion: reduce shows it
 blueline check                          # the Diagnostics window (guided steps + automatic checks)
 blueline check --auto                   # automatic checks only; prints PASS/FAIL, writes check.json
@@ -104,9 +104,10 @@ Phase 0 results (2026-10-16, Linux, Electron 44.7.2): 1022 unit tests pass (56 f
 pass, of which 1 is an expected failure for the note-card ordering limit described in SECURITY.md; the security suite passes 45 of 45, of which 2 are expected failures for the two DNS channels
 described in SECURITY.md; `blueline check --auto` passes all 6 checks, as root and as `bltest`; `npm run
 package:smoke` passes; and across the 18 committed fixtures every `exact` node (411 of 411) passes the
-mutation probe with byte-exact undo. On Josh's 12 real decks (kept local), every slide is reached and coverage
-is 89.0% with reduced motion and 71.3% with motion as the decks set it, against the 95% gate
-(`docs/PHASE0-FINDINGS.md`, F25–F30). What the review found and fixed: `docs/PHASE0-FINDINGS.md`, Review round 1.
+mutation probe with byte-exact undo. On Josh's 12 real decks (kept local), mapped as Edit shows them (reduced
+motion), every slide is reached and 94.5% of the wording is exact and passes the probe (90.7% of all text),
+against the 95% gate; seven of the twelve decks meet it (`docs/PHASE0-FINDINGS.md`, F25–F30; Josh's decisions
+of 2026-10-17 in `docs/spec-amendments/README.md`). What the review found and fixed: `docs/PHASE0-FINDINGS.md`, Review round 1.
 
 ## Fixtures
 

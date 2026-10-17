@@ -535,3 +535,29 @@ describe('a piece of split text (reason split)', () => {
     expect(m({ stamp: null, textIndex: 0, data: 'Q1' }).confidence).toBe('exact');
   });
 });
+
+describe('an untouched stamped node and an equal literal (DomTextNode.tracked; Josh, 2026-10-17)', () => {
+  // A heading the parser built, and the same word as a canvas label in a script.
+  const src = "<!doctype html><html><body><h2>Revenue</h2><script>var labels = ['Revenue', 'Cost'];</script></body></html>";
+  const map = buildMap(src, { version: 'v', utf8: true });
+  const r = map.runs.find((x) => x.value === 'Revenue')!;
+  const base: DomTextNode = { stamp: r.stamp, textIndex: r.textIndex, data: 'Revenue', texts: ['Revenue'] };
+
+  it('takes the own stamped run when the walk tracked script changes and none touched the node', () => {
+    for (const m of [createMatcher(map), createMatcher(toClientMap(map))]) {
+      expect(m({ ...base, tracked: true })).toMatchObject({ confidence: 'exact', strategy: 'html-text', runId: r.id });
+    }
+  });
+
+  it('keeps 9.2 as written without tracking, and refuses a touched node', () => {
+    const m = createMatcher(map);
+    expect(m(base)).toMatchObject({ confidence: 'ambiguous', reason: 'duplicate' });
+    expect(m({ ...base, tracked: true, touched: true }).confidence).toBe('ambiguous');
+  });
+
+  it('still refuses a twin run of the same element', () => {
+    const twin = buildMap('<!doctype html><html><body><p>Yes<br>Yes</p></body></html>', { version: 'v', utf8: true });
+    const t = twin.runs[0];
+    expect(createMatcher(twin)({ stamp: t.stamp, textIndex: 0, data: 'Yes', texts: ['Yes', 'Yes'], tracked: true })).toMatchObject({ confidence: 'ambiguous', reason: 'duplicate' });
+  });
+});

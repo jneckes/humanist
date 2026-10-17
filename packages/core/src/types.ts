@@ -399,6 +399,11 @@ export interface DomTextNode {
    */
   touched?: boolean;
   /**
+   * The walker recorded script changes for this page (a ScriptTouchTracker ran from preload start), so an
+   * absent `touched` means no script changed the node. Without it, `touched` absent means unknown.
+   */
+  tracked?: boolean;
+  /**
    * For a touched node: the stamp of its nearest ancestor element that has one (the parent included). A deck
    * that splits a heading into one span per word or letter leaves the heading stamped and its pieces
    * unstamped; a piece whose text is inside that heading's source text is a fragment, not a literal's text.

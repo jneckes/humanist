@@ -555,6 +555,7 @@ export class DomWalker {
   /** The node's DomTextNode, with its parent's texts while the reply's texts budget lasts. */
   private describe(node: Text): DomTextNode {
     const d = describeTextNode(node, this.textsCache);
+    if (this.opts.touched) d.tracked = true;
     if (this.opts.touched?.isTouched(node)) {
       d.touched = true;
       for (let el: Element | null = node.parentElement; el; el = el.parentElement) {

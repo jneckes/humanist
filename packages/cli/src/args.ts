@@ -29,7 +29,7 @@ Options:
   --protected          open in Protected view (network and editing off)
   --report             map: list every string that is not exact, with its slide and reason
   --json               print the result as JSON
-  --min-coverage N     map: exit 1 when coverage is below N (0 to 1)
+  --min-coverage N     map: exit 1 when coverage of the wording is below N (0 to 1)
   --reduced-motion     map: map the deck as prefers-reduced-motion: reduce shows it
   --auto               check: run only the automatic checks
   -h, --help           show this help

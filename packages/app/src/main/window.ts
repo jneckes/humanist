@@ -44,6 +44,7 @@ import { computeLayout, deckBounds } from './layout';
 import { DEFAULT_ALLOWLIST } from './network-policy';
 import { NotesStore } from './notes';
 import { DECK_SCHEME, MEDIA_SCHEME, deckUrl, installDeckProtocol, installShellProtocol, SHELL_ORIGIN } from './protocol';
+import { MotionEmulation, readsMotionInScript, wantsReducedMotion } from './motion';
 import { learnDeckNav, type SaveEvent, type SessionStore } from './session-store';
 import {
   installDeckSessionPolicy,
@@ -56,6 +57,9 @@ import {
   type DeckWebContentsHandle,
   type DeckWebContentsOptions,
 } from './trust-hooks';
+
+/** How long a motion reload waits for a card the mode change closed to send its text. */
+const MOTION_RELOAD_DELAY_MS = 250;
 
 export const SHELL_PARTITION = 'shell';
 export const SHELL_URL = `${SHELL_ORIGIN}/index.html`;
@@ -487,6 +491,46 @@ export class DocWindow {
     return !this.closing && this.liveDeck() !== null;
   }
 
+  /** Reduced motion in Review and Edit (motion.ts). */
+  private readonly motion = new MotionEmulation(
+    () => this.liveDeck(),
+    (m) => this.deps.log(m),
+  );
+
+  /**
+   * Sets the deck view's motion for a mode and, when the deck reads the setting in a script, reloads it with
+   * its URL hash. The wait lets a card the mode change closed send its text first (6.5: a reload never loses
+   * a draft).
+   */
+  private async applyMotion(mode: AppMode): Promise<void> {
+    const reduce = wantsReducedMotion(mode);
+    if (reduce === this.motion.isReduced) return;
+    if (!(await this.motion.set(reduce)) || this.closing) return;
+    if (!readsMotionInScript(this.doc.decoded.src, this.doc.map)) return;
+    await new Promise((r) => setTimeout(r, MOTION_RELOAD_DELAY_MS));
+    const wc = this.liveDeck();
+    if (!wc || this.closing || this.mode !== mode) return;
+    let current = '';
+    let hash = '';
+    try {
+      const u = new URL(wc.getURL());
+      current = u.href;
+      hash = u.hash;
+    } catch {
+      hash = '';
+    }
+    const target = deckUrl(this.doc.docId, this.doc.fileName) + hash;
+    try {
+      // Loading the URL the view already shows, hash included, is a same-document fragment navigation and
+      // reloads nothing. Then reload() is the reload, and it is safe: the page has not moved its URL to
+      // another path with pushState (a path that would be redirected to -files, protocol.ts).
+      if (current === target) wc.reload();
+      else await wc.loadURL(target);
+    } catch (e) {
+      this.deps.log(`deck reload for motion: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   private async loadDeck(): Promise<void> {
     const wc = this.liveDeck();
     if (!wc) return;
@@ -656,6 +700,7 @@ export class DocWindow {
     this.sendDeck(MainToDeck.appMode, update);
     this.relayout();
     this.pushState();
+    void this.applyMotion(mode);
     return true;
   }
 

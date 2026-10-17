@@ -314,11 +314,14 @@ export function createMatcher(map: ClientMap | DeckMap, opts: MatcherOptions = {
       const mine = own.get(ownKey(node.stamp, node.textIndex));
       // A node a script rewrote after parsing is not the run's own text node, whatever it holds now.
       if (mine && mine.value === data && node.touched !== true && ownAgrees(node, mine)) {
-        // A stamped run is never preferred over a literal with the same text: the script may have
-        // replaced the element's text with that literal. Another run of the same element with the same
-        // text is the same doubt: a script may have swapped or removed equal text nodes (D-b).
+        // 9.2 prefers no stamped run over a literal with the same text, because a script may have replaced
+        // the element's text with that literal. When the walk tracked script changes (node.tracked) and none
+        // touched this node, it is the parser's own text node, so the reason does not apply and the own run
+        // wins (Josh's decision, 2026-10-17; docs/spec-amendments). Without tracking, the spec's rule stands.
+        // Another run of the same element with the same text is a different doubt (a script may have
+        // swapped or removed equal text nodes, D-b) and always makes the node ambiguous.
         const twins = (byStamp.get(node.stamp) ?? []).filter((c) => c !== mine && c.value === data);
-        const lits = equal.filter((c) => c.literal);
+        const lits = node.tracked === true ? [] : equal.filter((c) => c.literal);
         if (twins.length + lits.length > 0) return ambiguous('duplicate', [mine, ...twins, ...lits]);
         if (!mine.aligned) return none('unaligned', [mine]);
         return exact(mine);

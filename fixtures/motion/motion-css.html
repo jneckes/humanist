@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Motion in CSS only</title>
+<style>
+  body { margin: 0; font: 40px/1.3 system-ui, sans-serif; }
+  #probe { width: 10px; height: 10px; }
+  @media (prefers-reduced-motion: reduce) { #probe { width: 20px; } }
+</style>
+</head>
+<body>
+<!-- A deck that uses the media feature only in CSS: the emulation applies live, with no reload. -->
+<h1>One page</h1>
+<div id="probe"></div>
+</body>
+</html>

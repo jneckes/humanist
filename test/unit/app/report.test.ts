@@ -141,7 +141,7 @@ describe('buildReport (section 10 step 5, section 11 baseline)', () => {
   });
 
   it('coverage counts only exact nodes that passed the probe', () => {
-    expect(json.coverage).toEqual({ exact: 2, ambiguous: 1, none: 1, total: 5, slides: { count: 2, reached: 2 } });
+    expect(json.coverage).toEqual({ exact: 2, ambiguous: 1, none: 1, total: 5, slides: { count: 2, reached: 2 }, wording: { exact: 2, total: 4 } });
     expect(r.coverage.probeFailed).toBe(1);
     expect(r.coverage.verified).toBe(true);
     expect(r.coverage.share).toBeCloseTo(0.4);
@@ -184,11 +184,17 @@ describe('buildReport (section 10 step 5, section 11 baseline)', () => {
 });
 
 describe('exitCodeFor', () => {
-  const ok = buildReport(inputs([node(0, 'a', exact('h:bl-1:0'), { pass: true }), node(0, 'b', none('computed'))])).report;
+  const ok = buildReport(inputs([node(0, 'Alpha', exact('h:bl-1:0'), { pass: true }), node(0, 'Beta', none('no-match'))])).report;
   it('is 0 for a clean run without --min-coverage', () => expect(exitCodeFor(ok, null)).toBe(0));
   it('is 1 below --min-coverage, 0 at or above it', () => {
     expect(exitCodeFor(ok, 0.95)).toBe(1);
     expect(exitCodeFor(ok, 0.5)).toBe(0);
+  });
+  it('gates on the wording: numbers and glyphs that are not exact do not count against it (Josh, 2026-10-17)', () => {
+    const r = buildReport(inputs([node(0, 'Alpha', exact('h:bl-1:0'), { pass: true }), node(0, '1,234', none('computed')), node(0, '·', none('no-match'))])).report;
+    expect(r.coverage.share).toBeCloseTo(1 / 3);
+    expect(r.coverage.wording).toEqual({ exact: 1, total: 1, share: 1 });
+    expect(exitCodeFor(r, 0.95)).toBe(0);
   });
   it('is 1 when a node reported exact failed the probe (a write to the wrong place)', () => {
     const r = buildReport(inputs([node(0, 'a', exact('h:bl-1:0'), { pass: false, why: 'x' })])).report;
@@ -224,7 +230,7 @@ describe('formatText', () => {
     const t = formatText(json, { detailed: true, minCoverage: 0.95, exitCode: 1 });
     expect(t).toContain('Per slide');
     expect(t).toMatch(/slide 2\s+none\s+no-match\s+"Line\\nbreak"/);
-    expect(t).toContain('Minimum coverage 95.0%: NOT met');
+    expect(t).toContain('Minimum coverage 95.0% of the wording: NOT met');
     expect(t).toContain('Exit code 1.');
   });
   it('says when coverage is not verified', () => {
@@ -253,13 +259,13 @@ describe('an incomplete walk (review finding 28, decision D-j)', () => {
 
   it('builds.html: 1 of 5 slides reached is incomplete coverage, so map exits 1 with or without --min-coverage', () => {
     const j = buildReport({ ...inputs([node(0, 'Opening slide', exact('h:bl-1:0'), { pass: true })]), walk: walkOf(5, 1) });
-    expect(j.coverage).toEqual({ exact: 1, ambiguous: 0, none: 0, total: 1, slides: { count: 5, reached: 1 } });
+    expect(j.coverage).toEqual({ exact: 1, ambiguous: 0, none: 0, total: 1, slides: { count: 5, reached: 1 }, wording: { exact: 1, total: 1 } });
     expect(j.report.coverage.complete).toBe(false);
     expect(exitCodeFor(j.report, null)).toBe(1);
     expect(exitCodeFor(j.report, 0.95)).toBe(1);
     const t = formatText(j, { detailed: false, minCoverage: 0.95, exitCode: 1 });
     expect(t).toContain('Coverage: 1 of 1 (100.0%) map exact and pass the mutation probe; INCOMPLETE: the walk reached 1 of 5 slides');
-    expect(t).toContain('Minimum coverage 95.0%: NOT met (the walk reached 1 of 5 slides)');
+    expect(t).toContain('Minimum coverage 95.0% of the wording: NOT met (the walk reached 1 of 5 slides)');
     expect(t).not.toMatch(/: met\b/);
   });
 

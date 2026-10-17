@@ -68,6 +68,15 @@ export function looksComputed(data: string): boolean {
   return /\d/.test(data) && /^[\s\d.,:/%+\-\u2212\u2013$\u20ac\u00a3\u00a5()]+$/.test(data);
 }
 
+/**
+ * Wording: text that holds a word, meaning two letters in a row (any script). Slide numbers, KPIs, dates,
+ * prices, codes like "Q1" and glyphs are not wording. The coverage gate counts wording only (Josh,
+ * 2026-10-17): it measures what an author edits, not computed chrome.
+ */
+export function hasWords(data: string): boolean {
+  return /\p{L}\p{L}/u.test(data);
+}
+
 /** The file's dominant existing line ending; new line breaks are written with it (9.2 rule 4). */
 export function detectLineEnding(src: string): LineEnding {
   let crlf = 0;

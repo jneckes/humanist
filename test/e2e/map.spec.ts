@@ -75,7 +75,8 @@ test('entities.html: every exact node passes the probe, the copy is removed and 
   expect(r.code, r.stderr.slice(-2000)).toBe(0);
   const j = JSON.parse(r.stdout);
   expect(j.deckSha).toBe(before);
-  expect(j.coverage).toEqual({ exact: 38, ambiguous: 0, none: 6, total: 44, slides: { count: 6, reached: 6 } });
+  // The six "n / 6" counters hold no words: the wording gate counts the 32 nodes that do.
+  expect(j.coverage).toEqual({ exact: 38, ambiguous: 0, none: 6, total: 44, slides: { count: 6, reached: 6 }, wording: { exact: 32, total: 32 } });
   expect(j.runs).toHaveLength(44);
   expect(j.runs[0]).toEqual(expect.objectContaining({ slide: 0, confidence: 'exact', strategy: 'html-text', probe: 'pass' }));
   expect(typeof j.runs[0].start).toBe('number');
@@ -96,10 +97,10 @@ test('--min-coverage sets the exit code', async () => {
   test.setTimeout(300_000);
   const single = map([copyDeck('single'), '--min-coverage', '0.95']);
   expect(single.code, single.stderr.slice(-2000)).toBe(0);
-  expect(single.stdout).toContain('Minimum coverage 95.0%: met');
+  expect(single.stdout).toContain('Minimum coverage 95.0% of the wording: met');
   const js = map([copyDeck('js-templates'), '--min-coverage', '0.95']);
   expect(js.code).toBe(1);
-  expect(js.stdout).toContain('Minimum coverage 95.0%: NOT met');
+  expect(js.stdout).toContain('Minimum coverage 95.0% of the wording: NOT met');
 });
 
 test('a windows-1252 deck: every node none (not-utf8), no probe, never written', async () => {
@@ -287,6 +288,6 @@ test('a deck that calls alert() and confirm() and holds beforeunload neither han
   expect(r.code, r.stderr.slice(-2000)).toBe(0);
   expect(Date.now() - t0).toBeLessThan(60_000);
   const j = JSON.parse(r.stdout);
-  expect(j.coverage).toEqual({ exact: 2, ambiguous: 0, none: 0, total: 2, slides: { count: 1, reached: 1 } });
+  expect(j.coverage).toEqual({ exact: 2, ambiguous: 0, none: 0, total: 2, slides: { count: 1, reached: 1 }, wording: { exact: 2, total: 2 } });
   expect(j.report.probe).toMatchObject({ passed: 2, failed: 0, originalUnchanged: true, copyRemoved: true });
 });

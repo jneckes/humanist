@@ -17,6 +17,7 @@
 
 import type { TrustState } from '@blueline/core/ipc';
 import type { Confidence, DomTextNode, MatchReason, MatchResult, Strategy } from '@blueline/core/types';
+import { hasWords } from '@blueline/core/text';
 import type { NodeLocator } from '@blueline/core/ipc';
 
 export type ProbeVerdict = { pass: true } | { pass: false; why: string };
@@ -167,6 +168,11 @@ export interface MapReport {
      * is missing from the figure, so it cannot pass a gate (decision D-j, review finding 28).
      */
     complete: boolean;
+    /**
+     * The same over wording only (core/text.ts hasWords): the figure `--min-coverage` gates on (Josh,
+     * 2026-10-17: the gate measures what an author edits, not slide numbers, KPIs and other computed chrome).
+     */
+    wording: { exact: number; total: number; share: number };
   };
   /** Visible content the walk could not count (review finding 32). */
   uncounted: Uncounted;
@@ -203,7 +209,7 @@ export interface BaselineRun {
  * Section 11's `coverage`, plus how many of the detected slides the walk reached: a baseline written from an
  * incomplete walk shows it, and a later navigation regression changes the baseline (decision D-j).
  */
-export type BaselineCoverage = Counts & { slides: { count: number; reached: number } };
+export type BaselineCoverage = Counts & { slides: { count: number; reached: number }; wording: { exact: number; total: number } };
 
 /** What `blueline map --report --json` prints: section 11's baseline format plus the detailed report. */
 export interface MapJson {
@@ -288,7 +294,9 @@ export function buildReport(i: MapInputs): MapJson {
 
   const reached = i.walk.reached.filter(Boolean).length;
   const complete = reached >= i.walk.count;
-  const coverage: BaselineCoverage = { exact: exactCovered, ambiguous: totals.ambiguous, none: totals.none, total: totals.total, slides: { count: i.walk.count, reached } };
+  const wordNodes = i.nodes.filter((n) => hasWords(n.node.data));
+  const wording = { exact: wordNodes.filter((n) => covered(n, probeRan)).length, total: wordNodes.length };
+  const coverage: BaselineCoverage = { exact: exactCovered, ambiguous: totals.ambiguous, none: totals.none, total: totals.total, slides: { count: i.walk.count, reached }, wording };
   const counts: Counts = { exact: coverage.exact, ambiguous: coverage.ambiguous, none: coverage.none, total: coverage.total };
   const report: MapReport = {
     deck: i.deck,
@@ -308,7 +316,7 @@ export function buildReport(i: MapInputs): MapJson {
     },
     perSlide,
     totals,
-    coverage: { ...counts, share: ratio(counts.exact, counts.total), probeFailed: failures.length, verified: probeRan, complete },
+    coverage: { ...counts, share: ratio(counts.exact, counts.total), probeFailed: failures.length, verified: probeRan, complete, wording: { ...wording, share: ratio(wording.exact, wording.total) } },
     uncounted: { crossOriginFrames: i.uncounted?.crossOriginFrames ?? 0 },
     nonExact,
     inline: {
@@ -342,7 +350,7 @@ export function exitCodeFor(r: MapReport, minCoverage: number | null): number {
   if (!r.coverage.complete) return 1;
   if (minCoverage !== null) {
     if (!r.coverage.verified) return 1;
-    if (r.coverage.share < minCoverage) return 1;
+    if (r.coverage.wording.share < minCoverage) return 1;
   }
   return 0;
 }
@@ -397,6 +405,7 @@ export function formatText(json: MapJson, opts: { detailed: boolean; minCoverage
   const incomplete = c.complete ? '' : `; INCOMPLETE: ${incompleteWhy(r)}`;
   if (c.verified) out.push(`Coverage: ${c.exact} of ${c.total} (${pct(c.share)}) map exact and pass the mutation probe${incomplete}`);
   else out.push(`Coverage: ${c.exact} of ${c.total} (${pct(c.share)}) map exact; NOT verified: ${r.probe.why ?? 'the probe did not run'}${incomplete}`);
+  out.push(`Wording: ${c.wording.exact} of ${c.wording.total} (${pct(c.wording.share)}) of the nodes that hold words${c.verified ? '' : ' (not verified)'}`);
   const frames = r.uncounted.crossOriginFrames;
   if (frames > 0) out.push(`Uncounted visible content: ${frames} cross-origin frame${frames === 1 ? '' : 's'} (the page cannot read their text)`);
   const p = r.probe;
@@ -418,8 +427,8 @@ export function formatText(json: MapJson, opts: { detailed: boolean; minCoverage
     const why: string[] = [];
     if (!c.complete) why.push(incompleteWhy(r));
     if (!c.verified) why.push('not verified');
-    const ok = why.length === 0 && c.share >= opts.minCoverage;
-    out.push(`Minimum coverage ${pct(opts.minCoverage)}: ${ok ? 'met' : `NOT met${why.length ? ` (${why.join('; ')})` : ''}`}`);
+    const ok = why.length === 0 && c.wording.share >= opts.minCoverage;
+    out.push(`Minimum coverage ${pct(opts.minCoverage)} of the wording: ${ok ? 'met' : `NOT met${why.length ? ` (${why.join('; ')})` : ''}`}`);
   }
 
   if (opts.detailed) {

@@ -8,6 +8,10 @@
     "slides": {
       "count": 5,
       "reached": 5
+    },
+    "wording": {
+      "exact": 58,
+      "total": 58
     }
   },
   "runs": [
@@ -662,7 +666,12 @@
       "share": 1,
       "probeFailed": 0,
       "verified": true,
-      "complete": true
+      "complete": true,
+      "wording": {
+        "exact": 58,
+        "total": 58,
+        "share": 1
+      }
     },
     "uncounted": {
       "crossOriginFrames": 0

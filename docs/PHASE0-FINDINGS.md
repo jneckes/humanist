@@ -610,7 +610,9 @@ slide engine (no reveal.js), update `location.hash`, and honour `prefers-reduced
 
   The five GSAP decks fall to 54.0% with motion on (their split text counts as more, smaller nodes); the seven
   others are within a few points either way.
-- **Code.** `blueline map --reduced-motion`. Edit mode (Phase 2) needs a decision: see Still open.
+- **Code.** `blueline map --reduced-motion`. Review and Edit emulate `prefers-reduced-motion: reduce` on the
+  deck view (Josh's decision, 2026-10-17; `main/motion.ts`, `test/e2e/motion.spec.ts`); Read and Present keep
+  motion. A deck that reads the setting in an inline script at load is reloaded, keeping its URL hash.
 
 ### F28. Deck engines rewrite their chrome (9.2 Matching DOM to source at runtime)
 
@@ -637,39 +639,46 @@ slide engine (no reveal.js), update `location.hash`, and honour `prefers-reduced
 
 ### F30. Coverage on the real decks, and what stops the rest
 
-| Deck | Animation | Nodes (reduced motion) | Exact and probe-passed, motion as set | Reduced motion |
-|---|---|---|---|---|
-| D1 | own | 716 | 88.8% | 89.7% |
-| D2 | own | 291 | 91.8% | 93.8% |
-| D3 | own | 483 | 79.3% | 80.1% |
-| D4 | GSAP | 343 | 57.6% | 90.4% |
-| D5 | own | 430 | 95.8% | 96.0% |
-| D6 | GSAP | 457 | 58.5% | 91.5% |
-| D7 | GSAP | 653 | 52.0% | 93.7% |
-| D8 | GSAP | 400 | 54.0% | 93.8% |
-| D9 | GSAP | 675 | 51.5% | 93.6% |
-| D10 | own | 970 | 83.4% | 80.6% |
-| D11 | own | 879 | 89.3% | 86.5% |
-| D12 | own | 379 | 89.2% | 89.2% |
-| **All 12** | | **6676** | **71.3%** | **89.0%** |
+All maps with the probe on. "Reduced motion, 9.2 as written" is the build before Josh's decisions of
+2026-10-17; "Decisions applied" adds the untouched own stamp's precedence (decision 2). "Wording" counts only
+nodes with two letters in a row (decision 3: no numbers, counters or glyphs).
 
-Of the 734 nodes that are not exact on the reduced-motion maps (11.0% of all nodes): 4.7% of all nodes are
-numbers and counters (slide numbers, KPIs, dates: `computed`, or equal to several runs), 0.6% are glyphs and
-labels of up to three characters, and 5.8% are words. The words are mostly labels that several literals hold
-(the decks draw diagrams and tables from data arrays: one product name six times), kickers assembled from parts
-("01 · <section name>"), and chrome. Counting only words, 93.9% are exact.
+| Deck | Animation | Nodes | Motion as set | Reduced motion, 9.2 as written | Decisions applied | Wording nodes | Wording exact |
+|---|---|---|---|---|---|---|---|
+| D1 | own | 716 | 88.8% | 89.7% | 91.9% | 597 | 95.6% |
+| D2 | own | 291 | 91.8% | 93.8% | 94.2% | 216 | 98.1% |
+| D3 | own | 483 | 79.3% | 80.1% | 85.3% | 414 | 89.1% |
+| D4 | GSAP | 343 | 57.6% | 90.4% | 90.4% | 270 | 94.1% |
+| D5 | own | 432 | 95.8% | 96.0% | 96.1% | 397 | 100% |
+| D6 | GSAP | 457 | 58.5% | 91.5% | 92.6% | 352 | 96.9% |
+| D7 | GSAP | 653 | 52.0% | 93.7% | 94.9% | 583 | 97.3% |
+| D8 | GSAP | 400 | 54.0% | 93.8% | 94.3% | 351 | 96.9% |
+| D9 | GSAP | 675 | 51.5% | 93.6% | 94.8% | 599 | 97.2% |
+| D10 | own | 970 | 83.4% | 80.6% | 83.7% | 830 | 88.4% |
+| D11 | own | 879 | 89.3% | 86.5% | 88.6% | 781 | 93.2% |
+| D12 | own | 379 | 89.2% | 89.2% | 89.2% | 299 | 94.0% |
+| **All 12** | | **6678** | **71.3%** | **89.0%** | **90.7%** | **5689** | **94.5%** |
+
+All 193 slides are reached. Seven of the twelve decks meet 95% of their wording; D3 and D10 are the furthest
+off. The 313 wording nodes that are not exact:
+
+| Reason | Nodes | What they are |
+|---|---|---|
+| `duplicate` | 100 | Labels several literals hold: the decks draw diagrams and tables from data arrays (one product name in six places) |
+| `substring` | 77 | Kickers and captions a script builds from a longer literal |
+| `no-match` | 58 | Text assembled from parts ("Area 01 · <section name>"), and button labels the engine writes |
+| `stamp-other` | 42 | Chrome the engine rewrites from another element's text (the section label) |
+| `computed` | 30 | Text with a number in it that a script computes |
+| other | 5 | `not-equal` 3, `multi-literal` 1, `key` 1 |
+| probe failed | 1 | Below |
+
+The non-wording nodes (989, 14.8% of all nodes) are slide numbers, totals, KPIs, dates and glyphs; 6.3 never
+offers most of them for editing.
 
 The one probe failure (D3, a three-word status label) is not a wrong-place write: the literal is the right
-source, and the deck also shows it in a hidden element on another slide, so an edit would
-change that copy too. The probe does not count such a node; 6.3's "also changes N other places" is the Edit
-mode answer.
-
-**Measured, not adopted:** 176 of the 280 `duplicate` nodes are text that a stamped run and a literal both
-hold. 9.2 never prefers the stamped run, because a script may have replaced the element's text with the
-literal; F28's record of script changes now shows when that happened. With the own stamped run taking
-precedence for nodes no script touched, the three decks with the most duplicates (D10, D3, D11) rose from
-80.7%, 80.1% and 87.4% to 83.8%, 85.3% and 89.5%, with no new probe failure (measured before F29). Proposed in
-`docs/spec-amendments/README.md`; not in the code.
+source, and the deck also shows it in a hidden element on another slide, so an edit would change that copy too.
+The probe does not count such a node; 6.3's "also changes N other places" is the Edit mode answer. No other
+probe failure on any deck, in either motion setting.
 
 ## Packaging and the `blueline` command
 
@@ -739,10 +748,13 @@ in [`spec-amendments/`](spec-amendments/README.md), pending his review. The code
 
 ## Still open
 
-- **The 95% coverage gate is not met** (F30): 89.0% on Josh's 12 decks with reduced motion, 71.3% with motion as
-  set. The navigation gate is met (193 of 193 slides). Two decisions for Josh: whether Edit and Review render
-  animated decks with reduced motion (F27), and whether an untouched stamped node may take precedence over an
-  equal literal (F30, `docs/spec-amendments/README.md`).
+- **The 95% wording gate is 0.5 points short** (F30): 94.5% of the wording on Josh's 12 decks (90.7% of all
+  text), seven decks at 95% or more. The navigation gate is met (193 of 193 slides). Josh decided on
+  2026-10-17 that Edit and Review render with reduced motion (F27; `main/motion.ts`), that an untouched own
+  stamp takes precedence over an equal literal (`matcher.ts` step 1), and that the gate measures wording
+  (`coverage.wording`, `--min-coverage`); `docs/spec-amendments/README.md` has the wording for SPEC.md. What
+  remains is listed in F30: shared labels (`duplicate`) and assembled text need Edit mode's "also changes N
+  other places" and multi-literal edits (Phase 2), not a matching rule.
 - **Diagnostics on Josh's Mac: no longer a gate** (Josh, 2026-10-17). Josh edits by selecting text and typing,
   or with any dictation tool; Wispr Flow specifically is not required, so the guided Wispr steps do not gate
   Phase 1. Typing, selection and paste into the card and an editable heading are covered by the E2E suite here.
