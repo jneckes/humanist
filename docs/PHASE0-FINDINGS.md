@@ -743,12 +743,12 @@ in [`spec-amendments/`](spec-amendments/README.md), pending his review. The code
   set. The navigation gate is met (193 of 193 slides). Two decisions for Josh: whether Edit and Review render
   animated decks with reduced motion (F27), and whether an untouched stamped node may take precedence over an
   equal literal (F30, `docs/spec-amendments/README.md`).
-- **Diagnostics on Josh's Mac.** The guided steps (Wispr Flow into the card and the heading, dictation in
-  each mode, two strokes while dictating) need a person and Wispr Flow; `check.json` from that run decides
-  the Diagnostics exit gate. F3, F4 and F5 are also rechecked there (Retina scale, macOS focus rules). The card
-  refuses changes the browser does not announce with `beforeinput` (F18); the `wispr-card` and
-  `dictate-strokes` steps confirm Wispr Flow's text still lands (the card now logs `beforeinput` and `paste`,
-  with `field: 'card'`).
+- **Diagnostics on Josh's Mac: no longer a gate** (Josh, 2026-10-17). Josh edits by selecting text and typing,
+  or with any dictation tool; Wispr Flow specifically is not required, so the guided Wispr steps do not gate
+  Phase 1. Typing, selection and paste into the card and an editable heading are covered by the E2E suite here.
+  The design rules that keep any dictation tool working stay: real text fields, no shortcut on Cmd+V, and no
+  shortcut while a text field has focus. F3, F4 and F5 (Retina capture size, macOS focus rules, Fit) are checked
+  on the Mac with `blueline check --auto` when convenient, or by Phase 1's use as the default HTML app.
 - **The input guard after `document.open()`** (F19): listeners that a deck's `document.write()` scripts register
   synchronously still see card input first; and a deck can select an open card's text (`SECURITY.md`, Known
   limits of the note card).
