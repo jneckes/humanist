@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Two slides per page</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  .slide { position: absolute; inset: 0; box-sizing: border-box; padding: 96px; background: #fef3c7; color: #78350f; font: 44px/1.3 sans-serif; display: none; }
+  .slide.active { display: block; }
+  /* A print layout that breaks after every second slide: not one page per slide, so 6.9 renders the slides. */
+  @media print {
+    html, body { height: auto; overflow: visible; }
+    .slide { display: block; position: static; height: 3in; overflow: hidden; }
+    .slide:nth-child(2n) { page-break-after: always; }
+  }
+</style>
+</head>
+<body>
+  <section class="slide active"><h1>Flow one</h1></section>
+  <section class="slide"><h1>Flow two</h1></section>
+  <section class="slide"><h1>Flow three</h1></section>
+  <section class="slide"><h1>Flow four</h1></section>
+<script>
+  (function () {
+    var slides = [].slice.call(document.querySelectorAll('.slide'));
+    var cur = 0;
+    addEventListener('keydown', function (e) {
+      var n = e.key === 'ArrowRight' || e.key === 'PageDown' ? cur + 1 : e.key === 'ArrowLeft' || e.key === 'PageUp' ? cur - 1 : cur;
+      if (n === cur || n < 0 || n >= slides.length) return;
+      slides[cur].classList.remove('active');
+      cur = n;
+      slides[cur].classList.add('active');
+    });
+  })();
+</script>
+</body>
+</html>

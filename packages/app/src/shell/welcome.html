@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- 9.1 Shell view: main also sends this policy as a header with every app:// response. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Welcome to Blueline</title>
+<link rel="stylesheet" href="welcome.css">
+<script src="welcome.js" defer></script>
+</head>
+<body>
+<main class="content">
+  <header class="intro">
+    <h1>Welcome to Blueline</h1>
+    <p class="lede">Read, review and edit HTML decks and documents. Drop an .html file anywhere on this window to open it.</p>
+  </header>
+
+  <section aria-labelledby="start-title">
+    <h2 id="start-title" class="heading">Get started</h2>
+    <div class="actions">
+      <button id="open-file" class="action" type="button">
+        <span class="action-title">Open a file…</span>
+        <span class="action-text">An .html or .htm deck or document.</span>
+      </button>
+      <button id="make-default" class="action" type="button" disabled>
+        <span class="action-title">Make Blueline your HTML app</span>
+        <span id="default-status" class="action-text">Checking which app opens HTML files…</span>
+      </button>
+      <button id="open-sample" class="action" type="button">
+        <span class="action-title">Try the sample deck</span>
+        <span class="action-text">A short deck that shows Read, Review and Edit.</span>
+      </button>
+    </div>
+    <p id="action-result" class="result" role="status" aria-live="polite"></p>
+  </section>
+
+  <section id="tour" class="tour" aria-labelledby="tour-title" hidden>
+    <h2 id="tour-title" class="heading">The tour</h2>
+    <p class="note">The sample deck is open in its own window. Do each step there; it is ticked here when you do.</p>
+    <ol id="tour-steps" class="steps"></ol>
+  </section>
+
+  <section aria-labelledby="name-title">
+    <h2 id="name-title" class="heading">Your name</h2>
+    <p class="note">Shown on the notes you make, so the people you send them to know they are yours.</p>
+    <form id="name-form" class="row" autocomplete="off">
+      <label class="visually-hidden" for="name-input">Your name</label>
+      <input id="name-input" type="text" maxlength="200" spellcheck="false">
+      <button id="name-save" type="submit">Save</button>
+    </form>
+    <p id="name-result" class="result" role="status" aria-live="polite"></p>
+  </section>
+
+  <section aria-labelledby="crash-title">
+    <h2 id="crash-title" class="heading">Crash reports</h2>
+    <p class="note">Blueline sends nothing unless you say so. Choose whether it may send a report when it crashes. This version has no report server yet, so nothing is sent either way.</p>
+    <div class="choices" role="radiogroup" aria-labelledby="crash-title">
+      <label class="choice" for="crash-yes"><input id="crash-yes" type="radio" name="crash" value="yes"> Send crash reports</label>
+      <label class="choice" for="crash-no"><input id="crash-no" type="radio" name="crash" value="no"> Do not send them</label>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <p class="note">Nothing else is asked, and no account is created.</p>
+    <button id="done" class="primary" type="button">Done</button>
+  </footer>
+</main>
+</body>
+</html>

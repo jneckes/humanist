@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Q&amp;A: “Growth” &lt;2027&gt; (draft) \ ½ — Ünïcödé 🎉 &#x27;26</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #fff; }
+  .slide { position: absolute; inset: 0; box-sizing: border-box; padding: 100px; font: 56px/1.3 sans-serif; display: none; }
+  .slide.active { display: block; }
+  #a { background: rgb(10, 120, 200); color: #fff; }
+  #b { background: rgb(250, 240, 230); color: #222; }
+  #c { background: rgb(20, 160, 90); color: #fff; }
+</style>
+</head>
+<body>
+  <section class="slide active" id="a"><h1>Escapes</h1><p>A title that needs escaping.</p></section>
+  <section class="slide" id="b"><h1>Second</h1><p>Plain text.</p></section>
+  <section class="slide" id="c"><h1>Third</h1><p>Three slides make a deck (9.4).</p></section>
+<script>
+  (function () {
+    var slides = [].slice.call(document.querySelectorAll('.slide'));
+    var cur = 0;
+    addEventListener('keydown', function (e) {
+      var n = e.key === 'ArrowRight' ? cur + 1 : e.key === 'ArrowLeft' ? cur - 1 : cur;
+      if (n === cur || n < 0 || n >= slides.length) return;
+      slides[cur].classList.remove('active');
+      cur = n;
+      slides[cur].classList.add('active');
+    });
+  })();
+</script>
+</body>
+</html>

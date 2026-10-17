@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Blueline's sample deck (SPEC 6.0 First run: "Try the sample deck"). Self-contained: no network, no fonts from
+     elsewhere, nothing loaded from the folder. Some slides are written in HTML and some are built by the script
+     below from a data array, so Edit mode has both kinds of text to change. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'">
+<title>Blueline sample deck</title>
+<style>
+  :root {
+    --paper: #f7f8fb;
+    --ink: #15192a;
+    --muted: #555d74;
+    --blue: #2457d6;
+    --line: #dde2ee;
+    --card: #ffffff;
+    --shadow: 0 1px 2px rgba(21, 25, 42, .06), 0 8px 24px rgba(21, 25, 42, .06);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #111421; overflow: hidden; }
+  .deck { position: absolute; left: 50%; top: 50%; width: 1600px; height: 900px; transform: translate(-50%, -50%); }
+  .slide {
+    position: absolute; inset: 0; display: none; flex-direction: column;
+    padding: 96px 128px 120px; background: var(--paper); color: var(--ink);
+  }
+  .slide.is-current { display: flex; }
+  .slide::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 16px; background: var(--blue); }
+  .eyebrow { font-size: 22px; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--blue); margin: 0 0 24px; }
+  h1 { font-size: 112px; line-height: 1.02; letter-spacing: -.03em; margin: 120px 0 32px; }
+  h2 { font-size: 68px; line-height: 1.08; letter-spacing: -.02em; margin: 0 0 40px; max-width: 1300px; }
+  .lede { font-size: 34px; line-height: 1.4; color: var(--muted); margin: 0; max-width: 1180px; }
+  .points { font-size: 32px; line-height: 1.5; margin: 0; padding-left: 40px; max-width: 1200px; }
+  .points li { margin-bottom: 18px; }
+  .points li::marker { color: var(--blue); }
+  kbd {
+    font: 600 .82em ui-monospace, "SF Mono", Menlo, Consolas, monospace; padding: 2px 10px;
+    border: 2px solid var(--line); border-bottom-width: 4px; border-radius: 8px; background: var(--card);
+  }
+  .cards { display: flex; gap: 40px; margin-top: 8px; }
+  .card { flex: 1; background: var(--card); border-radius: 20px; box-shadow: var(--shadow); padding: 40px 44px; border-top: 10px solid var(--blue); }
+  .card h3 { font-size: 44px; margin: 0 0 8px; }
+  .card .keys { font: 600 24px ui-monospace, "SF Mono", Menlo, Consolas, monospace; color: var(--blue); margin: 0 0 24px; }
+  .card p { font-size: 28px; line-height: 1.45; color: var(--muted); margin: 0; }
+  .try { margin-top: auto; font-size: 28px; background: #e9efff; color: #1d3f9e; border-radius: 16px; padding: 24px 32px; max-width: 1200px; }
+  .try b { margin-right: 12px; }
+  .bars { display: flex; gap: 32px; align-items: flex-end; height: 300px; margin: 16px 0 24px; }
+  .bar { width: 160px; background: var(--blue); border-radius: 12px 12px 0 0; }
+  .bar.b1 { height: 120px; opacity: .45; }
+  .bar.b2 { height: 190px; opacity: .65; }
+  .bar.b3 { height: 260px; opacity: .85; }
+  .bar.b4 { height: 300px; }
+  .caption { font-size: 26px; color: var(--muted); margin: 0; }
+  .two { display: flex; gap: 64px; }
+  .two > div { flex: 1; }
+  .tag { display: inline-block; font-size: 22px; font-weight: 700; padding: 6px 18px; border-radius: 999px; margin-bottom: 20px; }
+  .tag.trusted { background: #dff5e6; color: #146c2e; }
+  .tag.protected { background: #fff2cc; color: #7a5600; }
+  .two p { font-size: 30px; line-height: 1.45; margin: 0; }
+  .foot { position: absolute; left: 128px; right: 128px; bottom: 44px; display: flex; font-size: 20px; color: var(--muted); }
+  .foot .brand { font-weight: 700; color: var(--ink); margin-right: 24px; }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+  <section class="slide" id="s-welcome">
+    <p class="eyebrow">Sample deck</p>
+    <h1>Welcome to Blueline</h1>
+    <p class="lede">Blueline reads, reviews and edits HTML decks like this one. This copy is yours to practise on: changes you make here touch no other file.</p>
+    <p class="try"><b>Next:</b>press the right arrow key to go to the next slide.</p>
+  </section>
+
+  <section class="slide" id="s-modes">
+    <p class="eyebrow">Three modes</p>
+    <h2>One window, three ways to work</h2>
+    <div class="cards" id="mode-cards"></div>
+  </section>
+
+  <section class="slide" id="s-read">
+    <p class="eyebrow">Read mode</p>
+    <h2>Reading a deck</h2>
+    <ul class="points" id="read-points"></ul>
+  </section>
+
+  <section class="slide" id="s-review">
+    <p class="eyebrow">Review mode</p>
+    <h2>Notes on the slide itself</h2>
+    <ul class="points">
+      <li>Switch to Review with <kbd>Cmd+2</kbd> on a Mac, or <kbd>Ctrl+2</kbd> on Windows and Linux.</li>
+      <li>Drag a circle around anything on this slide, then type or dictate what should change.</li>
+      <li>Your notes are kept by Blueline, next to this file, until you send them on.</li>
+    </ul>
+    <div class="bars" aria-label="A chart to circle"><div class="bar b1"></div><div class="bar b2"></div><div class="bar b3"></div><div class="bar b4"></div></div>
+    <p class="caption">A chart to practise on: circle the tallest bar and ask for a label.</p>
+  </section>
+
+  <section class="slide" id="s-edit">
+    <p class="eyebrow">Edit mode</p>
+    <h2>Click this headline and retype it</h2>
+    <ul class="points">
+      <li>Switch to Edit with <kbd>Cmd+3</kbd> on a Mac, or <kbd>Ctrl+3</kbd> elsewhere.</li>
+      <li>Click a heading or a sentence, change the words, and press Enter. The file is saved at once.</li>
+      <li>Press Esc instead to leave the text as it was.</li>
+    </ul>
+    <p class="try" id="edit-tip"></p>
+  </section>
+
+  <section class="slide" id="s-trust">
+    <p class="eyebrow">Files from other people</p>
+    <h2>Protected view keeps you safe</h2>
+    <div class="two">
+      <div>
+        <span class="tag protected">Protected</span>
+        <p>A file that came from the internet opens with network and editing off, and a yellow bar says so. Allow network or Enable editing when you trust it.</p>
+      </div>
+      <div>
+        <span class="tag trusted">Trusted</span>
+        <p>A file you made opens trusted: its scripts and fonts load, and you can edit it. Every document still runs sealed off from your other files.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="slide" id="s-reload">
+    <p class="eyebrow">Working with Claude</p>
+    <h2>When the file changes, the view follows</h2>
+    <p class="lede">If Claude or another app rewrites this file, Blueline reloads it in place and keeps your slide, your scroll position and an open note. While you are typing, it waits until you finish.</p>
+  </section>
+
+  <section class="slide" id="s-next">
+    <p class="eyebrow">You are set</p>
+    <h2>Open your own decks</h2>
+    <ul class="points" id="next-points"></ul>
+  </section>
+
+  <p class="foot"><span class="brand">Blueline</span><span>Arrow keys move between slides, and each slide has its own link.</span></p>
+</div>
+
+<script>
+  (function () {
+    // Text for the slides built here: Edit mode can change these strings in this file, as it does the HTML above.
+    var MODES = [
+      { title: 'Read', keys: 'Cmd+1 · Ctrl+1', blurb: 'Page through, present full screen, find a word on any slide, save a PDF.' },
+      { title: 'Review', keys: 'Cmd+2 · Ctrl+2', blurb: 'Circle and point at things, and leave notes where they apply.' },
+      { title: 'Edit', keys: 'Cmd+3 · Ctrl+3', blurb: 'Change the words on a slide directly. Every change is saved to the file.' }
+    ];
+    var READ_POINTS = [
+      'The arrow keys and the slide rail on the left move between slides.',
+      'Present shows the deck full screen; Esc brings the window back.',
+      'Find searches the words of every slide, including the ones not on screen.',
+      'Save as PDF makes a copy you can send to anyone.'
+    ];
+    var EDIT_TIP = 'This sentence comes from the deck’s script, and you can edit it too.';
+    var NEXT_POINTS = [
+      'Open a deck from the File menu, or drop one on the toolbar of any window.',
+      'Make Blueline your HTML app to open decks with a double-click.',
+      'Install the command line tool from the Help menu to use blueline in a terminal.'
+    ];
+
+    function el(tag, cls, text) {
+      var e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text) e.textContent = text;
+      return e;
+    }
+
+    var cards = document.getElementById('mode-cards');
+    MODES.forEach(function (m) {
+      var card = el('div', 'card');
+      card.appendChild(el('h3', '', m.title));
+      card.appendChild(el('p', 'keys', m.keys));
+      card.appendChild(el('p', '', m.blurb));
+      cards.appendChild(card);
+    });
+    function fill(id, items) {
+      var list = document.getElementById(id);
+      items.forEach(function (t) { list.appendChild(el('li', '', t)); });
+    }
+    fill('read-points', READ_POINTS);
+    fill('next-points', NEXT_POINTS);
+    document.getElementById('edit-tip').textContent = EDIT_TIP;
+
+    // A small slide engine: one slide at a time, the arrow keys, and the slide's id in the URL hash.
+    var slides = Array.prototype.slice.call(document.querySelectorAll('.slide'));
+    var current = -1;
+
+    function indexFromHash() {
+      var id = decodeURIComponent(location.hash.slice(1));
+      var i = slides.findIndex(function (s) { return s.id === id; });
+      return i < 0 ? 0 : i;
+    }
+    function render(i) {
+      current = i;
+      slides.forEach(function (s, k) { s.classList.toggle('is-current', k === i); });
+    }
+    function go(i) {
+      var next = Math.max(0, Math.min(slides.length - 1, i));
+      if (next === current) return;
+      location.hash = '#' + slides[next].id;
+    }
+    function typing(t) {
+      return t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
+    }
+
+    window.addEventListener('hashchange', function () { render(indexFromHash()); });
+    document.addEventListener('keydown', function (e) {
+      if (e.metaKey || e.ctrlKey || e.altKey || typing(e.target)) return;
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); go(current + 1); }
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); go(current - 1); }
+      if (e.key === 'Home') { e.preventDefault(); go(0); }
+      if (e.key === 'End') { e.preventDefault(); go(slides.length - 1); }
+    });
+
+    // Scale the 1600 × 900 design to the window when the deck is opened in a browser (Blueline fits it itself).
+    function fit() {
+      var s = Math.min(innerWidth / 1600, innerHeight / 900);
+      document.getElementById('deck').style.transform = 'translate(-50%, -50%) scale(' + s + ')';
+    }
+    addEventListener('resize', fit);
+    fit();
+    render(indexFromHash());
+  })();
+</script>
+</body>
+</html>

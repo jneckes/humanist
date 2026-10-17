@@ -107,3 +107,27 @@ describe('SwallowedKeys', () => {
     expect(s.takeKeyUp({ type: 'keyUp', code: 'KeyS' })).toBe(false);
   });
 });
+
+describe('Phase 1: the View menu and Settings accelerators are not app chords (6.2 list unchanged)', () => {
+  it('Cmd/Ctrl+9 (Fit), +0 (100%) and +, (Settings) pass through to the page; the menu has them', () => {
+    for (const [key, code] of [
+      ['9', 'Digit9'],
+      ['0', 'Digit0'],
+      [',', 'Comma'],
+    ] as const) {
+      expect(matchAppChord(ctrl(key, code), LINUX), key).toBeNull();
+      expect(matchAppChord(cmd(key, code), MAC), key).toBeNull();
+    }
+  });
+
+  it('PageUp, PageDown and Esc are never chords: the deck has them first (6.9 Navigation, Present)', () => {
+    for (const [key, code] of [
+      ['PageDown', 'PageDown'],
+      ['PageUp', 'PageUp'],
+      ['Escape', 'Escape'],
+    ] as const) {
+      expect(matchAppChord(input({ key, code }), LINUX)).toBeNull();
+      expect(matchAppChord(ctrl(key, code), LINUX)).toBeNull();
+    }
+  });
+});

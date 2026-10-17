@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Motion text</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  .slide { position: absolute; inset: 0; box-sizing: border-box; padding: 100px; background: #fff7ed; color: #7c2d12; font: 48px/1.3 sans-serif; display: none; }
+  .slide.active { display: block; }
+</style>
+</head>
+<body>
+  <section class="slide active"><h1>Motion one</h1><p id="m">Motion unknown</p></section>
+  <section class="slide"><h1>Motion two</h1></section>
+  <section class="slide"><h1>Motion three</h1></section>
+<script>
+  // Like the decks that draw their final frame when the viewer asks for reduced motion: the engine reads the
+  // setting once, at load. Background renders emulate reduced motion, so the slide index reads "Motion reduced".
+  (function () {
+    var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    document.getElementById('m').textContent = reduce ? 'Motion reduced' : 'Motion full';
+    var slides = [].slice.call(document.querySelectorAll('.slide'));
+    var cur = 0;
+    addEventListener('keydown', function (e) {
+      var n = e.key === 'ArrowRight' ? cur + 1 : e.key === 'ArrowLeft' ? cur - 1 : cur;
+      if (n === cur || n < 0 || n >= slides.length) return;
+      slides[cur].classList.remove('active');
+      cur = n;
+      slides[cur].classList.add('active');
+    });
+  })();
+</script>
+</body>
+</html>

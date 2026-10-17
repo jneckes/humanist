@@ -1,0 +1,148 @@
+#!/bin/sh
+# blueline-shim: the `blueline` command (Blueline, SPEC 6.1 The command line tool).
+#
+# Help › Install Command Line Tool links this script into ~/.local/bin or /usr/local/bin. It runs blueline.cjs,
+# which sits next to the real file (the app's Resources/cli folder, or packages/cli/dist in development), with
+# Node.js 22 or later. The app's own Electron cannot run it: its runAsNode fuse stays off (SPEC 9.9).
+#
+# Node.js is looked for in this order, and the first one that is 22 or later runs the command:
+#   $BLUELINE_NODE (when set, it must be one);
+#   `node` on PATH;
+#   Homebrew: /opt/homebrew/bin, /usr/local/bin, and its versioned node@N kegs;
+#   nvm ($NVM_DIR, default ~/.nvm): the newest installed version;
+#   Volta ($VOLTA_HOME, default ~/.volta);
+#   fnm ($FNM_DIR, ~/.local/share/fnm, ~/Library/Application Support/fnm, ~/.fnm): the default alias, then the
+#   newest installed version.
+# A terminal usually has node on PATH already; the other places matter when blueline runs from a script or an
+# agent whose PATH has no version manager set up. Without one, the shim says how to get Node.js and exits 1.
+
+MIN_MAJOR=22
+
+# The real folder of this script, through the links that point to it (readlink without -f, which older macOS
+# lacks): the installed command is a link to the copy shipped with the app.
+self=$0
+case $self in
+  */*) ;;
+  *) if [ -f "./$self" ]; then self=./$self; else self=$(command -v -- "$self" 2>/dev/null) || self=$0; fi ;;
+esac
+hops=0
+while [ -L "$self" ] && [ "$hops" -lt 40 ]; do
+  target=$(readlink -- "$self") || break
+  case $target in
+    /*) self=$target ;;
+    *) self=${self%/*}/$target ;;
+  esac
+  hops=$((hops + 1))
+done
+case $self in */*) folder=${self%/*} ;; *) folder=. ;; esac
+dir=$(CDPATH='' cd -P -- "$folder" 2>/dev/null && pwd -P) || dir=
+main=$dir/blueline.cjs
+if [ -z "$dir" ] || [ ! -f "$main" ]; then
+  echo "blueline: cannot find blueline.cjs next to $self. Reinstall the command from Blueline: Help > Install Command Line Tool." >&2
+  exit 1
+fi
+
+found=
+tried=
+
+# The major version a Node.js binary reports (`node --version` prints v22.11.0), or failure.
+node_major() {
+  v=$("$1" --version 2>/dev/null) || return 1
+  v=${v#v}
+  m=${v%%.*}
+  case $m in '' | *[!0-9]*) return 1 ;; esac
+  echo "$m"
+}
+
+# Takes $1 when it is Node.js MIN_MAJOR or later; otherwise notes it for the message below.
+try_node() {
+  [ -n "$found" ] && return 0
+  [ -n "$1" ] && [ -f "$1" ] && [ -x "$1" ] || return 1
+  if ! m=$(node_major "$1"); then
+    tried="$tried
+  $1 (did not run)"
+    return 1
+  fi
+  if [ "$m" -ge "$MIN_MAJOR" ]; then
+    found=$1
+    return 0
+  fi
+  tried="$tried
+  $1 (Node.js $m)"
+  return 1
+}
+
+# The newest vX.Y.Z folder in $1 (nvm's versions/node, fnm's node-versions), by number, not by name.
+newest_in() {
+  best=
+  bmaj=-1
+  bmin=-1
+  bpat=-1
+  for d in "$1"/v*; do
+    [ -d "$d" ] || continue
+    v=${d##*/v}
+    maj=${v%%.*}
+    rest=${v#*.}
+    min=${rest%%.*}
+    pat=${rest#*.}
+    pat=${pat%%[!0-9]*}
+    case "$maj.$min.$pat" in *[!0-9.]* | .* | *..* | *.) continue ;; esac
+    if [ "$maj" -gt "$bmaj" ] ||
+      { [ "$maj" -eq "$bmaj" ] && [ "$min" -gt "$bmin" ]; } ||
+      { [ "$maj" -eq "$bmaj" ] && [ "$min" -eq "$bmin" ] && [ "$pat" -gt "$bpat" ]; }; then
+      best=$d
+      bmaj=$maj
+      bmin=$min
+      bpat=$pat
+    fi
+  done
+  [ -n "$best" ] && echo "$best"
+}
+
+if [ -n "${BLUELINE_NODE:-}" ]; then
+  if ! try_node "$BLUELINE_NODE"; then
+    echo "blueline: BLUELINE_NODE is set to $BLUELINE_NODE, which is not Node.js $MIN_MAJOR or later." >&2
+    exit 1
+  fi
+fi
+
+if [ -z "$found" ]; then
+  p=$(command -v node 2>/dev/null) && try_node "$p"
+fi
+
+if [ -z "$found" ]; then
+  for p in /opt/homebrew/bin/node /usr/local/bin/node /opt/homebrew/opt/node@*/bin/node /usr/local/opt/node@*/bin/node; do
+    try_node "$p" && break
+  done
+fi
+
+home=${HOME:-}
+if [ -z "$found" ] && [ -n "$home$NVM_DIR" ]; then
+  d=$(newest_in "${NVM_DIR:-$home/.nvm}/versions/node") && try_node "$d/bin/node"
+fi
+
+if [ -z "$found" ] && [ -n "$home${VOLTA_HOME:-}" ]; then
+  try_node "${VOLTA_HOME:-$home/.volta}/bin/node"
+fi
+
+if [ -z "$found" ]; then
+  for fnm in "${FNM_DIR:-}" "${XDG_DATA_HOME:-$home/.local/share}/fnm" "$home/Library/Application Support/fnm" "$home/.fnm"; do
+    [ -n "$fnm" ] && [ -d "$fnm" ] || continue
+    try_node "$fnm/aliases/default/bin/node" && break
+    d=$(newest_in "$fnm/node-versions") && try_node "$d/installation/bin/node" && break
+  done
+fi
+
+if [ -z "$found" ]; then
+  {
+    echo "blueline needs Node.js $MIN_MAJOR or later to run, and did not find it."
+    if [ -n "$tried" ]; then
+      echo "Found, but too old or not working:$tried"
+    fi
+    echo "Install the current Node.js from https://nodejs.org (on a Mac with Homebrew: brew install node),"
+    echo "then run blueline again. To use a particular Node.js, set BLUELINE_NODE to its path."
+  } >&2
+  exit 1
+fi
+
+exec "$found" "$main" "$@"

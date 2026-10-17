@@ -1,14 +1,24 @@
-// Internet markers (6.10 When it applies, D12, 9.9 Writes) and untrusted locations (6.8 Received).
+// Internet markers (6.10 When it applies, D12, 9.9 Writes) and untrusted locations (6.8 Received, 6.10 refused
+// trusted folders).
 //
 // A file opens Protected when it carries an internet marker: macOS quarantine properties
-// (`com.apple.quarantine`) or a Windows `Zone.Identifier` stream with ZoneId 3 or more. The marker's whole
-// value is what trust.json remembers a decision against (6.10), so readInternetMarker returns it verbatim.
+// (`com.apple.quarantine`, read by the native helper) or a Windows `Zone.Identifier` stream with ZoneId 3 or
+// more. The marker's whole value is what trust.json remembers a decision against (6.10), so
+// readInternetMarker returns it verbatim.
+//
+// Blueline's own writes keep the marker (9.9 Write protocol addition: copyMarkerToTemp, called by the atomic
+// writer before its rename), and files it derives from a document carry that document's marker (9.9 Derived
+// files keep the marker: copyMarker, markDerivedFile). A file a deck downloads gets a marker naming the deck
+// (writeDownloadMarker). macOS goes through the native helper (native-helper.ts: getxattr, copyfile
+// COPYFILE_XATTR, setxattr or the Launch Services quarantine properties; /usr/bin/xattr in development);
+// Windows reads and writes `<path>:Zone.Identifier` with fs, through NTFS stream paths; Linux has no marker.
 
-import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import type { XattrCopier } from './atomic-write';
+import { MAX_MARKER_BYTES, nativeHelper, xattrReadQuarantine, type NativeHelper, type QuarantineRead } from './native-helper';
 
 export interface InternetMarker {
   /** The marker's whole value (macOS quarantine string, Windows Zone.Identifier text), or null. */
@@ -24,60 +34,117 @@ export interface InternetMarker {
 
 export const REASON_INTERNET = 'Came from the internet';
 export const REASON_UNKNOWN = 'Could not check where this file came from';
+/** The agent name of the quarantine markers Blueline writes (downloads, derived files of a Protected document). */
+export const MARKER_AGENT = 'Blueline';
+/** The longest URL a marker Blueline writes records (a download's address, the deck's file URL). */
+const MAX_URL = 8 * 1024;
+
+/** The helper operations markers.ts uses (the app's native helper by default; tests pass a fake). */
+export type MarkerHelper = Pick<NativeHelper, 'readQuarantine' | 'copyXattrs' | 'setQuarantine'>;
 
 export interface MarkerOptions {
   platform?: NodeJS.Platform;
-  /** Runs a program without a shell (default child_process.execFile). Tests inject a fake. */
+  /** macOS: the native helper (default: the app's, nativeHelper()). */
+  helper?: MarkerHelper;
+  /**
+   * macOS: read with /usr/bin/xattr through this runner instead of the helper (child_process.execFile, no
+   * shell). Tests inject a fake.
+   */
   execFile?: (file: string, args: string[], opts: { timeout: number; maxBuffer: number }) => Promise<{ code: number; stdout: string; stderr: string }>;
   /** Reads a whole file (default fs.promises.readFile). Tests inject a fake. */
   readFile?: (p: string) => Promise<Uint8Array>;
+  /** Writes a whole file (default fs.promises.writeFile). Tests inject a fake. */
+  writeFile?: (p: string, bytes: Uint8Array) => Promise<void>;
 }
-
-const XATTR = '/usr/bin/xattr';
 
 /** The path flavour of the platform being checked (tests run win32 rules on Linux). */
 function pathFor(platform: NodeJS.Platform): path.PlatformPath {
   return platform === 'win32' ? path.win32 : path.posix;
 }
-const QUARANTINE = 'com.apple.quarantine';
-const MAX_MARKER_BYTES = 64 * 1024;
 
-function defaultExecFile(file: string, args: string[], opts: { timeout: number; maxBuffer: number }) {
-  return new Promise<{ code: number; stdout: string; stderr: string }>((resolve) => {
-    execFile(file, args, { ...opts, encoding: 'utf8', windowsHide: true, shell: false }, (err, stdout, stderr) => {
-      const code = err ? (typeof (err as { code?: unknown }).code === 'number' ? ((err as { code: number }).code) : -1) : 0;
-      resolve({ code, stdout: String(stdout ?? ''), stderr: String(stderr ?? '') });
-    });
-  });
+function helperFor(opts: MarkerOptions): MarkerHelper {
+  if (opts.helper) return opts.helper;
+  if (opts.execFile) {
+    const run = opts.execFile;
+    return {
+      readQuarantine: (p) => xattrReadQuarantine(run, p),
+      copyXattrs: () => Promise.reject(new Error('no helper')),
+      setQuarantine: () => Promise.reject(new Error('no helper')),
+    };
+  }
+  return nativeHelper();
+}
+
+function readerOf(opts: MarkerOptions): (p: string) => Promise<Uint8Array> {
+  return opts.readFile ?? ((p) => fs.promises.readFile(p));
+}
+
+function writerOf(opts: MarkerOptions): (p: string, b: Uint8Array) => Promise<void> {
+  return opts.writeFile ?? ((p, b) => fs.promises.writeFile(p, b));
+}
+
+/** `<path>:Zone.Identifier`, the NTFS alternate data stream that carries a Windows internet marker. */
+export function zoneStreamPath(p: string): string {
+  return `${p}:Zone.Identifier`;
 }
 
 /**
  * Reads the internet marker of a file (6.10). `realpath` must be absolute.
- * - macOS: `com.apple.quarantine`, read with `/usr/bin/xattr -p` (interim; the Phase 1 native helper
- *   replaces it). Any quarantine value is a marker.
+ * - macOS: `com.apple.quarantine`, read by the native helper (getxattr; /usr/bin/xattr when the helper is
+ *   not built). Any quarantine value is a marker.
  * - Windows: the `<path>:Zone.Identifier` stream, a marker when its ZoneId is 3 (Internet) or more.
  * - Linux and others: no marker.
  */
 export async function readInternetMarker(realpath: string, opts: MarkerOptions = {}): Promise<InternetMarker> {
   const platform = opts.platform ?? process.platform;
   if (typeof realpath !== 'string' || !pathFor(platform).isAbsolute(realpath)) return { marker: null, reason: REASON_UNKNOWN, uncertain: true };
-  if (platform === 'darwin') return readQuarantine(realpath, opts.execFile ?? defaultExecFile);
-  if (platform === 'win32') return readZoneIdentifier(realpath, opts.readFile ?? ((p) => fs.promises.readFile(p)));
+  const injected = testMarker(realpath);
+  if (injected) return injected;
+  if (platform === 'darwin') return quarantineMarker(await safeRead(helperFor(opts), realpath));
+  if (platform === 'win32') return readZoneIdentifier(realpath, readerOf(opts));
   return { marker: null, reason: null };
 }
 
-async function readQuarantine(realpath: string, run: NonNullable<MarkerOptions['execFile']>): Promise<InternetMarker> {
-  // Phase 1: the native helper reads quarantine properties in-process; xattr is the Phase 0 stand-in. The
-  // path is absolute, so it can never be read as an option.
-  const r = await run(XATTR, ['-p', QUARANTINE, realpath], { timeout: 5000, maxBuffer: MAX_MARKER_BYTES });
-  if (r.code === 0) {
-    const value = r.stdout.replace(/\r?\n$/, '');
-    if (value.length === 0) return { marker: null, reason: REASON_UNKNOWN, uncertain: true };
-    return { marker: value, reason: REASON_INTERNET };
+/**
+ * Test-only: markers injected from a JSON file, `{ "<realpath>": "<marker>" | null | { "uncertain": true } }`,
+ * named by BLUELINE_TEST_MARKERS. Linux has no internet markers and a test cannot write a quarantine attribute
+ * or an NTFS stream there, so the E2E and security suites use this to open files "from the internet" and to
+ * change a file's marker between opens (6.10: a remembered decision does not survive a new marker). Honoured
+ * only when BLUELINE_TEST=1 and main does not run from app.asar (a packaged app never reads it), and only for
+ * the paths the file names. Read on every call, so a test can change it between opens.
+ */
+function testMarker(realpath: string): InternetMarker | null {
+  const env = process.env;
+  if (env.BLUELINE_TEST !== '1' || !env.BLUELINE_TEST_MARKERS) return null;
+  if (/[\\/]app\.asar[\\/]/.test(__filename)) return null;
+  let map: unknown;
+  try {
+    const raw = fs.readFileSync(env.BLUELINE_TEST_MARKERS, 'utf8');
+    if (raw.length > 4 * 1024 * 1024) return null;
+    map = JSON.parse(raw);
+  } catch {
+    return null;
   }
-  // xattr exits 1 with "No such xattr" when the file has no quarantine attribute.
-  if (r.code === 1 && /no such xattr/i.test(r.stderr)) return { marker: null, reason: null };
+  if (!map || typeof map !== 'object' || Array.isArray(map) || !Object.prototype.hasOwnProperty.call(map, realpath)) return null;
+  const v = (map as Record<string, unknown>)[realpath];
+  if (v === null) return { marker: null, reason: null };
+  if (typeof v === 'string' && v.length > 0 && Buffer.byteLength(v, 'utf8') <= MAX_MARKER_BYTES) return { marker: v, reason: REASON_INTERNET };
   return { marker: null, reason: REASON_UNKNOWN, uncertain: true };
+}
+
+async function safeRead(h: MarkerHelper, p: string): Promise<QuarantineRead> {
+  try {
+    return await h.readQuarantine(p);
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+function quarantineMarker(r: QuarantineRead): InternetMarker {
+  if (!r.ok) return { marker: null, reason: REASON_UNKNOWN, uncertain: true };
+  if (r.value === null) return { marker: null, reason: null };
+  if (r.value.length === 0) return { marker: null, reason: REASON_UNKNOWN, uncertain: true };
+  return { marker: r.value, reason: REASON_INTERNET };
 }
 
 /** Fields of a quarantine value: `flags;hex-timestamp;agent;uuid` (fields after the agent are optional). */
@@ -126,14 +193,18 @@ export function parseZoneId(text: string): number | null {
   return null;
 }
 
+function noStream(err: unknown): boolean {
+  const code = (err as { code?: unknown }).code;
+  // No stream, or a volume without streams (FAT, exFAT, a network share that drops them).
+  return code === 'ENOENT' || code === 'ENOTDIR' || code === 'EINVAL';
+}
+
 async function readZoneIdentifier(realpath: string, read: (p: string) => Promise<Uint8Array>): Promise<InternetMarker> {
   let bytes: Uint8Array;
   try {
-    bytes = await read(`${realpath}:Zone.Identifier`);
+    bytes = await read(zoneStreamPath(realpath));
   } catch (err) {
-    const code = (err as { code?: unknown }).code;
-    // No stream (or a volume without streams, such as FAT): no marker.
-    if (code === 'ENOENT' || code === 'ENOTDIR' || code === 'EINVAL') return { marker: null, reason: null };
+    if (noStream(err)) return { marker: null, reason: null };
     return { marker: null, reason: REASON_UNKNOWN, uncertain: true };
   }
   if (bytes.byteLength > MAX_MARKER_BYTES) return { marker: null, reason: REASON_UNKNOWN, uncertain: true };
@@ -145,32 +216,149 @@ async function readZoneIdentifier(realpath: string, read: (p: string) => Promise
   return { marker: null, reason: null };
 }
 
+/**
+ * Copies the `Zone.Identifier` stream of `from` onto `to`, byte for byte (Windows). No stream: nothing to
+ * copy. A stream that cannot be read, or is too large to be a marker, fails: a write that silently dropped
+ * the marker would reset trust (6.10, 9.9).
+ */
+async function copyZoneIdentifier(from: string, to: string, opts: MarkerOptions): Promise<void> {
+  let bytes: Uint8Array;
+  try {
+    bytes = await readerOf(opts)(zoneStreamPath(from));
+  } catch (err) {
+    if (noStream(err)) return;
+    throw new Error('Could not read the file’s Zone.Identifier');
+  }
+  if (bytes.byteLength > MAX_MARKER_BYTES) throw new Error('Could not read the file’s Zone.Identifier');
+  await writerOf(opts)(zoneStreamPath(to), bytes);
+}
+
+// ---------------------------------------------------------------------------------------------------
+// Keeping the marker (9.9 Write protocol addition, Derived files keep the marker)
+// ---------------------------------------------------------------------------------------------------
+
+/**
+ * 9.9 Write protocol addition: the atomic writer calls this with the original and its temp file, after the
+ * bytes are in the temp file and before the rename, so a write never drops the marker (a received file keeps
+ * its marker after Blueline saves notes into it, and 6.10 trust stays remembered).
+ * - macOS: the helper's copyfile(deck, temp, NULL, COPYFILE_XATTR), every extended attribute (in development,
+ *   without the helper, com.apple.quarantine through /usr/bin/xattr);
+ * - Windows: `<deck>:Zone.Identifier` → `<temp>:Zone.Identifier` with fs;
+ * - Linux: nothing.
+ * Throws when the marker cannot be copied; the write then fails and the file is unchanged.
+ */
+export async function copyMarkerToTemp(deck: string, temp: string, opts: MarkerOptions = {}): Promise<void> {
+  const platform = opts.platform ?? process.platform;
+  const p = pathFor(platform);
+  if (!p.isAbsolute(deck) || !p.isAbsolute(temp)) throw new Error('copyMarkerToTemp: paths must be absolute');
+  if (platform === 'darwin') return await helperFor(opts).copyXattrs(deck, temp);
+  if (platform === 'win32') return await copyZoneIdentifier(deck, temp, opts);
+}
+
+/** copyMarkerToTemp as the atomic writer's XattrCopier (atomic-write.ts AtomicWriteOptions.xattrs). */
+export function markerXattrCopier(opts: MarkerOptions = {}): XattrCopier {
+  return { copy: (from, to) => copyMarkerToTemp(from, to, opts) };
+}
+
+/**
+ * Copies the internet marker of `from` onto `to` (9.9 Derived files keep the marker): on macOS the same
+ * com.apple.quarantine value, set by the native helper; on Windows a copy of the Zone.Identifier stream.
+ * A file without a marker gives none. Throws when the marker cannot be read or written: a derived copy that
+ * lost the marker would open Trusted.
+ */
+export async function copyMarker(from: string, to: string, opts: MarkerOptions = {}): Promise<void> {
+  const platform = opts.platform ?? process.platform;
+  const p = pathFor(platform);
+  if (!p.isAbsolute(from) || !p.isAbsolute(to)) throw new Error('copyMarker: paths must be absolute');
+  if (platform === 'darwin') {
+    const h = helperFor(opts);
+    const q = await safeRead(h, from);
+    if (!q.ok) throw new Error('Could not read the file’s quarantine marker');
+    if (q.value !== null) await h.setQuarantine(to, { value: q.value });
+    return;
+  }
+  if (platform === 'win32') await copyZoneIdentifier(from, to, opts);
+}
+
+/** What markDerivedFile needs to know about the document a file is derived from. */
+export interface DerivedSource {
+  realpath: string;
+  /** The marker the document opened with (BlDocument.marker), or null. */
+  marker: string | null;
+  /** The document opened Protected (a marker, `--protected`, or an untrusted folder). */
+  protectedView: boolean;
+}
+
+/**
+ * Marks a file Blueline wrote from a document (9.9 Derived files keep the marker: Save a copy for review,
+ * Export clean copy, a Cmd+S to a new place, the PDF, the `blueline map` probe copy):
+ * - the document's marker, when it opened with one (the same quarantine value; a copy of its Zone.Identifier);
+ * - a new marker naming the document, when it opened Protected without one (`--protected`, an untrusted
+ *   folder): a copy of a Protected document must not open Trusted (when unsure, refuse);
+ * - otherwise whatever marker the document carries now (a Trusted file in a trusted folder may carry one).
+ * Throws when the marker cannot be written.
+ */
+export async function markDerivedFile(target: string, source: DerivedSource, opts: MarkerOptions = {}): Promise<void> {
+  const platform = opts.platform ?? process.platform;
+  const p = pathFor(platform);
+  if (!p.isAbsolute(target) || !p.isAbsolute(source.realpath)) throw new Error('markDerivedFile: paths must be absolute');
+  if (platform !== 'darwin' && platform !== 'win32') return;
+  if (source.marker !== null) {
+    if (platform === 'darwin') return await helperFor(opts).setQuarantine(target, { value: source.marker });
+    if (Buffer.byteLength(source.marker, 'utf8') > MAX_MARKER_BYTES) throw new Error('Could not write the file’s Zone.Identifier');
+    return await writerOf(opts)(zoneStreamPath(target), new TextEncoder().encode(source.marker));
+  }
+  if (source.protectedView) {
+    const origin = pathToFileURL(source.realpath).href;
+    if (platform === 'darwin') return await helperFor(opts).setQuarantine(target, { properties: { agent: MARKER_AGENT, originUrl: origin } });
+    return await writerOf(opts)(zoneStreamPath(target), new TextEncoder().encode(zoneText({ referrerUrl: origin, hostUrl: null })));
+  }
+  await copyMarker(source.realpath, target, opts);
+}
+
+/** A Zone.Identifier stream's text for a file from the internet (ZoneId=3); control characters are dropped. */
+function zoneText(info: { referrerUrl: string | null; hostUrl: string | null }): string {
+  const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, '');
+  const lines = ['[ZoneTransfer]', 'ZoneId=3'];
+  if (info.referrerUrl) lines.push(`ReferrerUrl=${clean(info.referrerUrl)}`);
+  if (info.hostUrl) lines.push(`HostUrl=${clean(info.hostUrl)}`);
+  return lines.join('\r\n') + '\r\n';
+}
+
 // ---------------------------------------------------------------------------------------------------
 // Download markers (9.9 Derived files keep the marker)
 // ---------------------------------------------------------------------------------------------------
 
 /**
  * Marks a file a deck downloaded (Trusted only) as coming from the internet, naming the deck as its
- * source (9.9). Windows: writes `<path>:Zone.Identifier` with ZoneId=3, ReferrerUrl (the deck) and HostUrl
- * (the download). Returns true when a marker was written.
+ * source (9.9: "Do not rely on Electron to add one"). Windows: writes `<path>:Zone.Identifier` with ZoneId=3,
+ * ReferrerUrl (the deck) and HostUrl (the download). macOS: the helper sets the quarantine properties
+ * (agent Blueline, data URL = the download, origin URL = the deck). Returns true when a marker was written.
  */
 export async function writeDownloadMarker(
   savePath: string,
   info: { hostUrl: string; sourcePath: string | null },
-  opts: { platform?: NodeJS.Platform } = {},
+  opts: { platform?: NodeJS.Platform; helper?: MarkerHelper } = {},
 ): Promise<boolean> {
   const platform = opts.platform ?? process.platform;
   if (!pathFor(platform).isAbsolute(savePath)) return false;
+  const referrer = info.sourcePath ? pathToFileURL(info.sourcePath).href : null;
+  // The download's own URL is the deck's choice: a data: or blob: URL can be megabytes. Only an http(s) URL of a
+  // sane length is recorded; otherwise Windows gets `about:internet` (what browsers write for such downloads)
+  // and macOS none, so the marker stays small enough to be read back as one (MAX_MARKER_BYTES).
+  const host = /^https?:\/\//i.test(info.hostUrl) && info.hostUrl.length <= MAX_URL ? info.hostUrl : null;
   if (platform === 'win32') {
-    const clean = (s: string) => s.replace(/[\u0000-\u001f\u007f]/g, '');
-    const lines = ['[ZoneTransfer]', 'ZoneId=3'];
-    if (info.sourcePath) lines.push(`ReferrerUrl=${clean(pathToFileURL(info.sourcePath).href)}`);
-    if (info.hostUrl) lines.push(`HostUrl=${clean(info.hostUrl)}`);
-    await fs.promises.writeFile(`${savePath}:Zone.Identifier`, lines.join('\r\n') + '\r\n', 'utf8');
+    await fs.promises.writeFile(zoneStreamPath(savePath), zoneText({ referrerUrl: referrer && referrer.length <= MAX_URL ? referrer : null, hostUrl: host ?? 'about:internet' }), 'utf8');
     return true;
   }
-  // Phase 1: on macOS the native helper sets quarantine properties (LSQuarantine type, data URL and origin
-  // URL = the deck) on the saved file. Linux has no marker.
+  if (platform === 'darwin') {
+    const properties: { agent: string; originUrl?: string; dataUrl?: string } = { agent: MARKER_AGENT };
+    if (referrer && referrer.length <= MAX_URL) properties.originUrl = referrer;
+    if (host) properties.dataUrl = host;
+    await (opts.helper ?? nativeHelper()).setQuarantine(savePath, { properties });
+    return true;
+  }
+  // Linux has no marker.
   return false;
 }
 
@@ -189,6 +377,10 @@ export interface UntrustedLocation {
 export interface LocationOptions {
   platform?: NodeJS.Platform;
   home?: string;
+  /** The Desktop folder (Electron's app.getPath('desktop'): it follows Windows folder redirection). Default <home>/Desktop. */
+  desktop?: string;
+  /** The Downloads folder (app.getPath('downloads')). Default <home>/Downloads. */
+  downloads?: string;
   /** Extra temporary folders (defaults: os.tmpdir() and the platform's usual ones). */
   tmpdirs?: string[];
   env?: Record<string, string | undefined>;
@@ -196,36 +388,38 @@ export interface LocationOptions {
 
 function candidateFolders(o: LocationOptions): { kind: UntrustedKind; folder: string }[] {
   const platform = o.platform ?? process.platform;
+  const p = pathFor(platform);
   const home = o.home ?? os.homedir();
   const env = o.env ?? process.env;
   const out: { kind: UntrustedKind; folder: string }[] = [];
   const add = (kind: UntrustedKind, folder: string | undefined) => {
-    if (folder) out.push({ kind, folder });
+    if (folder && p.isAbsolute(folder)) out.push({ kind, folder });
   };
   const tmp = o.tmpdirs ?? [os.tmpdir()];
   for (const t of tmp) add('temporary', t);
   if (platform === 'darwin') {
-    const lib = path.join(home, 'Library');
-    add('mail', path.join(lib, 'Containers', 'com.apple.mail')); // Mail Downloads and the attachment cache
-    add('mail', path.join(lib, 'Mail Downloads')); // older Mail
-    add('mail', path.join(lib, 'Mail'));
-    add('mail', path.join(lib, 'Containers', 'com.microsoft.Outlook')); // Outlook's attachment cache
-    add('mail', path.join(lib, 'Group Containers', 'UBF8T346G9.Office', 'Outlook'));
-    add('messages', path.join(lib, 'Messages', 'Attachments'));
-    add('messages', path.join(lib, 'Containers', 'com.apple.MobileSMS'));
+    const lib = p.join(home, 'Library');
+    add('mail', p.join(lib, 'Containers', 'com.apple.mail')); // Mail Downloads and the attachment cache
+    add('mail', p.join(lib, 'Mail Downloads')); // older Mail
+    add('mail', p.join(lib, 'Mail'));
+    add('mail', p.join(lib, 'Containers', 'com.microsoft.Outlook')); // Outlook's attachment cache
+    add('mail', p.join(lib, 'Group Containers', 'UBF8T346G9.Office', 'Outlook'));
+    add('messages', p.join(lib, 'Messages', 'Attachments'));
+    add('messages', p.join(lib, 'Containers', 'com.apple.MobileSMS'));
     for (const t of ['/tmp', '/private/tmp', '/var/tmp', '/private/var/tmp', '/var/folders', '/private/var/folders']) add('temporary', t);
   } else if (platform === 'win32') {
-    const local = env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local');
-    add('mail', path.join(local, 'Microsoft', 'Windows', 'INetCache', 'Content.Outlook'));
-    add('mail', path.join(local, 'Microsoft', 'Windows', 'Temporary Internet Files', 'Content.Outlook'));
-    add('mail', path.join(local, 'Microsoft', 'Olk')); // new Outlook
-    add('mail', path.join(local, 'Packages', 'microsoft.windowscommunicationsapps_8wekyb3d8bbwe'));
-    add('temporary', path.join(local, 'Temp'));
+    const local = env.LOCALAPPDATA ?? p.join(home, 'AppData', 'Local');
+    add('mail', p.join(local, 'Microsoft', 'Windows', 'INetCache', 'Content.Outlook'));
+    add('mail', p.join(local, 'Microsoft', 'Windows', 'Temporary Internet Files', 'Content.Outlook'));
+    add('mail', p.join(local, 'Microsoft', 'Olk')); // new Outlook
+    add('mail', p.join(local, 'Packages', 'microsoft.windowscommunicationsapps_8wekyb3d8bbwe'));
+    add('temporary', p.join(local, 'Temp'));
     add('temporary', env.TEMP);
     add('temporary', env.TMP);
-    add('temporary', env.SystemRoot ? path.join(env.SystemRoot, 'Temp') : 'C:\\Windows\\Temp');
+    add('temporary', env.SystemRoot ? p.join(env.SystemRoot, 'Temp') : 'C:\\Windows\\Temp');
   } else {
-    for (const t of ['/tmp', '/var/tmp']) add('temporary', t);
+    // /dev/shm and /run/shm are memory-backed temporary folders anyone may write.
+    for (const t of ['/tmp', '/var/tmp', '/dev/shm', '/run/shm']) add('temporary', t);
     add('temporary', env.XDG_RUNTIME_DIR);
   }
   return out;
@@ -239,11 +433,21 @@ function realOrSelf(p: string): string {
   }
 }
 
-function inside(folder: string, file: string, caseInsensitive: boolean): boolean {
+/** `file` is strictly inside `folder` (path.relative, never a string-prefix test). */
+function inside(folder: string, file: string, caseInsensitive: boolean, p: path.PlatformPath): boolean {
   const a = caseInsensitive ? folder.toLowerCase() : folder;
   const b = caseInsensitive ? file.toLowerCase() : file;
-  const rel = path.relative(a, b);
-  return rel.length > 0 && !rel.startsWith('..') && !path.isAbsolute(rel);
+  const rel = p.relative(a, b);
+  return rel.length > 0 && !rel.startsWith('..') && !p.isAbsolute(rel);
+}
+
+function samePath(a: string, b: string, caseInsensitive: boolean, p: path.PlatformPath): boolean {
+  return p.relative(caseInsensitive ? a.toLowerCase() : a, caseInsensitive ? b.toLowerCase() : b) === '';
+}
+
+/** macOS and Windows volumes are case-insensitive by default (APFS, NTFS); Linux ones are not. */
+export function caseInsensitivePaths(platform: NodeJS.Platform): boolean {
+  return platform === 'darwin' || platform === 'win32';
 }
 
 /**
@@ -252,46 +456,67 @@ function inside(folder: string, file: string, caseInsensitive: boolean): boolean
  * folder as named and its realpath (`/tmp` is `/private/tmp` on macOS). Returns the match, or null.
  */
 export function isUntrustedLocation(realpath: string, opts: LocationOptions = {}): UntrustedLocation | null {
-  if (typeof realpath !== 'string' || !path.isAbsolute(realpath)) return null;
   const platform = opts.platform ?? process.platform;
-  const ci = platform === 'darwin' || platform === 'win32';
+  const p = pathFor(platform);
+  if (typeof realpath !== 'string' || !p.isAbsolute(realpath)) return null;
+  const ci = caseInsensitivePaths(platform);
   for (const c of candidateFolders(opts)) {
     for (const f of new Set([c.folder, realOrSelf(c.folder)])) {
-      if (inside(f, realpath, ci)) return { kind: c.kind, folder: f };
+      if (inside(f, realpath, ci, p)) return { kind: c.kind, folder: f };
     }
   }
   return null;
 }
 
+/** Volume roots and mount points other than `/` (6.10: "volume roots"). */
+function isVolumeRoot(folder: string, platform: NodeJS.Platform): boolean {
+  const p = pathFor(platform);
+  const parsed = p.parse(folder);
+  if (folder === parsed.root || p.relative(parsed.root, folder) === '') return true;
+  if (platform === 'win32') {
+    // A share's root (`\\server\share`) parses as its own root above; a device or long-path prefix
+    // (`\\?\`, `\\.\`) is not a folder anyone picks from the dialog: when unsure, refuse.
+    return /^\\\\[?.]\\/.test(folder);
+  }
+  const f = folder.replace(/\/+$/, '');
+  if (platform === 'darwin') {
+    return /^\/Volumes(?:\/[^/]+)?$/i.test(f) || /^\/System\/Volumes(?:\/[^/]+)?$/i.test(f);
+  }
+  // Linux: removable media and mount points (udisks, fstab conventions).
+  return /^\/(?:mnt|media)(?:\/[^/]+)?$/.test(f) || /^\/media\/[^/]+\/[^/]+$/.test(f) || /^\/run\/media(?:\/[^/]+){0,2}$/.test(f);
+}
+
 /**
  * Settings › Trust refuses to mark these as trusted folders (6.10): the home folder, Desktop, Downloads,
- * the Mail and Messages attachment folders, temporary folders, and volume roots. Returns the reason, or
- * null when the folder may be trusted. (Settings › Trust ships in Phase 1; the rule lives here with the
- * folder lists.)
+ * the Mail and Messages attachment folders, temporary folders, and volume roots. A folder that contains one
+ * of them is refused too (trusting `/Users` would trust every home folder's Downloads), and so is any folder
+ * inside a mail, messages or temporary folder. A folder inside Desktop or Downloads may be trusted: that is a
+ * project the user chose, not where downloads land. Returns the reason, or null when the folder may be trusted.
  */
 export function refuseAsTrustedFolder(folderReal: string, opts: LocationOptions = {}): string | null {
-  if (typeof folderReal !== 'string' || !path.isAbsolute(folderReal)) return 'not an absolute path';
   const platform = opts.platform ?? process.platform;
-  const ci = platform === 'darwin' || platform === 'win32';
+  const p = pathFor(platform);
+  if (typeof folderReal !== 'string' || !p.isAbsolute(folderReal) || folderReal.includes('\0')) return 'not an absolute path';
+  const ci = caseInsensitivePaths(platform);
   const home = opts.home ?? os.homedir();
-  const same = (a: string, b: string) => {
-    const rel = path.relative(ci ? a.toLowerCase() : a, ci ? b.toLowerCase() : b);
-    return rel === '';
-  };
-  const parsed = path.parse(folderReal);
-  if (folderReal === parsed.root || same(folderReal, parsed.root)) return 'a volume root';
-  if (platform === 'darwin' && /^\/Volumes\/[^/]+\/?$/.test(folderReal)) return 'a volume root';
-  for (const [name, p] of [
-    ['the home folder', home],
-    ['Desktop', path.join(home, 'Desktop')],
-    ['Downloads', path.join(home, 'Downloads')],
-  ] as const) {
-    if (same(p, folderReal) || same(realOrSelf(p), folderReal)) return name;
+  if (isVolumeRoot(folderReal, platform)) return 'a volume root';
+  const named: [string, string, string][] = [
+    ['the home folder', 'a folder that contains your home folder', home],
+    ['Desktop', 'a folder that contains Desktop', p.join(home, 'Desktop')],
+    ['Downloads', 'a folder that contains Downloads', p.join(home, 'Downloads')],
+  ];
+  if (opts.desktop) named.push(['Desktop', 'a folder that contains Desktop', opts.desktop]);
+  if (opts.downloads) named.push(['Downloads', 'a folder that contains Downloads', opts.downloads]);
+  for (const [name, , folder] of named) {
+    for (const f of new Set([folder, realOrSelf(folder)])) if (samePath(f, folderReal, ci, p)) return name;
+  }
+  for (const [, contains, folder] of named) {
+    for (const f of new Set([folder, realOrSelf(folder)])) if (inside(folderReal, f, ci, p)) return contains;
   }
   // The folder itself, or anything inside, a mail/messages/temporary folder; or a folder that contains one.
   for (const c of candidateFolders(opts)) {
     for (const f of new Set([c.folder, realOrSelf(c.folder)])) {
-      if (same(f, folderReal) || inside(f, folderReal, ci) || inside(folderReal, f, ci)) {
+      if (samePath(f, folderReal, ci, p) || inside(f, folderReal, ci, p) || inside(folderReal, f, ci, p)) {
         return c.kind === 'temporary' ? 'a temporary folder' : c.kind === 'mail' ? 'a mail attachment folder' : 'a Messages attachment folder';
       }
     }

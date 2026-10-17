@@ -3,8 +3,8 @@
 // core is imported by subpath so parse5 and acorn stay out of this bundle.
 //
 // Modes (process.argv `--bl-mode=`): `deck` (the visible view: overlay, key router, card, ink, link and focus
-// reports, slide adapter), `render` (offscreen render windows: the render agent only, no UI, no key router)
-// and `diagnostics` (the deck view of the Diagnostics window: `deck` plus DeckToMain.diag hooks).
+// reports, slide adapter, the views' hooks), `render` (offscreen render windows: the render agent only, no UI,
+// no key router) and `diagnostics` (the deck view of the Diagnostics window: `deck` plus DeckToMain.diag hooks).
 //
 // It talks to main only over ipcRenderer and exposes NOTHING to the page: no contextBridge, no globals in
 // the main world. Test builds (`--bl-test=1`) put ipcRenderer on the isolated world's globalThis as
@@ -12,11 +12,15 @@
 
 import { ipcRenderer, webFrame } from 'electron';
 import { DeckToMain, MainToDeck, type AppMode, type DeckInit, type MapUpdate, type RenderReply } from '@blueline/core/ipc';
+import { FilesDeckToMain, MainToDeckFiles } from '@blueline/core/ipc-files';
+import { MainToDeckViews } from '@blueline/core/ipc-views';
 import { parsePreloadArgs } from './env';
 import { KeyRouter, type KeyAction, type ShortcutAction, type TextFieldKind } from './key-router';
 import { InputGuard } from './input-guard';
 import { DeckUi } from './deck-ui';
+import { guardDeckFileDrops } from './drop-guard';
 import { RenderAgent } from './render-agent';
+import { ViewHooks } from './view-hooks';
 
 const env = parsePreloadArgs(process.argv);
 if (env.test) (globalThis as Record<string, unknown>).__blTestIpc = ipcRenderer;
@@ -35,17 +39,29 @@ interface RouterBridge {
 }
 
 let bridge: RouterBridge | null = null;
+let ui: DeckUi | null = null;
+let hooks: ViewHooks | null = null;
 
 // 6.2 / 9.1: the capture-phase keydown listener is registered first, synchronously at preload start, before
 // any page script runs, so it is the first keydown listener on window in either world.
 if (env.mode !== 'render') {
   new KeyRouter(window, {
-    appMode: () => bridge?.appMode() ?? 'read',
+    // While main replays the deck's own keys (an index deck's rail click, 6.9), the view routes keys as Read.
+    appMode: () => {
+      const real = bridge?.appMode() ?? 'read';
+      return hooks ? hooks.routerMode(real) : real;
+    },
     textFieldOf: (t) => bridge?.textFieldOf(t) ?? null,
     onAction: (a, e) => bridge?.onAction(a, e),
-    onDecision: (e, a, c) => bridge?.onDecision(e, a, c),
+    onDecision: (e, a, c) => {
+      bridge?.onDecision(e, a, c);
+      hooks?.onKeyDecision(e, a);
+    },
     onDeckKey: (e) => bridge?.onDeckKey(e),
   }).install();
+  // 6.1, 9.1: a file dragged onto the deck view never reaches the page, and the view never navigates to it; main
+  // only hears that one was refused (no path, name or count), and says where to drop it.
+  guardDeckFileDrops(window, { onRefused: () => send(FilesDeckToMain.dropRefused) });
   // The input guard (input-guard.ts), right after the router so its key listeners never change the router's
   // decisions: the input-event family from the overlay (card typing, paste, dictation) is handled by the
   // overlay and stopped at window capture, before any page listener can read or cancel it.
@@ -53,6 +69,13 @@ if (env.mode !== 'render') {
     host: () => bridge?.overlayHost() ?? null,
     onOverlayEvent: (e) => bridge?.onOverlayEvent(e),
   }).install();
+  hooks = new ViewHooks(window, {
+    send,
+    executeJavaScript: (code) => webFrame.executeJavaScript(code),
+    ui: () => ui,
+    host: () => ui?.overlay.host ?? null,
+  });
+  hooks.install();
 }
 
 if (env.mode === 'render') {
@@ -64,14 +87,32 @@ if (env.mode === 'render') {
     void agent.handle(payload);
   });
 } else {
-  const ui = new DeckUi(document, window, { send, diagnostics: env.mode === 'diagnostics' });
-  bridge = ui;
-  ipcRenderer.on(MainToDeck.init, (_e, p: unknown) => ui.applyInit(p as DeckInit));
-  ipcRenderer.on(MainToDeck.appMode, (_e, p: unknown) => ui.applyAppMode(p, 'main'));
-  ipcRenderer.on(MainToDeck.map, (_e, p: unknown) => ui.applyMap(p as MapUpdate));
-  ipcRenderer.on(MainToDeck.notes, (_e, p: unknown) => ui.applyNotes(p));
-  ipcRenderer.on(MainToDeck.chrome, (_e, p: unknown) => ui.applyChrome(p));
-  ipcRenderer.on(MainToDeck.closeCard, () => ui.closeCard());
+  const h = hooks!;
+  const deckUi = new DeckUi(document, window, {
+    // The slide watcher's reports also tell the view hooks that the design size may be known (6.9 Fit).
+    send: (channel, payload) => {
+      send(channel, payload);
+      if (channel === DeckToMain.slides) h.onSlides();
+    },
+    diagnostics: env.mode === 'diagnostics',
+  });
+  ui = deckUi;
+  bridge = deckUi;
+  ipcRenderer.on(MainToDeck.init, (_e, p: unknown) => {
+    deckUi.applyInit(p as DeckInit);
+    h.onInit();
+  });
+  ipcRenderer.on(MainToDeck.appMode, (_e, p: unknown) => deckUi.applyAppMode(p, 'main'));
+  ipcRenderer.on(MainToDeck.map, (_e, p: unknown) => deckUi.applyMap(p as MapUpdate));
+  ipcRenderer.on(MainToDeck.notes, (_e, p: unknown) => deckUi.applyNotes(p));
+  ipcRenderer.on(MainToDeck.chrome, (_e, p: unknown) => deckUi.applyChrome(p));
+  ipcRenderer.on(MainToDeck.closeCard, () => deckUi.closeCard());
+  // 6.6 Reload: the view state around a reload (files-lifecycle's channels), and 6.9's navigation.
+  ipcRenderer.on(MainToDeckFiles.captureViewState, (_e, p: unknown) => h.capture(p));
+  ipcRenderer.on(MainToDeckFiles.applyViewState, (_e, p: unknown) => h.apply(p));
+  ipcRenderer.on(MainToDeckViews.goto, (_e, p: unknown) => void h.goto(p));
+  ipcRenderer.on(MainToDeckViews.navReplay, (_e, p: unknown) => h.setReplay(p));
+  ipcRenderer.on(MainToDeckViews.pan, (_e, p: unknown) => h.setPan(p));
 }
 
 // Handshake: main answers with MainToDeck.init (deck and diagnostics) and then follows the app mode.

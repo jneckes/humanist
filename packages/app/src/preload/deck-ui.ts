@@ -2,6 +2,8 @@
 // link and focus reports, mode switching, and the diagnostics hooks. Built right after the key router.
 
 import { DeckToMain, type AppMode, type DeckInit, type FocusState, type MapUpdate, type SlideState } from '@blueline/core/ipc';
+import type { DeckBusy } from '@blueline/core/ipc-files';
+import type { SlideModel } from '@blueline/core/slides';
 import type { ClientMap, Note } from '@blueline/core/types';
 import { NoteCard } from './card';
 import {
@@ -201,6 +203,32 @@ export class DeckUi {
   closeCard(): void {
     this.notes.closeCard();
     this.reportFocus();
+  }
+
+  // ------------------------------------------------------------------------------------------- views (Phase 1)
+
+  /** Added by views: the slide model this view detected (9.4: kind, design size, slides), or null. */
+  slideModel(): SlideModel | null {
+    return this.slides.model;
+  }
+
+  /** Added by views (6.6 Reload): what holds a reload back. An active edit, and the open card's state. */
+  busyState(): DeckBusy {
+    const c = this.notes.cardState();
+    return { edit: this.activeEdit !== null, card: !c ? 'none' : c.dirty ? 'dirty' : 'open' };
+  }
+
+  /** Added by views (6.6 Reload): the open card's note and the text it shows, for the view state. */
+  cardDraft(): { noteId: string; draft: string } | null {
+    const c = this.notes.cardState();
+    return c && c.id ? { noteId: c.id, draft: c.text } : null;
+  }
+
+  /** Added by views (6.6 Reload): reopens the card a reload closed. */
+  restoreCard(noteId: string, draft: string): boolean {
+    const ok = this.notes.restoreCard(noteId, draft);
+    this.reportFocus();
+    return ok;
   }
 
   // ------------------------------------------------------------------------------------------- key router bridge

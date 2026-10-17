@@ -4,26 +4,30 @@
 //   blueline open deck.html [--protected]
 //   blueline map deck.html [--report] [--json] [--min-coverage 0.95]
 //   blueline check [--auto] [--json]
-//   blueline pdf | mcp | export | attach  later phases
+//   blueline pdf deck.html [-o out.pdf] [--protected] [--json]   (6.9 Save as PDF, Phase 1)
+//   blueline mcp | export | attach        later phases
 
 export type CliCommand =
   | { kind: 'open'; files: string[]; protected: boolean }
   | { kind: 'map'; deck: string; report: boolean; json: boolean; minCoverage: number | null; reducedMotion: boolean }
   | { kind: 'check'; auto: boolean; json: boolean }
+  | { kind: 'pdf'; file: string; out: string | null; protected: boolean; json: boolean }
   | { kind: 'later'; name: string; phase: number }
   | { kind: 'help' }
   | { kind: 'version' }
   | { kind: 'usage'; message: string };
 
-/** Commands of later phases (6.1, section 10): pdf with the reader, export with Review, mcp with the agent loop, attach with voices. */
-export const LATER: Readonly<Record<string, number>> = Object.freeze({ pdf: 1, export: 3, mcp: 4, attach: 5 });
+/** Commands of later phases (6.1, section 10): export with Review, mcp with the agent loop, attach with voices. */
+export const LATER: Readonly<Record<string, number>> = Object.freeze({ export: 3, mcp: 4, attach: 5 });
 
 export const USAGE = `Usage:
   blueline <file.html>…                 open files in Blueline (same as: blueline open)
   blueline open <file.html>… [--protected]
   blueline map <deck.html> [--report] [--json] [--min-coverage 0.95] [--reduced-motion]
   blueline check [--auto] [--json]      open the Diagnostics window
-  blueline pdf | export | mcp | attach  arrive in later phases
+  blueline pdf <file.html> [-o <out.pdf>] [--protected] [--json]
+                                        save as PDF without opening a window
+  blueline export | mcp | attach        arrive in later phases
 
 Options:
   --protected          open in Protected view (network and editing off)
@@ -32,8 +36,14 @@ Options:
   --min-coverage N     map: exit 1 when coverage of the wording is below N (0 to 1)
   --reduced-motion     map: map the deck as prefers-reduced-motion: reduce shows it
   --auto               check: run only the automatic checks
+  -o, --out FILE       pdf: where to write the PDF (default: next to the file, as <name>.pdf)
   -h, --help           show this help
-  -v, --version        show the version`;
+  -v, --version        show the version
+
+Examples:
+  blueline deck.html
+  blueline pdf deck.html -o handout.pdf
+  blueline map deck.html --report`;
 
 function usage(message: string): CliCommand {
   return { kind: 'usage', message };
@@ -49,6 +59,7 @@ export function parseCli(argv: readonly string[]): CliCommand {
   if (first === 'open') return parseOpen(rest);
   if (first === 'map') return parseMap(rest);
   if (first === 'check') return parseCheck(rest);
+  if (first === 'pdf') return parsePdf(rest);
   // The bare form: `blueline deck.html` is `blueline open deck.html`.
   return parseOpen(argv);
 }
@@ -109,6 +120,35 @@ function parseCheck(args: readonly string[]): CliCommand {
     else return usage(`Unknown argument ${a} for check.`);
   }
   return { kind: 'check', auto, json };
+}
+
+/** `pdf <file> [-o out.pdf] [--protected] [--json]` (6.1; 6.9 Save as PDF). */
+function parsePdf(args: readonly string[]): CliCommand {
+  let file: string | null = null;
+  let out: string | null = null;
+  let prot = false;
+  let json = false;
+  let rawFiles = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (rawFiles || !a.startsWith('-') || a === '-') {
+      if (file !== null) return usage('pdf takes one file.');
+      file = a;
+    } else if (a === '--') rawFiles = true;
+    else if (a === '--protected') prot = true;
+    else if (a === '--json') json = true;
+    else if (a === '-o' || a === '--out') {
+      const v = args[++i];
+      if (v === undefined || v.length === 0) return usage(`${a} takes the PDF's file name.`);
+      out = v;
+    } else if (a.startsWith('--out=') || a.startsWith('-o=')) {
+      out = a.slice(a.indexOf('=') + 1);
+      if (out.length === 0) return usage("--out takes the PDF's file name.");
+    } else return usage(`Unknown option ${a} for pdf.`);
+  }
+  if (file === null || file.length === 0 || file.includes('\0')) return usage('Give the file to save as PDF: blueline pdf deck.html -o deck.pdf');
+  if (out !== null && out.includes('\0')) return usage('Not a file path.');
+  return { kind: 'pdf', file, out, protected: prot, json };
 }
 
 /** base64url JSON, as the app's --bl-args expects (packages/app/src/main/args.ts decodeArgs). */

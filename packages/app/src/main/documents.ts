@@ -167,6 +167,35 @@ export interface DocumentInit {
   trust: TrustDecision;
   /** 6.8 Received: first opened Protected, or in a mail, messages or temporary folder. */
   received: boolean;
+  /**
+   * Added by views: the internet marker could not be read (6.10: such a file opens Protected). Nothing is
+   * remembered in trust.json for it, since there is no marker to remember a decision against (folders.ts).
+   */
+  markerUncertain?: boolean;
+}
+
+/**
+ * Added by views: what opening a file decided beyond its trust state (6.10 When it applies, What changes;
+ * folders.ts resolveOpenTrust): the switches remembered in trust.json for this file and marker, and 6.8's
+ * received state.
+ */
+export interface OpenDecision {
+  trust: TrustDecision;
+  /** Turn **Allow network** on at open (remembered for this file and marker). */
+  allowNetwork: boolean;
+  /** Turn **Enable editing** on at open (Protected, remembered for this file and marker). */
+  editing: boolean;
+  /** 6.8 Received when trust.json remembers it; null: first opened Protected, or the location rule decides. */
+  received: boolean | null;
+  markerUncertain: boolean;
+}
+
+/** Decodes, maps and hashes a document's bytes (9.2 rule 1: a deck that is not UTF-8 is mapped from latin1). */
+function contentOf(bytes: Uint8Array): { decoded: DecodedDeck; version: string; map: DeckMap; contentHash: string; title: string } {
+  const version = sha256Hex(bytes);
+  const decoded = decodeDeck(bytes);
+  const map = buildMap(decoded.src, { version, utf8: decoded.utf8 });
+  return { decoded, version, map, contentHash: contentHashOf(decoded, map, version), title: extractTitle(decoded.src) };
 }
 
 /** One open document. Implements the protocol handler's ServedDoc. */
@@ -178,16 +207,11 @@ export class BlDocument implements ServedDoc {
   readonly fileName: string;
   readonly fileKey: string;
   readonly partition: string;
-  readonly decoded: DecodedDeck;
-  /** sha256 hex of the bytes read at open: the map version (9.2 Write protocol step 1). */
-  readonly version: string;
-  readonly map: DeckMap;
-  /** sha256 of the file without its notes block (Session.deck.sha256). */
-  readonly contentHash: string;
-  readonly title: string;
   readonly trustReason: string | null;
   readonly marker: string | null;
   readonly received: boolean;
+  /** Added by views: the marker could not be read at open (DocumentInit.markerUncertain). */
+  readonly markerUncertain: boolean;
   /**
    * The hash of the file as Blueline last knew it (9.2 Watcher step 3, Write protocol step 6). Phase 1/2: the
    * watcher compares every settled change against it; the write queue's afterWrite sets it.
@@ -200,6 +224,10 @@ export class BlDocument implements ServedDoc {
   private readonly servedCache = new Map<boolean, Uint8Array>();
   private bytesRead: Uint8Array;
   private released = false;
+  /** The content (bytes read, their decoding, map and hashes): replaced by replaceContent on an external change. */
+  private content: { decoded: DecodedDeck; version: string; map: DeckMap; contentHash: string; title: string };
+  /** The file is gone from its path (9.2 Watcher): the window keeps the last version, read-only. */
+  private goneNow = false;
 
   constructor(init: DocumentInit) {
     if (!isDocumentId(init.docId)) throw new Error('invalid docId');
@@ -210,25 +238,68 @@ export class BlDocument implements ServedDoc {
     this.fileName = path.basename(init.realpath);
     this.fileKey = fileKeyOf(init.realpath);
     this.bytesRead = init.bytes;
-    this.version = sha256Hex(init.bytes);
-    this.knownHash = this.version;
-    this.decoded = decodeDeck(init.bytes);
-    // 9.2 rule 1: a deck that is not UTF-8 is mapped from its latin1 decoding with no stamps and no runs.
-    this.map = buildMap(this.decoded.src, { version: this.version, utf8: this.decoded.utf8 });
-    this.contentHash = contentHashOf(this.decoded, this.map, this.version);
-    this.title = extractTitle(this.decoded.src);
+    this.content = contentOf(init.bytes);
+    this.knownHash = this.content.version;
     this.trustState = init.trust.trust;
     this.trustReason = init.trust.reason;
     this.marker = init.trust.marker;
     this.received = init.received;
+    this.markerUncertain = init.markerUncertain === true;
     // 6.10: editing is on for a Trusted file, and off in Protected view until Enable editing.
     this.editing = this.trustState === 'trusted';
     this.partition = partitionFor(this.trustState, this.docId, this.fileKey);
   }
 
-  /** The bytes read at open (their sha256 is `version`); empty once the window closed (release). */
+  /** The bytes read at open, or at the last external change (their sha256 is `version`); empty once released. */
   get bytes(): Uint8Array {
     return this.bytesRead;
+  }
+
+  get decoded(): DecodedDeck {
+    return this.content.decoded;
+  }
+
+  /** sha256 hex of the bytes shown: the map version (9.2 Write protocol step 1). */
+  get version(): string {
+    return this.content.version;
+  }
+
+  get map(): DeckMap {
+    return this.content.map;
+  }
+
+  /** sha256 of the file without its notes block (Session.deck.sha256). */
+  get contentHash(): string {
+    return this.content.contentHash;
+  }
+
+  get title(): string {
+    return this.content.title;
+  }
+
+  /**
+   * Added by views: the file changed on disk, by someone else (9.2 Watcher step 3: "rebuild the map … and tell
+   * the deck view to reload, with the new version"). The document now serves `bytes`: their decoding, map,
+   * hashes and served copies replace the old ones, and knownHash is the new version. The docId, partition and
+   * trust stay: a reload shows the new version in the same window (6.6). Transforming locked spans is Phase 4.
+   * Throws (and keeps the old content) when the new bytes cannot be mapped.
+   */
+  replaceContent(bytes: Uint8Array): void {
+    if (this.released) throw new Error(`${this.fileName} was closed`);
+    const next = contentOf(bytes);
+    this.content = next;
+    this.bytesRead = bytes;
+    this.servedCache.clear();
+    this.knownHash = next.version;
+  }
+
+  /** 9.2 Watcher: the file is gone from its path (true), or back (false). */
+  setGone(gone: boolean): void {
+    this.goneNow = gone;
+  }
+
+  get gone(): boolean {
+    return this.goneNow;
   }
 
   /** How many served copies are cached (one per Protected/Trusted variant; tests). */
@@ -272,9 +343,9 @@ export class BlDocument implements ServedDoc {
     return this.decoded.utf8 ? null : notUtf8Reason(this.fileName);
   }
 
-  /** Editing is allowed and possible: the overlay may offer it (DeckInit.editingAllowed). */
+  /** Editing is allowed and possible: the overlay may offer it (DeckInit.editingAllowed). A gone file is read-only. */
   editable(): boolean {
-    return this.editing && this.decoded.utf8;
+    return this.editing && this.decoded.utf8 && !this.goneNow;
   }
 
   /** The Protected network policy applies: served with connect-src 'none' and without resource hints (9.9). */
@@ -301,6 +372,7 @@ export class BlDocument implements ServedDoc {
       refuse: () => {
         if (!editCapability()) return 'Edit is not available in this version of Blueline';
         if (this.readOnlyReason) return this.readOnlyReason;
+        if (this.goneNow) return `${this.fileName} was moved or deleted`;
         if (!this.editing) return `${this.fileName} is in Protected view: enable editing first`;
         return null;
       },
@@ -341,6 +413,12 @@ export interface LoadOptions {
    * Trusted file, so its origin and storage are kept per file (6.10). Default: a fresh random docId.
    */
   docIdFor?: (trust: TrustState, fileKey: string) => Promise<string>;
+  /**
+   * Added by views: the app's 6.10 decision (folders.ts resolveOpenTrust: trusted and untrusted folders, and the
+   * switches trust.json remembers for this file and marker). Without it, decideTrust above (marker or request
+   * only): map, the probe and Diagnostics open files that way.
+   */
+  decideTrust?: (realpath: string, requestedProtected: boolean) => Promise<OpenDecision>;
 }
 
 /**
@@ -370,12 +448,26 @@ export async function loadDocument(p: string, opts: LoadOptions): Promise<BlDocu
     if (code === 'EACCES' || code === 'EPERM') throw new OpenError(`${fileName} cannot be read (permission denied)`);
     throw new OpenError(`${fileName} could not be read`);
   }
-  const trust = await decideTrust(realpath, opts.protectedRequested, opts.readMarker);
   const untrusted = opts.untrustedLocation ?? ((r: string) => isUntrustedLocation(r) !== null);
-  const received = trust.trust === 'protected' || untrusted(realpath);
+  let decision: OpenDecision;
+  if (opts.decideTrust) decision = await opts.decideTrust(realpath, opts.protectedRequested);
+  else {
+    const t = await decideTrust(realpath, opts.protectedRequested, opts.readMarker);
+    decision = { trust: t, allowNetwork: false, editing: false, received: null, markerUncertain: false };
+  }
+  const trust = decision.trust;
+  // 6.8: received when trust.json remembers it so, else when it opens Protected or sits in a mail, messages or
+  // temporary folder.
+  const received = decision.received ?? (trust.trust === 'protected' || untrusted(realpath));
   const docId = opts.docId ?? (opts.docIdFor ? await opts.docIdFor(trust.trust, fileKeyOf(realpath)) : newDocumentId());
   try {
-    return new BlDocument({ docId, path: abs, realpath, bytes, trust, received });
+    const doc = new BlDocument({ docId, path: abs, realpath, bytes, trust, received, markerUncertain: decision.markerUncertain });
+    // 6.10: a remembered Allow network and Enable editing apply at once (only in Protected view; Trusted has both).
+    if (trust.trust === 'protected') {
+      if (decision.allowNetwork) doc.allowNetwork();
+      if (decision.editing) doc.enableEditing();
+    }
+    return doc;
   } catch (e) {
     // The mapper never throws on HTML; if it ever does, refuse to open rather than serve an unstamped copy.
     throw new OpenError(`${fileName} could not be opened: ${e instanceof Error ? e.message : String(e)}`);

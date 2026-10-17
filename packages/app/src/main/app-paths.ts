@@ -44,3 +44,12 @@ export function servedDirs(distDir: string, isPackaged: boolean, platform: NodeJ
     diagnosticsDeck: p.join(dist, 'assets', 'diagnostics-deck', 'index.html'),
   };
 }
+
+/**
+ * dist/assets (app.asar.unpacked when packaged): bundled files main reads rather than serves, such as the sample
+ * deck first run copies into app data (6.0 First run). Added by views.
+ */
+export function assetsDir(distDir: string, isPackaged: boolean, platform: NodeJS.Platform = process.platform): string {
+  const p = platform === 'win32' ? path.win32 : path.posix;
+  return p.join(unpackedPath(distDir, isPackaged, platform), 'assets');
+}

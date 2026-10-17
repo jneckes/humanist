@@ -11,7 +11,7 @@
 // - The deck preload in `--bl-mode=render` (no UI, no key router). Main talks to it over
 //   MainToDeck.renderRequest / DeckToMain.renderReply, and registers the webContents with the IPC guard as
 //   kind `render`, so replies are accepted only from its main frame at `blueline://<docId>`.
-// - At most 2 render windows per document (RenderPool).
+// - At most 2 render windows per document (DocumentRenderer, below).
 //
 // Keys (6.7 Index replay) are sent as trusted input with sendInputEvent after webContents.focus(), using
 // Electron Accelerator names. Whether a key reached the deck is read from the render agent's keydown counter
@@ -20,10 +20,14 @@
 // KeyboardEvent, and a deck that ignores untrusted keys gets navOk: false. A trusted press that moved the deck
 // never switches later presses to the fallback, and every load starts over (review finding 33).
 //
+// Phase 1 (render products: thumbnails, the slide index, Find's text, PDF pages and Print) renders through a
+// DocumentRenderer per open document (at the end of this module): at most two render windows, each sized to
+// its job's viewport, with reduced motion; the stored Session.deckNav keys are pressed (acceleratorKeyFor,
+// ArrowDown and ArrowUp included), and a render waits until the document has had no write for 300 ms (6.7
+// step 1, noteDocumentWrite). The products themselves are slide-index.ts, thumbnails.ts, find.ts, pdf.ts and
+// print.ts.
+//
 // Later phases build on this module:
-// - Phase 1: a RenderPool per open document for thumbnails, PDF pages and Find's text index, with the
-//   viewport the visible view last reported and the stored Session.deckNav keys (acceleratorKeyFor); a
-//   render waits until the document has had no write for 300 ms (6.7 step 1).
 // - Phase 3: note screenshots capture the visible deck view itself (6.7 Note screenshots), not a render view.
 // - Phase 4: agent renders replay `state.click` after slide.nav (6.7 step 2), measure Fit against the cached
 //   pass-snapshot render served in place of the file (step 4), and return {fit, navOk} (step 5).
@@ -53,6 +57,7 @@ import { TEXTS_MAX_CHARS, TEXTS_MAX_NODES } from '@blueline/core/dom-walk';
 import type { DomTextNode } from '@blueline/core/types';
 import { attachDeckView } from './channels';
 import { validateDetectResult } from './ipc-guard';
+import { emulatedMediaCommand } from './motion';
 import { deckUrl } from './protocol';
 import { installDeckWebContentsPolicy } from './trust-hooks';
 
@@ -83,15 +88,23 @@ const WALK_NODES_MAX = 200_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const COLLECT_TIMEOUT_MS = 60_000;
 const POLL_MS = 40;
+/** How often waitScripted reads the time since the page's last DOM mutation. */
+const SCRIPTED_POLL_MS = 100;
 
-/** The navigation keys the render service presses (DOM `key` values, as Session.deckNav stores them). */
-export type NavKey = 'ArrowRight' | 'ArrowLeft' | 'PageDown' | 'PageUp' | ' ';
+/** The keys 6.7 Index replay names (DOM `key` values); the render agent's synthetic fallback knows these. */
+export type AgentNavKey = 'ArrowRight' | 'ArrowLeft' | 'PageDown' | 'PageUp' | ' ';
+/**
+ * The navigation keys the render service presses (DOM `key` values, as Session.deckNav stores them). The
+ * visible view also records ArrowDown and ArrowUp (ipc-guard DECK_NAV_KEYS), so Index replay presses them too
+ * (PHASE0-FINDINGS Still open, "Index replay keys").
+ */
+export type NavKey = AgentNavKey | 'ArrowDown' | 'ArrowUp';
 
 /**
  * 6.7 Index replay: sendInputEvent's `keyCode` takes Electron Accelerator key names, not DOM `key` values:
  * ArrowRight → Right, ArrowLeft → Left, PageDown → PageDown, PageUp → PageUp, the space bar → Space.
  */
-export const ACCELERATOR_KEY: Readonly<Record<NavKey, string>> = Object.freeze({
+export const ACCELERATOR_KEY: Readonly<Record<AgentNavKey, string>> = Object.freeze({
   ArrowRight: 'Right',
   ArrowLeft: 'Left',
   PageDown: 'PageDown',
@@ -99,14 +112,42 @@ export const ACCELERATOR_KEY: Readonly<Record<NavKey, string>> = Object.freeze({
   ' ': 'Space',
 });
 
+/** The vertical arrows, which Session.deckNav may hold since Phase 0's review: ArrowDown → Down, ArrowUp → Up. */
+export const VERTICAL_ACCELERATOR_KEY: Readonly<Record<'ArrowDown' | 'ArrowUp', string>> = Object.freeze({
+  ArrowDown: 'Down',
+  ArrowUp: 'Up',
+});
+
+function ownKey<T extends object>(o: T, k: string): k is Extract<keyof T, string> {
+  return Object.prototype.hasOwnProperty.call(o, k);
+}
+
 /** The Accelerator name for a stored deckNav key (also accepts 'Space' and 'Spacebar' for the space bar), or null. */
 export function acceleratorKeyFor(domKey: string): string | null {
   if (domKey === 'Space' || domKey === 'Spacebar') return ACCELERATOR_KEY[' '];
-  return Object.prototype.hasOwnProperty.call(ACCELERATOR_KEY, domKey) ? ACCELERATOR_KEY[domKey as NavKey] : null;
+  if (ownKey(ACCELERATOR_KEY, domKey)) return ACCELERATOR_KEY[domKey];
+  if (ownKey(VERTICAL_ACCELERATOR_KEY, domKey)) return VERTICAL_ACCELERATOR_KEY[domKey];
+  return null;
 }
 
 export function isNavKey(k: string): k is NavKey {
-  return Object.prototype.hasOwnProperty.call(ACCELERATOR_KEY, k);
+  return ownKey(ACCELERATOR_KEY, k) || ownKey(VERTICAL_ACCELERATOR_KEY, k);
+}
+
+/** A key the render agent can also dispatch as a synthetic KeyboardEvent (RenderCmd key). */
+export function isAgentNavKey(k: string): k is AgentNavKey {
+  return ownKey(ACCELERATOR_KEY, k);
+}
+
+/**
+ * The NavKey for a stored Session.deckNav value ('Space' and 'Spacebar' mean the space bar), or null when the
+ * render service cannot press it. Session.deckNav is the visible view's record (ipc-guard checked it against
+ * DECK_NAV_KEYS); anything else falls back to the 6.7 defaults.
+ */
+export function navKeyFor(domKey: string | null | undefined): NavKey | null {
+  if (typeof domKey !== 'string') return null;
+  if (domKey === 'Space' || domKey === 'Spacebar') return ' ';
+  return isNavKey(domKey) ? domKey : null;
 }
 
 /** The pixel size capturePage must return for `rect` (CSS px) at the viewport's scale (6.7: 1600×900 at 2x is 3200×1800). */
@@ -213,6 +254,23 @@ function keyList(v: unknown, what: string): number[] {
 }
 
 export const resultCheck = {
+  /**
+   * `detect`: ipc-guard's validateDetectResult, plus the per-slide hashes and ids it leaves out (SlideRef.nav
+   * of a hash-routed deck, 9.4 step 2; the render products need them). Each list is kept only when it has
+   * one entry per slide.
+   */
+  detect(v: unknown): DetectResult {
+    const out = fromValidator(validateDetectResult(v));
+    const r = rec(v, 'detect');
+    // Never an error: a list with one bad entry is dropped whole (a hash deck then navigates by keys).
+    if (Array.isArray(r.hashes) && r.hashes.length === out.count && r.hashes.every((h) => typeof h === 'string' && h.startsWith('#') && h.length <= 2048)) {
+      out.hashes = (r.hashes as string[]).slice();
+    }
+    if (Array.isArray(r.ids) && r.ids.length === out.count && r.ids.every((id) => id === null || (typeof id === 'string' && id.length <= 1024))) {
+      out.ids = (r.ids as (string | null)[]).slice();
+    }
+    return out;
+  },
   current(v: unknown): CurrentResult {
     const r = rec(v, 'current');
     const rv = r.reveal;
@@ -315,10 +373,81 @@ export class RenderError extends Error {
   override readonly name = 'RenderError';
 }
 
-export interface RenderTarget {
+/** What RenderView.load serves: blueline://<docId>/<fileName>, through the partition's protocol handler. */
+export interface LoadTarget {
   docId: string;
   /** Basename served at blueline://<docId>/<fileName>. */
   fileName: string;
+}
+
+/**
+ * What a background render needs from a document (docs/PHASE1-PLAN.md render-products): its partition and
+ * docId (9.1: the render views use the document's partition, protocol, preload and trust policy), the file it
+ * serves, its version (the cache key), its trust policy, the reduced-motion choice and the viewport the
+ * visible view last reported. renderTargetFor builds one from a BlDocument.
+ */
+export interface RenderTarget extends LoadTarget {
+  partition: string;
+  /** realpath of the document's folder (the per-view policy's local-link rule). */
+  folderReal: string;
+  /** realpath of the document (derived files keep its marker, 9.9). */
+  realpath: string;
+  /** 9.7: first 16 hex of sha256(realpath); thumbnails and the index cache live under files/<fileKey>/thumbs/. */
+  fileKey: string;
+  /** sha256 hex of the bytes the document is served from (BlDocument.version). */
+  version: string;
+  /** The `<title>` as read from the file (BlDocument.title); the rendered document.title wins when it has one. */
+  title: string;
+  /** The internet marker the document opened with (BlDocument.marker), for derived files (9.9). */
+  marker: string | null;
+  isProtected(): boolean;
+  networkOpen(): boolean;
+  /** Background renders use reduced motion, so a still image shows a slide's final frame (Josh, 2026-10-17). */
+  reducedMotion: boolean;
+  /**
+   * The viewport the visible view last reported (6.7 step 1), for renders of what the user sees (agent renders,
+   * Phase 4). The render products render at the 6.9 design size instead (decks: what Fit shows; documents and
+   * the index walk: 1600×900), at 2x.
+   */
+  viewport?: Viewport | null;
+  /** Session.deckNav: the keys the visible view saw move this deck (6.7 Index replay). */
+  deckNav?: { forward?: string; back?: string } | null;
+}
+
+/** The parts of a BlDocument a RenderTarget reads (documents.ts; kept structural so tests can pass fakes). */
+export interface RenderableDocument extends LoadTarget {
+  partition: string;
+  folderReal: string;
+  realpath: string;
+  fileKey: string;
+  version: string;
+  title: string;
+  marker: string | null;
+  trust(): 'protected' | 'trusted';
+  networkAllowed(): boolean;
+}
+
+/** A RenderTarget for a document, with background renders' reduced motion (decision 1, Josh 2026-10-17). */
+export function renderTargetFor(
+  doc: RenderableDocument,
+  opts: { viewport?: Viewport | null; deckNav?: { forward?: string; back?: string } | null; reducedMotion?: boolean } = {},
+): RenderTarget {
+  return {
+    docId: doc.docId,
+    fileName: doc.fileName,
+    partition: doc.partition,
+    folderReal: doc.folderReal,
+    realpath: doc.realpath,
+    fileKey: doc.fileKey,
+    version: doc.version,
+    title: doc.title,
+    marker: doc.marker,
+    isProtected: () => doc.trust() === 'protected',
+    networkOpen: () => doc.trust() === 'trusted' || doc.networkAllowed(),
+    reducedMotion: opts.reducedMotion ?? true,
+    viewport: opts.viewport ?? null,
+    deckNav: opts.deckNav ?? null,
+  };
 }
 
 export interface RenderViewOptions {
@@ -334,6 +463,12 @@ export interface RenderViewOptions {
   log?(msg: string): void;
   /** Development builds may open devtools on a render view. Default false. */
   devTools?: boolean;
+  /**
+   * Emulate `prefers-reduced-motion: reduce` on every load (background renders, Josh's decision 1 of
+   * 2026-10-17), through the view's own debugger as motion.ts does for the deck view. Default false
+   * (`blueline map` sets the Chromium switch instead).
+   */
+  reducedMotion?: boolean;
 }
 
 export interface ConsoleError {
@@ -403,10 +538,26 @@ export class RenderView {
   readonly win: BrowserWindow;
   readonly wc: WebContents;
   readonly viewport: Viewport;
-  private target: RenderTarget | null = null;
+  private target: LoadTarget | null = null;
+  /** Reduced motion is emulated on this view (it lasts while the debugger stays attached, across loads). */
+  private motionReduced = false;
   private registeredDocId: string | null = null;
   private nextReq = 1;
   private readonly pending = new Map<number, Pending>();
+  /**
+   * Rejects when the view is closed or destroyed. Calls into Chromium that have no timeout of their own
+   * (capturePage, printToPDF, loadURL) race it, so a job that disposeRenderer cut off settles, and frees what
+   * its closures hold, instead of waiting forever on a destroyed webContents (the views item saw a closed
+   * window's walk keep its document in memory). The exit-gate harness borrows the probe methods for a plain
+   * window and gives them `closed` and `closing` of their own (test/parity/harness/plain-view.ts).
+   */
+  private readonly closed: Promise<never>;
+  private closeWith: (e: Error) => void = () => undefined;
+  /**
+   * Set by close() and 'destroyed'. From then on isDestroyed() is true, so nothing touches the webContents
+   * again (a navigation, a debugger attach or input sent to a closing webContents can take main down with it).
+   */
+  private closing = false;
   private errors: ConsoleError[] = [];
   private gone: string | null = null;
   /**
@@ -419,6 +570,11 @@ export class RenderView {
     const vp = opts.viewport ?? DEFAULT_VIEWPORT;
     if (!validViewport(vp)) throw new RenderError('invalid viewport');
     this.viewport = { ...vp };
+    this.closed = new Promise<never>((_resolve, reject) => {
+      this.closeWith = reject;
+    });
+    // Nobody may be racing it when it rejects.
+    this.closed.catch(() => undefined);
     this.win = new BrowserWindow({
       show: false,
       width: vp.w,
@@ -465,7 +621,12 @@ export class RenderView {
       this.gone = d.reason;
       this.rejectAll(new RenderError(`the render process is gone (${d.reason})`));
     });
-    this.wc.once('destroyed', () => this.rejectAll(new RenderError('the render view was closed')));
+    this.wc.once('destroyed', () => {
+      this.closing = true;
+      const e = new RenderError('the render view was closed');
+      this.rejectAll(e);
+      this.closeWith(e);
+    });
     // beforeunload cannot hold a render view open (installDeckWebContentsPolicy does the same per load).
     this.wc.on('will-prevent-unload', (e) => e.preventDefault());
   }
@@ -478,8 +639,13 @@ export class RenderView {
     this.opts.log?.(msg);
   }
 
-  get loaded(): RenderTarget | null {
+  get loaded(): LoadTarget | null {
     return this.target;
+  }
+
+  /** The view emulates prefers-reduced-motion: reduce (RenderViewOptions.reducedMotion took effect). */
+  get reducedMotion(): boolean {
+    return this.motionReduced;
   }
 
   /** Errors the page logged to the console since the current load started (section 10 Mutation probe step 4). */
@@ -488,7 +654,12 @@ export class RenderView {
   }
 
   isDestroyed(): boolean {
-    return this.win.isDestroyed() || this.wc.isDestroyed();
+    return this.closing || this.win.isDestroyed() || this.wc.isDestroyed();
+  }
+
+  /** `p`, or a rejection as soon as the view is closed (see `closed`). */
+  private whileOpen<T>(p: Promise<T>): Promise<T> {
+    return Promise.race([p, this.closed]);
   }
 
   private rejectAll(e: Error): void {
@@ -524,9 +695,49 @@ export class RenderView {
     p.resolve(r);
   }
 
-  /** Loads a document of this view's partition. Resolves when the main frame finished loading. */
-  async load(target: RenderTarget, timeoutMs = LOAD_TIMEOUT_MS): Promise<void> {
+  /**
+   * Sends one DevTools protocol command through this view's own debugger (main-process only: nothing is
+   * exposed to the page and no port is opened; motion.ts does the same for the deck view).
+   */
+  async cdp<T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs = 10_000): Promise<T> {
     if (this.isDestroyed()) throw new RenderError('the render view was closed');
+    if (!this.wc.debugger.isAttached()) this.wc.debugger.attach('1.3');
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return (await Promise.race([
+        this.whileOpen(this.wc.debugger.sendCommand(method, params)),
+        new Promise<never>((_r, reject) => {
+          timer = setTimeout(() => reject(new RenderError(`${method} timed out`)), timeoutMs);
+        }),
+      ])) as T;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Emulates prefers-reduced-motion: reduce before the first load. A fresh webContents refuses
+   * Emulation.setEmulatedMedia ("target closed while handling command"), so it first loads about:blank; the
+   * emulation then holds across the cross-origin load of the deck (Phase 1 finding). Best effort: when the
+   * debugger cannot attach (devtools open), the render keeps the deck's motion and says so.
+   */
+  private async applyMotion(): Promise<void> {
+    if (!this.opts.reducedMotion || this.motionReduced) return;
+    try {
+      if (!this.wc.getURL()) await this.whileOpen(this.wc.loadURL('about:blank'));
+      await this.cdp('Emulation.setEmulatedMedia', emulatedMediaCommand(true));
+      this.motionReduced = true;
+    } catch (e) {
+      if (this.isDestroyed()) throw new RenderCancelled('the render view was closed');
+      this.log(`render view: reduced motion not applied (${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
+
+  /** Loads a document of this view's partition. Resolves when the main frame finished loading. */
+  async load(target: LoadTarget, timeoutMs = LOAD_TIMEOUT_MS): Promise<void> {
+    if (this.isDestroyed()) throw new RenderError('the render view was closed');
+    await this.applyMotion();
+    if (this.isDestroyed()) throw new RenderCancelled('the render view was closed');
     this.attach(target.docId);
     // Replies from the previous document can never arrive now.
     this.rejectAll(new RenderError('the render view loaded another page'));
@@ -539,7 +750,7 @@ export class RenderView {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        this.wc.loadURL(url),
+        this.whileOpen(this.wc.loadURL(url)),
         new Promise<never>((_r, reject) => {
           timer = setTimeout(() => reject(new RenderError(`loading ${target.fileName} timed out`)), timeoutMs);
         }),
@@ -578,7 +789,7 @@ export class RenderView {
   }
 
   detect(): Promise<DetectResult> {
-    return this.checked({ type: 'detect' }, (v) => fromValidator(validateDetectResult(v)));
+    return this.checked({ type: 'detect' }, resultCheck.detect);
   }
 
   current(): Promise<CurrentResult> {
@@ -620,6 +831,8 @@ export class RenderView {
         new Promise<T>((resolve) => {
           timer = setTimeout(() => resolve(fallback), timeoutMs);
         }),
+        // A closed view answers at once, so a walk that disposeRenderer cut off ends now, not at the timeout.
+        this.closed.catch(() => fallback),
       ])) as T;
     } catch {
       return fallback;
@@ -724,7 +937,9 @@ export class RenderView {
     const from = settleMs === null ? (await this.current()).current : await this.currentSlide();
     const before = this.trustedKeys === false ? null : await this.trustedKeydowns();
     if (this.trustedKeys !== false) {
-      const keyCode = ACCELERATOR_KEY[key];
+      const keyCode = acceleratorKeyFor(key);
+      if (keyCode === null) throw new RenderError(`not a navigation key: ${JSON.stringify(key).slice(0, 20)}`);
+      if (this.isDestroyed()) throw new RenderCancelled('the render view was closed');
       this.wc.focus();
       this.wc.sendInputEvent({ type: 'keyDown', keyCode });
       this.wc.sendInputEvent({ type: 'keyUp', keyCode });
@@ -741,6 +956,9 @@ export class RenderView {
       if (delivered !== false) return { key, from, to, moved: false, via: 'input', delivered, navOk: false };
       this.log('render view: trusted keys do not reach this offscreen deck; using synthetic keys');
     }
+    // The agent's synthetic fallback knows the 6.7 keys only (RenderCmd key): a deck that moves on the
+    // vertical arrows alone and refuses trusted input cannot be replayed.
+    if (!isAgentNavKey(key)) return { key, from, to: from, moved: false, via: 'synthetic', delivered: false, navOk: false };
     // The agent waits up to 1 s for the slide to change after its synthetic key.
     await this.checked({ type: 'key', key }, resultCheck.key, NAV_WAIT_MS + REQUEST_TIMEOUT_MS);
     const to = await this.waitForChange(from, 0, settleMs);
@@ -753,7 +971,7 @@ export class RenderView {
    */
   async capture(rect?: Rectangle): Promise<CaptureResult> {
     if (this.isDestroyed()) throw new RenderError('the render view was closed');
-    const image = await this.wc.capturePage(rect, { stayHidden: true });
+    const image = await this.whileOpen(this.wc.capturePage(rect, { stayHidden: true }));
     const size = image.getSize();
     const expected = expectedCaptureSize(this.viewport, rect);
     const sizeOk = size.width === expected.width && size.height === expected.height;
@@ -761,11 +979,286 @@ export class RenderView {
     return { image, width: size.width, height: size.height, expected, sizeOk, empty: image.isEmpty() };
   }
 
+  // ----------------------------------------------------------------------------------- render products
+  // Read-only probes in main's own isolated world (RENDER_WORLD_ID), as waitStable does: the page sees none
+  // of them, and only numbers or JSON-encoded strings are ever put into the code.
+
+  /** The rendered document.title (whitespace collapsed, as the HTML spec's getter does), or ''. */
+  async documentTitle(): Promise<string> {
+    const r = await this.inProbeWorld<unknown>('(function(){var t=document.title;return typeof t==="string"?t.slice(0,4096):""})()', 2000, '');
+    return typeof r === 'string' ? r : '';
+  }
+
+  /**
+   * 6.9 Save as PDF / Print: whether the deck preload mounted its overlay here. Render mode has no UI (6.7),
+   * so this is false on every render view; PDFs and prints refuse a view where it is not.
+   */
+  async overlayMounted(): Promise<boolean> {
+    const r = await this.inProbeWorld<unknown>('(function(){return !!document.querySelector("blueline-overlay")})()', 2000, true);
+    return r !== false;
+  }
+
+  /**
+   * 6.7 step 3 for a render that goes on to other slides: fonts, two frames and finite animations as
+   * waitStable, then pauses what still runs (infinite animations) without the agent's pause sheet, which
+   * would also freeze the next slide's entrance at its first frame. resumeAnimations undoes it.
+   */
+  async pauseAnimations(): Promise<number> {
+    const r = await this.inProbeWorld<unknown>(
+      '(function(){var w=window,n=0;w.__blPaused=[];try{document.getAnimations().forEach(function(a){if(a.playState==="running"){a.pause();w.__blPaused.push(a);n++}})}catch(e){}return n})()',
+      2000,
+      0,
+    );
+    return typeof r === 'number' ? r : 0;
+  }
+
+  /**
+   * 6.7 step 3 for a still image of a slide (thumbnails, raster PDF pages, Print): waits until the page has
+   * shown what its scripts reveal after the slide arrives. Fonts, frames and finite animations (waitStable) do
+   * not cover a build a script starts on a timer (a `setTimeout` reveal, a typewriter), so a capture taken at
+   * once missed it (docs/PHASE1-RESULTS.md, D5 and test/parity/fixtures/delayed-build.html). It stays at least
+   * `minMs` on the slide, then until the DOM has had no mutation for `quietMs` (a MutationObserver in main's
+   * own isolated world: the page sees nothing), and never longer than `maxMs`: a deck that writes a clock or
+   * a ticker forever is captured at the cap. Resolves with how long it waited and whether the DOM went quiet.
+   */
+  async waitScripted(opts: { minMs: number; quietMs: number; maxMs: number }, signal: AbortSignal | null = null): Promise<{ waitedMs: number; quiet: boolean }> {
+    const start = Date.now();
+    const installed = await this.inProbeWorld<unknown>(
+      '(function(){var w=window;if(!w.__blMut){var m={last:performance.now()};w.__blMut=m;try{new MutationObserver(function(){m.last=performance.now()}).observe(document,{subtree:true,childList:true,attributes:true,characterData:true})}catch(e){}}return true})()',
+      2000,
+      false,
+    );
+    for (;;) {
+      throwIfCancelled(signal);
+      const waited = Date.now() - start;
+      if (waited >= opts.maxMs || this.isDestroyed()) return { waitedMs: waited, quiet: false };
+      if (waited >= opts.minMs) {
+        const since = installed === true ? await this.inProbeWorld<unknown>('(function(){var m=window.__blMut;return m?performance.now()-m.last:-1})()', 2000, -1) : opts.quietMs;
+        if (typeof since === 'number' && since >= opts.quietMs) return { waitedMs: Date.now() - start, quiet: true };
+      }
+      await new Promise((r) => setTimeout(r, SCRIPTED_POLL_MS));
+    }
+  }
+
+  async resumeAnimations(): Promise<void> {
+    await this.inProbeWorld('(function(){var w=window;(w.__blPaused||[]).forEach(function(a){try{a.play()}catch(e){}});w.__blPaused=[];return true})()', 2000, false);
+  }
+
+  /**
+   * Shows every fragment of reveal.js slide (h, v): `Reveal.slide(h, v, f)` with an f past the last fragment,
+   * so a still render shows the slide's final state. The page's world is called with integers only (9.1).
+   */
+  async showRevealFragments(h: number, v: number): Promise<boolean> {
+    if (!Number.isInteger(h) || !Number.isInteger(v) || h < 0 || v < 0 || this.isDestroyed()) return false;
+    const code = `(function(){try{var R=window.Reveal;if(!R||typeof R.slide!=="function")return false;R.slide(${h},${v},${REVEAL_ALL_FRAGMENTS});return true}catch(e){return false}})()`;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const r = await Promise.race([
+        this.wc.executeJavaScript(code),
+        new Promise<boolean>((resolve) => {
+          timer = setTimeout(() => resolve(false), 2000);
+        }),
+        this.closed.catch(() => false),
+      ]);
+      return r === true;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * A fingerprint of the text on screen: every non-blank text node that renders inside the viewport, with no
+   * transparent or hidden ancestor, counted and hashed with its text. A key press that leaves the slide but
+   * changes this showed a build step (F25: such a press does not use up a retry). Read in main's own world.
+   */
+  async visibleTextSignature(): Promise<string> {
+    const r = await this.inProbeWorld<unknown>(VISIBLE_TEXT_JS, 5000, '');
+    return typeof r === 'string' ? r.slice(0, 64) : '';
+  }
+
+  /** Sets location.hash (a hash-routed deck's slide, SlideRef.nav.value); the string is JSON-encoded into the code. */
+  async setHash(hash: string): Promise<boolean> {
+    if (typeof hash !== 'string' || !hash.startsWith('#') || hash.length > 2048) return false;
+    const r = await this.inProbeWorld<unknown>(`(function(){location.hash=${JSON.stringify(hash)};return true})()`, 2000, false);
+    return r === true;
+  }
+
+  /** Scrolls heading `i` of `document.querySelectorAll('h1, h2, h3')` to the top of the viewport. */
+  async scrollToHeading(i: number): Promise<boolean> {
+    if (!Number.isInteger(i) || i < 0 || i > 1_000_000) return false;
+    const r = await this.inProbeWorld<unknown>(
+      `(function(){var h=document.querySelectorAll("h1,h2,h3")[${i}];if(!h)return false;h.scrollIntoView({block:"start",inline:"nearest",behavior:"instant"});return true})()`,
+      2000,
+      false,
+    );
+    return r === true;
+  }
+
+  /**
+   * A document's text in document order, cut into sections at its rendered h1–h3 headings (6.9 Find on
+   * documents; the outline is the views item's). Text counts when it renders (a range over it has a box) and
+   * its parent is visibility: visible; script, style, template, textarea, iframe and object contents never do.
+   */
+  async documentOutline(): Promise<DocumentOutline> {
+    const r = await this.inProbeWorld<unknown>(OUTLINE_JS, 30_000, null);
+    try {
+      return outlineOf(r);
+    } catch (e) {
+      throw new RenderError(`document outline: malformed result (${e instanceof Error ? e.message : String(e)})`);
+    }
+  }
+
+  /**
+   * The text of every style sheet the document uses, read through the view's debugger (CSS domain): linked
+   * sheets from the -files origin are cross-origin to the page, so neither the page nor an isolated world can
+   * read their rules (9.1 Serving), but main can. `media` is the sheet's own media list (`<link media>`,
+   * `<style media>`), when it has one. Read-only; the CSS and DOM domains are disabled again afterwards.
+   */
+  async styleSheets(maxChars = 16 * 1024 * 1024): Promise<{ sheets: StyleSheetText[]; truncated: boolean }> {
+    const headers: { styleSheetId: string; origin: string; sourceURL: string }[] = [];
+    const onMessage = (_e: unknown, method: string, params: unknown) => {
+      if (method !== 'CSS.styleSheetAdded' || headers.length >= 10_000) return;
+      const h = (params as { header?: { styleSheetId?: unknown; origin?: unknown; sourceURL?: unknown } } | null)?.header;
+      if (h && typeof h.styleSheetId === 'string' && typeof h.origin === 'string') {
+        headers.push({ styleSheetId: h.styleSheetId, origin: h.origin, sourceURL: typeof h.sourceURL === 'string' ? h.sourceURL : '' });
+      }
+    };
+    if (this.isDestroyed()) throw new RenderError('the render view was closed');
+    if (!this.wc.debugger.isAttached()) this.wc.debugger.attach('1.3');
+    this.wc.debugger.on('message', onMessage);
+    const sheets: StyleSheetText[] = [];
+    let truncated = false;
+    try {
+      await this.cdp('DOM.enable');
+      // styleSheetAdded for the sheets that exist arrives before CSS.enable resolves (Phase 1 finding);
+      // one more turn lets the event loop deliver any that are still queued.
+      await this.cdp('CSS.enable');
+      await new Promise((r) => setTimeout(r, 30));
+      const media = new Map<string, string>();
+      try {
+        const mq = await this.cdp<{ medias?: { text?: unknown; source?: unknown; styleSheetId?: unknown }[] }>('CSS.getMediaQueries');
+        for (const m of mq.medias ?? []) {
+          if ((m.source === 'linkedSheet' || m.source === 'inlineSheet') && typeof m.styleSheetId === 'string' && typeof m.text === 'string') media.set(m.styleSheetId, m.text);
+        }
+      } catch {
+        // Without the media lists every sheet counts as `all`: a print-only sheet then reads as print CSS
+        // only through its own @page or @media print rules.
+      }
+      let chars = 0;
+      for (const h of headers) {
+        // The page's own sheets only: not the user agent's, not ones devtools injected.
+        if (h.origin !== 'regular') continue;
+        let text: string;
+        try {
+          text = (await this.cdp<{ text?: unknown }>('CSS.getStyleSheetText', { styleSheetId: h.styleSheetId })).text as string;
+        } catch {
+          continue;
+        }
+        if (typeof text !== 'string') continue;
+        if (chars + text.length > maxChars) {
+          truncated = true;
+          break;
+        }
+        chars += text.length;
+        sheets.push({ text, url: h.sourceURL.slice(0, 2048), media: media.get(h.styleSheetId) ?? null });
+      }
+    } finally {
+      this.wc.debugger.removeListener('message', onMessage);
+      await this.cdp('CSS.disable').catch(() => undefined);
+      await this.cdp('DOM.disable').catch(() => undefined);
+    }
+    return { sheets, truncated };
+  }
+
+  /** webContents.printToPDF of the loaded page (6.9 Save as PDF). */
+  async printToPDF(options: Electron.PrintToPDFOptions): Promise<Uint8Array> {
+    if (this.isDestroyed()) throw new RenderError('the render view was closed');
+    const buf = await this.whileOpen(this.wc.printToPDF(options));
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+
+  /** Closes the window. Whatever still waits on it rejects with RenderCancelled (disposeRenderer, the pool). */
   close(): void {
-    this.rejectAll(new RenderError('the render view was closed'));
+    this.closing = true;
+    const e = new RenderCancelled('the render view was closed');
+    this.rejectAll(e);
+    this.closeWith(e);
     if (!this.wc.isDestroyed()) this.wc.close();
     if (!this.win.isDestroyed()) this.win.destroy();
   }
+}
+
+/** RenderView.visibleTextSignature: `<count>:<hash>` of the visible text (opacity and visibility of every ancestor). */
+const VISIBLE_TEXT_JS =
+  '(function(){var d=document,root=d.body||d.documentElement;if(!root)return "0:0";var W=innerWidth,H=innerHeight,ok=new Map(),range=d.createRange(),n=0,h=0;' +
+  'function shown(el){if(!el)return true;var v=ok.get(el);if(v!==undefined)return v;var cs=getComputedStyle(el);v=cs.visibility==="visible"&&!(parseFloat(cs.opacity)<=0)&&cs.display!=="none"&&shown(el.parentElement);ok.set(el,v);return v}' +
+  'var w=d.createTreeWalker(root,4);for(var t=w.nextNode();t&&n<100000;t=w.nextNode()){var s=t.data;if(!/\\S/.test(s))continue;var p=t.parentElement;if(!p||!shown(p))continue;' +
+  'range.selectNodeContents(t);var r=range.getBoundingClientRect();if(!(r.width>0&&r.height>0)||r.right<=0||r.bottom<=0||r.left>=W||r.top>=H)continue;' +
+  'n++;for(var i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0}return n+":"+h})()';
+
+/** Reveal.slide's fragment index for "every fragment shown": past any real slide's last fragment. */
+const REVEAL_ALL_FRAGMENTS = 1_000_000;
+
+/** One style sheet's text (RenderView.styleSheets). */
+export interface StyleSheetText {
+  text: string;
+  url: string;
+  /** The sheet's own media list (`<link media="print">`), or null when it has none. */
+  media: string | null;
+}
+
+/** A document's text cut at its rendered h1–h3 headings (RenderView.documentOutline). */
+export interface DocumentOutline {
+  /** How many h1–h3 elements the document has, rendered or not (the numbering `heading` refers to). */
+  headings: number;
+  sections: { heading: number | null; level: 0 | 1 | 2 | 3; title: string; text: string[] }[];
+  /** The walk stopped at its limits (5,000 sections, 200,000 text nodes, 4 M characters). */
+  cut: boolean;
+}
+
+/**
+ * The outline walk (RenderView.documentOutline). The first section holds the text before the first heading;
+ * each rendered h1–h3 starts the next one, numbered by its place among all of the page's h1–h3.
+ */
+const OUTLINE_JS =
+  '(function(){var d=document,root=d.body||d.documentElement;if(!root)return {headings:0,sections:[],cut:false};' +
+  'var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,TEMPLATE:1,TEXTAREA:1,TITLE:1,HEAD:1,IFRAME:1,OBJECT:1,EMBED:1,"BLUELINE-OVERLAY":1};' +
+  'var all=d.querySelectorAll("h1,h2,h3"),num=new Map();for(var i=0;i<all.length;i++)num.set(all[i],i);' +
+  'var cur={heading:null,level:0,title:"",text:[]},sections=[cur],chars=0,nodes=0,cut=false,vis=new Map(),range=d.createRange();' +
+  'function visible(el){var v=vis.get(el);if(v===undefined){var cs=getComputedStyle(el);v=cs.visibility==="visible";vis.set(el,v)}return v}' +
+  'function boxed(n){try{range.selectNodeContents(n);return range.getClientRects().length>0}catch(e){return false}}' +
+  'var w=d.createTreeWalker(root,5,{acceptNode:function(n){return n.nodeType===1&&SKIP[n.nodeName.toUpperCase()]?2:1}});' +
+  'for(var n=w.nextNode();n;n=w.nextNode()){' +
+  'if(n.nodeType===1){if(num.has(n)&&n.getClientRects().length>0&&visible(n)){var t=(n.textContent||"").replace(/\\s+/g," ").trim();' +
+  'if(t){if(sections.length>=5000){cut=true;break}cur={heading:num.get(n),level:Number(n.localName.charAt(1)),title:t.slice(0,300),text:[]};sections.push(cur)}}continue}' +
+  'var s=n.data.replace(/\\s+/g," ").trim();if(!s)continue;var p=n.parentElement;if(!p||!visible(p)||!boxed(n))continue;' +
+  'if(nodes>=200000||chars+s.length>4000000){cut=true;break}nodes++;chars+=s.length;cur.text.push(s)}' +
+  'return {headings:all.length,sections:sections,cut:cut}})()';
+
+/** Checks the outline walk's result (it comes from a page-controlled view: a malformed one is an error). */
+export function outlineOf(v: unknown): DocumentOutline {
+  const r = rec(v, 'outline');
+  const headings = int(r.headings, 'outline.headings', 0, 10_000_000);
+  if (!Array.isArray(r.sections) || r.sections.length > 5001) throw new BadResult('outline.sections: not a list');
+  let chars = 0;
+  const sections = r.sections.map((s, i): DocumentOutline['sections'][number] => {
+    const sr = rec(s, `outline.sections[${i}]`);
+    const heading = sr.heading === null ? null : int(sr.heading, 'heading', 0, Math.max(0, headings - 1));
+    const level = int(sr.level, 'level', 0, 3) as 0 | 1 | 2 | 3;
+    if ((heading === null) !== (level === 0)) throw new BadResult('outline: heading and level disagree');
+    if (!Array.isArray(sr.text) || sr.text.length > 200_000) throw new BadResult('outline: text not a list');
+    const text = sr.text.map((t) => {
+      const s2 = str(t, 'text', 4_000_000);
+      chars += s2.length;
+      return s2;
+    });
+    if (chars > 4_000_000) throw new BadResult('outline: too much text');
+    return { heading, level, title: str(sr.title, 'title', 300), text };
+  });
+  if (sections.length === 0) sections.push({ heading: null, level: 0, title: '', text: [] });
+  return { headings, sections, cut: bool(r.cut, 'outline.cut') };
 }
 
 // ------------------------------------------------------------------------------------------- RenderPool
@@ -839,4 +1332,277 @@ export class RenderPool {
     for (const v of this.busy) v.close();
     this.busy.clear();
   }
+}
+
+// ------------------------------------------------------------------------------------------- per-document renderer
+// Phase 1 render products (thumbnails, the slide index, PDF pages, Print) render through one
+// DocumentRenderer per open document: at most POOL_LIMIT render windows (9.1 Render service), each sized to
+// the viewport its job needs (the index walks at 1600×900, thumbnails and PDF pages at the design size),
+// with reduced motion, kept for a while after a job and closed when idle.
+
+/** A render was cancelled: a newer version of the document, or the document closed. */
+export class RenderCancelled extends RenderError {}
+
+export function throwIfCancelled(signal?: AbortSignal | null): void {
+  if (signal?.aborted) throw new RenderCancelled('the render was cancelled');
+}
+
+/** 6.7 step 1: "Wait until the document has had no write for 300 ms." */
+export const WRITE_QUIET_MS = 300;
+const lastWrites = new Map<string, number>();
+
+/**
+ * The document (by fileKey) was just written: by Blueline (an edit, Phase 2) or by someone else (the
+ * watcher's reload). Renders that start within 300 ms wait (6.7 step 1). The views item calls this.
+ */
+export function noteDocumentWrite(fileKey: string, at: number = Date.now()): void {
+  if (typeof fileKey !== 'string' || !/^[0-9a-f]{16}$/.test(fileKey)) return;
+  lastWrites.set(fileKey, at);
+}
+
+/** How long a render must still wait, given the last write's time (0 when there was none, or long ago). */
+export function quietDelay(lastWriteAt: number | undefined, now: number, quietMs: number = WRITE_QUIET_MS): number {
+  if (lastWriteAt === undefined || !Number.isFinite(lastWriteAt)) return 0;
+  return Math.max(0, Math.min(quietMs, lastWriteAt + quietMs - now));
+}
+
+/** Resolves once the document has had no write for WRITE_QUIET_MS (a write meanwhile extends the wait). */
+export async function untilQuiet(fileKey: string, signal?: AbortSignal | null): Promise<void> {
+  for (;;) {
+    throwIfCancelled(signal);
+    const wait = quietDelay(lastWrites.get(fileKey), Date.now());
+    if (wait <= 0) return;
+    await new Promise((r) => setTimeout(r, wait));
+  }
+}
+
+/** What every render needs from the app: the deck preload, app data, and a log. */
+export interface RenderHost {
+  /** dist/preload-deck.cjs */
+  preload: string;
+  /** app.getPath('userData'): thumbnails and the index cache go to files/<fileKey>/thumbs/ (9.7). */
+  userData: string;
+  log(msg: string): void;
+  devTools?: boolean;
+}
+
+let currentHost: RenderHost | null = null;
+
+/** Called once at startup (the views item; pdf-command for `blueline pdf`). */
+export function setRenderHost(h: RenderHost): void {
+  currentHost = { ...h };
+}
+
+export function renderHost(): RenderHost {
+  if (!currentHost) throw new RenderError('the render service is not set up (setRenderHost)');
+  return currentHost;
+}
+
+export function viewportKey(vp: Viewport): string {
+  return `${vp.w}x${vp.h}@${vp.dpr}`;
+}
+
+/**
+ * A keyed pool of at most `limit` items (render views keyed by their viewport). acquire(key) hands out an
+ * idle item with that key, creates one while under the limit, replaces an idle item of another key, or waits
+ * for a release. Idle items are destroyed after `idleMs`.
+ */
+export class ViewSlots<V> {
+  private readonly items: { v: V; key: string; busy: boolean; timer: ReturnType<typeof setTimeout> | null }[] = [];
+  private readonly waiters: (() => void)[] = [];
+  private closed = false;
+
+  constructor(
+    private readonly make: (key: string) => V,
+    private readonly destroy: (v: V) => void,
+    private readonly dead: (v: V) => boolean,
+    readonly limit: number = POOL_LIMIT,
+    private readonly idleMs: number = 20_000,
+  ) {
+    if (!Number.isInteger(limit) || limit < 1 || limit > POOL_LIMIT) throw new RangeError(`a pool holds 1..${POOL_LIMIT} views`);
+  }
+
+  get size(): number {
+    return this.items.length;
+  }
+
+  get busy(): number {
+    return this.items.filter((i) => i.busy).length;
+  }
+
+  private drop(i: number): void {
+    const [it] = this.items.splice(i, 1);
+    if (it.timer) clearTimeout(it.timer);
+    try {
+      this.destroy(it.v);
+    } catch {
+      // already gone
+    }
+  }
+
+  async acquire(key: string, signal?: AbortSignal | null): Promise<V> {
+    for (;;) {
+      if (this.closed) throw new RenderError('the render pool is closed');
+      throwIfCancelled(signal);
+      for (let i = this.items.length - 1; i >= 0; i--) if (!this.items[i].busy && this.dead(this.items[i].v)) this.drop(i);
+      const idle = this.items.find((i) => !i.busy && i.key === key);
+      if (idle) {
+        if (idle.timer) clearTimeout(idle.timer);
+        idle.timer = null;
+        idle.busy = true;
+        return idle.v;
+      }
+      if (this.items.length >= this.limit) {
+        const other = this.items.findIndex((i) => !i.busy);
+        if (other >= 0) this.drop(other);
+      }
+      if (this.items.length < this.limit) {
+        const v = this.make(key);
+        this.items.push({ v, key, busy: true, timer: null });
+        return v;
+      }
+      await new Promise<void>((resolve) => {
+        const wake = () => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        // A cancelled waiter leaves the queue, so a release never wakes it in place of a live one.
+        const onAbort = () => {
+          const i = this.waiters.indexOf(wake);
+          if (i >= 0) this.waiters.splice(i, 1);
+          resolve();
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        this.waiters.push(wake);
+      });
+    }
+  }
+
+  release(v: V): void {
+    const it = this.items.find((i) => i.v === v);
+    if (!it || !it.busy) return;
+    it.busy = false;
+    if (this.closed || this.dead(v)) this.drop(this.items.indexOf(it));
+    else {
+      it.timer = setTimeout(() => {
+        const i = this.items.indexOf(it);
+        if (i >= 0 && !it.busy) this.drop(i);
+      }, this.idleMs);
+      it.timer.unref?.();
+    }
+    this.waiters.shift()?.();
+  }
+
+  async use<T>(key: string, fn: (v: V) => Promise<T>, signal?: AbortSignal | null): Promise<T> {
+    const v = await this.acquire(key, signal);
+    try {
+      return await fn(v);
+    } finally {
+      this.release(v);
+    }
+  }
+
+  close(): void {
+    this.closed = true;
+    while (this.items.length) this.drop(0);
+    for (const w of this.waiters.splice(0)) w();
+  }
+}
+
+/** One open document's render windows (at most POOL_LIMIT), in its own partition, with reduced motion. */
+export class DocumentRenderer {
+  private target: RenderTarget;
+  private readonly slots: ViewSlots<RenderView>;
+
+  constructor(
+    target: RenderTarget,
+    private readonly host: RenderHost,
+    factory?: (vp: Viewport, target: RenderTarget) => RenderView,
+  ) {
+    this.target = target;
+    const make = factory ?? ((vp: Viewport, t: RenderTarget) => this.createView(vp, t));
+    this.slots = new ViewSlots<RenderView>(
+      (key) => make(parseViewportKey(key), this.target),
+      (v) => v.close(),
+      (v) => v.isDestroyed(),
+    );
+  }
+
+  /** The current target (a newer version of the same document replaces it: update()). */
+  get current(): RenderTarget {
+    return this.target;
+  }
+
+  /** A newer version, or a trust change (Allow network): later loads use it. */
+  update(target: RenderTarget): void {
+    if (target.docId !== this.target.docId || target.partition !== this.target.partition) throw new RenderError('a renderer serves one document');
+    this.target = target;
+  }
+
+  private createView(vp: Viewport, t: RenderTarget): RenderView {
+    return RenderView.create({
+      partition: t.partition,
+      preload: this.host.preload,
+      viewport: vp,
+      folderReal: t.folderReal,
+      // Read live: Allow network applies to the next load (9.9).
+      isProtected: () => this.target.isProtected(),
+      networkOpen: () => this.target.networkOpen(),
+      log: (m) => this.host.log(m),
+      devTools: this.host.devTools === true,
+      reducedMotion: t.reducedMotion,
+    });
+  }
+
+  /** Runs `fn` on a render view of `vp` (waiting for one of the document's two). */
+  use<T>(vp: Viewport, fn: (v: RenderView) => Promise<T>, signal?: AbortSignal | null): Promise<T> {
+    if (!validViewport(vp)) return Promise.reject(new RenderError('invalid viewport'));
+    return this.slots.use(viewportKey(vp), fn, signal);
+  }
+
+  get views(): number {
+    return this.slots.size;
+  }
+
+  close(): void {
+    this.slots.close();
+  }
+}
+
+function parseViewportKey(key: string): Viewport {
+  const m = /^(\d+)x(\d+)@([0-9.]+)$/.exec(key);
+  if (!m) throw new RenderError('invalid viewport key');
+  return { w: Number(m[1]), h: Number(m[2]), dpr: Number(m[3]) };
+}
+
+const renderers = new Map<string, DocumentRenderer>();
+
+/** The document's renderer (one per docId), created on first use; a newer target for it updates it. */
+export function rendererFor(target: RenderTarget, host: RenderHost = renderHost()): DocumentRenderer {
+  let r = renderers.get(target.docId);
+  if (r && r.current.partition !== target.partition) {
+    r.close();
+    r = undefined;
+  }
+  if (!r) {
+    r = new DocumentRenderer(target, host);
+    renderers.set(target.docId, r);
+  } else if (r.current !== target) r.update(target);
+  return r;
+}
+
+/**
+ * Closes the document's render windows. The views item calls it when the document's window closes, before
+ * the partition is retired (window.ts onClosed), and for an old docId after a reload gave a new one.
+ */
+export function disposeRenderer(docId: string): void {
+  const r = renderers.get(docId);
+  if (!r) return;
+  renderers.delete(docId);
+  r.close();
+}
+
+/** Open renderers (tests and logs). */
+export function rendererCount(): number {
+  return renderers.size;
 }

@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Media print deck</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  .slide { position: absolute; inset: 0; box-sizing: border-box; padding: 96px; background: #e0f2fe; color: #0c4a6e; font: 44px/1.3 sans-serif; visibility: hidden; opacity: 0; }
+  .slide.active { visibility: visible; opacity: 1; }
+  h1 { font-size: 80px; margin: 0 0 24px; }
+  /* No @page rule: a print layout that puts each slide on its own page of the default paper. */
+  @media print {
+    html, body { height: auto; overflow: visible; background: #fff; }
+    .slide { position: static; visibility: visible; opacity: 1; height: 5in; overflow: hidden; break-after: page; }
+    .slide:last-of-type { break-after: auto; }
+  }
+</style>
+</head>
+<body>
+  <section class="slide active"><h1>Media one</h1><p>First.</p></section>
+  <section class="slide"><h1>Media two</h1><p>Second.</p></section>
+  <section class="slide"><h1>Media three</h1><p>Third.</p></section>
+  <section class="slide"><h1>Media four</h1><p>Fourth.</p></section>
+<script>
+  (function () {
+    var slides = [].slice.call(document.querySelectorAll('.slide'));
+    var cur = 0;
+    addEventListener('keydown', function (e) {
+      var n = e.key === 'ArrowRight' || e.key === 'PageDown' ? cur + 1 : e.key === 'ArrowLeft' || e.key === 'PageUp' ? cur - 1 : cur;
+      if (n === cur || n < 0 || n >= slides.length) return;
+      slides[cur].classList.remove('active');
+      cur = n;
+      slides[cur].classList.add('active');
+    });
+  })();
+</script>
+</body>
+</html>

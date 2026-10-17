@@ -1,4 +1,4 @@
-# Blueline architecture (Phase 0 build contract)
+# Blueline architecture (Phase 0 build contract, and what Phase 1 added)
 
 SPEC.md is the source of truth. This page fixes the module boundaries, file ownership and cross-module
 interfaces that SPEC.md leaves to the implementation, so that the pieces of Phase 0 can be built in
@@ -196,7 +196,7 @@ parse5 errors, Strategy 2 checks), restore on failure, and the verbatim fallback
   each note's SlideRef and `Session.deckNav` from them.
 - **Editor loader** (`editor-loader.ts`): `loadEditor(): EditorModule | null` from `dist/editor.cjs`;
   `capabilities = { edit: !!editor, agent: !!editor }`.
-- **Commands.** The app accepts `--bl-cmd=<open|map|check>`, `--bl-args=<base64url JSON>`, `--bl-out=<file>`
+- **Commands.** The app accepts `--bl-cmd=<open|map|check|pdf>` (`pdf` since Phase 1: `pdf-command.ts runPdfCommand`), `--bl-args=<base64url JSON>`, `--bl-out=<file>`
   and `--bl-parent=<pid>`. `map` and `check` are headless or diagnostic runs that write a JSON result to
   `--bl-out` and exit with its exit code. `runMapCommand(args)` lives in `map-command.ts` and
   `openDiagnostics(opts)` in `diagnostics.ts`. Both stop on SIGINT, SIGTERM and SIGHUP (exit 130, 143, 129;
@@ -227,6 +227,91 @@ parse5 errors, Strategy 2 checks), restore on failure, and the verbatim fallback
 - As root, Chromium needs `--no-sandbox` (the run script adds it). For the security suite, run as the
   non-root user `bltest` so the OS sandbox is on (`su bltest -c …`); user namespaces are available.
 - Electron is 44.7.2 (Chromium 152, Node 24).
+
+## Phase 1 (Reader): the new modules and who calls what
+
+`docs/PHASE1-PLAN.md` fixed the ownership and interfaces; this is what was built. Every service module is called
+from `index.ts` (startup), `controller.ts` (opening) or `window.ts` (one document window); none of them calls
+`ipcMain` directly: their shell channels go through `shellRouter()` (`channels.ts`) and their deck channels
+through the IPC guard. IPC types live in one core file per area: `ipc-render.ts`, `ipc-trust.ts`,
+`ipc-files.ts`, `ipc-views.ts` (`ipc.ts` re-exports what the shell and the preloads need).
+
+### Startup (`index.ts`, after `ready`)
+
+| Call | Module | What it sets up |
+|---|---|---|
+| `setRenderHost({ preload, userData, log })` | `render-service.ts` | the render windows every render product uses |
+| `configureNativeHelper(…)`, `disposeNativeHelper()` on `will-quit` | `native-helper.ts` | macOS: the Swift helper (`native/macos`) or `/usr/bin/xattr`; Windows: Default Apps, `reg.exe`; Linux: unsupported |
+| `TrustStore.forUserData(userData).load()` | `trust-store.ts` | `<userData>/trust.json`: remembered decisions, each with the marker it was made on |
+| `new TrustSettings(config, …)` | `folders.ts` | trusted and untrusted folders, the strict option, the CDN allowlist (in `config.json`) |
+| `RecentFiles.forUserData(…)` | `recent.ts` | `recent.json`, File › Open Recent, `app.addRecentDocument` |
+| `setShellThumbResolver(…)` | `protocol.ts` | `app://shell/thumbs/<docId>/<sha256>-<slide>-<width>.png`, mapped in main to that window's thumbnail cache (`thumbnails.ts readThumb`) |
+| `installSettingsWindow(…)` | `settings-window.ts` | the Settings window (General, Trust) and its `bl:settings:*` channels, answered only for its own shell |
+| `installDropHandler(…)` | `drop.ts` | `bl:files:open-dropped` from document shells and the welcome window |
+| `installFirstRun(…)` | `first-run.ts` | the welcome window and its `bl:welcome:*` channels; the sample deck copied to `<userData>/sample` |
+| `runPdfCommand(…)` for `--bl-cmd=pdf` | `pdf-command.ts` | `blueline pdf`, headless, with a private userData (as `map`) |
+
+### Opening a file (`controller.ts`)
+
+`AppController.open` → `documents.ts loadDocument({ decideTrust })`, where `decideTrust` is `folders.ts
+resolveOpenTrust` (6.10 When it applies: the requested Protected view, the marker read through the native
+helper, the folder lists, then the decision remembered in `trust.json` for the same marker). The result also
+says whether Allow network and Enable editing were remembered; the window applies them. A Settings change
+(`onTrustSettingsChanged`) re-applies every open window's partition policy (`DocWindow.reapplyPolicy`).
+
+### One document window (`window.ts`)
+
+- **Views** (`views.ts`, pure layout maths): the deck view sits in a clipping container `View`; Fit is
+  `webContents.setZoomFactor` with `webPreferences.zoomMode: 'isolated'` (PHASE0-FINDINGS F5; without
+  `isolated`, Chromium's per-host zoom also zoomed the document's own render windows); 100% and Fill width
+  make the view larger than the window and the shell draws the scroll bars; documents get Reading Width
+  (960 px, per file in `session.json`). The design size comes from the slide index, else from the visible
+  view measured at 1600×900 (`bl:views:design`, accepted only at that viewport).
+- **Present** (`present.ts`): full screen, chrome hidden, Esc caught in `before-input-event`.
+- **Render products**, started when the deck view finishes loading and again for every new version
+  (`startProducts`): `renderTargetFor(doc)` → `slide-index.ts buildSlideIndex` → `thumbnails.ts
+  renderThumbnails` (each PNG pushed to the shell as `bl:render:thumb`, the index as `bl:render:index-ready`).
+  Find (`bl:render:find`, `bl:render:find-show`) answers from the index (`find.ts findResponse`), navigates,
+  then `highlightMatch` (findInPage). Save as PDF (`pdf.ts saveAsPdf`) and Print (`print.ts printDocument`)
+  reuse the index. Every still image waits for what the slide's scripts reveal (`RenderView.waitScripted`,
+  `slide-index.ts SCRIPTED_SETTLE`). On close: `cancelThumbnails(fileKey)` and `disposeRenderer(docId)`
+  before the partition is retired; whatever still waits on a closed render view rejects with
+  `RenderCancelled`. The render products reach the window only through `productsLive`, cleared on close.
+- **Reload** (`watcher.ts watchDeck` → `onExternalChange` → `doc.replaceContent` → `view-state.ts
+  ReloadCoordinator`): the deck preload reports and applies the view state (`bl:files:capture-view-state`,
+  `bl:files:view-state`, `bl:files:apply-view-state`) and its busy state (`bl:files:busy`); a reload waits for
+  an edit or a card with unsaved input. `noteDocumentWrite(fileKey)` makes renders wait 300 ms after a write
+  (6.7 step 1).
+- **Trust bar**: Allow network and Enable editing call `TrustStore.remember(realpath, marker, …)` (not when
+  the marker could not be read).
+- **Deck channels** added in Phase 1, all validated in main, none carrying a path: `bl:views:design`,
+  `bl:views:page-step` and `bl:views:wheel` (honoured only right after main saw the matching real input in
+  `before-input-event` / `input-event`), `bl:files:view-state`, `bl:files:busy`, `bl:files:drop-refused` (no
+  payload). Shell channels: `bl:views:command`, `show`, `scroll`, `find-closed`, and the render ones above.
+- **Menus** (`menu.ts`): Open Recent, Reveal, Present, View › Fit / 100% / Fill width / Reading Width / Hide
+  Slides, Find, Save as PDF, Print, Settings…, Help › Install Command Line Tool (`cli-install.ts`), Welcome to
+  Blueline, About Protected View.
+
+### Files the build adds
+
+- `dist/preload-settings.cjs`, `dist/preload-welcome.cjs`, `dist/shell/settings.*`, `dist/shell/welcome.*`
+  (9.1 Shell view: their own BrowserWindows in the `shell` session, CSP header and meta, named contextBridge
+  functions only).
+- `dist/assets/sample/blueline-tour.html`: the sample deck.
+- `packages/cli/dist/blueline` and `blueline.cmd`: the shims that find Node 22+ (`cli-install.ts` links to them).
+- `native/macos/build/blueline-helper`, when `native/macos/build.sh` ran on a Mac; electron-builder ships it in
+  `Resources/helper`. `packages/app/build/installer.nsh`: the Windows registry entries for Default Apps.
+
+### Tests and the exit gate
+
+- `test/e2e/<item>-*.spec.ts` (render-products, trust-native, files-lifecycle, views) and
+  `test/security/trust-ipc.spec.ts`. The E2E and security suites run one Xvfb display per Playwright worker
+  (`test/helpers/display.ts`): an X server has one clipboard, and the clipboard tests raced when two workers
+  shared one.
+- The exit-gate harnesses (`scripts/parity.mjs`, `scripts/first-paint.mjs`, `test/parity/harness/`) are their
+  own Electron main and import the app's modules from source (`documents.ts`, `protocol.ts`,
+  `trust-hooks.ts`, `render-service.ts`, `slide-index.ts`, `pdf.ts`, …): renaming those breaks them, and tsc
+  says so. Results: `docs/PHASE1-RESULTS.md`.
 
 ## Phase 0 findings
 

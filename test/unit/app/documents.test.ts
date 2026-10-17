@@ -306,3 +306,70 @@ describe('trustedDocumentId: a Trusted file keeps its origin across opens (6.10 
     ]);
   });
 });
+
+describe('Phase 1 (views): the app trust decision, an external change, a file that went away', () => {
+  it('decideTrust option: remembered switches apply at open in Protected view; received follows the decision', async () => {
+    const p = write('remembered.html', '<!doctype html><title>R</title><p>hi</p>');
+    const asked: [string, boolean][] = [];
+    const doc = await loadDocument(p, {
+      ...opts,
+      decideTrust: async (realpath, requested) => {
+        asked.push([realpath, requested]);
+        return { trust: { trust: 'protected', reason: 'Came from the internet', marker: 'm1' }, allowNetwork: true, editing: true, received: false, markerUncertain: false };
+      },
+    });
+    expect(asked).toEqual([[fs.realpathSync(p), false]]);
+    expect(doc.trust()).toBe('protected');
+    expect(doc.networkAllowed()).toBe(true);
+    expect(doc.editingAllowed()).toBe(true);
+    // trust.json remembered "yours" (6.8): it decides over the Protected rule.
+    expect(doc.received).toBe(false);
+    expect(doc.markerUncertain).toBe(false);
+    // Trusted: the switches are moot (Trusted has both); received null falls back to the location rule.
+    const t = await loadDocument(p, {
+      ...opts,
+      untrustedLocation: () => true,
+      decideTrust: async () => ({ trust: { trust: 'trusted', reason: null, marker: null }, allowNetwork: true, editing: true, received: null, markerUncertain: true }),
+    });
+    expect(t.trust()).toBe('trusted');
+    expect(t.networkAllowed()).toBe(false);
+    expect(t.received).toBe(true);
+    expect(t.markerUncertain).toBe(true);
+  });
+
+  it('replaceContent: the new bytes are served, mapped and hashed; knownHash and the served copies follow', async () => {
+    const p = write('replace.html', '<!doctype html><title>Old</title><p>old text</p>');
+    const doc = await loadDocument(p, opts);
+    const v1 = doc.version;
+    const before = new TextDecoder().decode((await doc.documentBody()).body);
+    expect(before).toContain('old text');
+    const next = new TextEncoder().encode('<!doctype html><title>New</title><p>new text</p>');
+    doc.replaceContent(next);
+    expect(doc.version).toBe(sha256Hex(next));
+    expect(doc.version).not.toBe(v1);
+    expect(doc.knownHash).toBe(doc.version);
+    expect(doc.title).toBe('New');
+    expect(doc.map.version).toBe(doc.version);
+    expect(doc.bytes).toBe(next);
+    const after = new TextDecoder().decode((await doc.documentBody()).body);
+    expect(after).toContain('new text');
+    expect(after).not.toContain('old text');
+    // Identity and trust stay: the same window shows the new version (6.6).
+    expect(doc.fileName).toBe('replace.html');
+    doc.release();
+    expect(() => doc.replaceContent(next)).toThrow(/closed/);
+  });
+
+  it('a gone file is read-only until it is back (9.2 Watcher), and its writes are refused', async () => {
+    const p = write('gone.html', '<!doctype html><p>x</p>');
+    const doc = await loadDocument(p, opts);
+    expect(doc.editable()).toBe(true);
+    doc.setGone(true);
+    expect(doc.gone).toBe(true);
+    expect(doc.editable()).toBe(false);
+    const io = doc.io(() => true);
+    await expect(io.atomicWrite(new TextEncoder().encode('y'), doc.version)).rejects.toThrow(/moved or deleted/);
+    doc.setGone(false);
+    expect(doc.editable()).toBe(true);
+  });
+});

@@ -5,6 +5,8 @@
 // blueline-media://<docId>/<path>       its folder's audio and video: a third origin, on a scheme that is not
 //                                       CORS-enabled, so no CORS-mode load can read it (finding 7)
 // app://shell/<file>                    the shell UI from the app bundle
+// app://shell/thumbs/<windowKey>/<name>  a document window's rail thumbnail (6.9), from that document's
+//                                       thumbnails cache only (main maps the window key to its file)
 //
 // The request→response logic is plain functions over a minimal request shape (handleDeckRequest,
 // handleShellRequest) that return a standard `Response`, so unit tests drive them with fake lookups and
@@ -162,6 +164,14 @@ export function mimeFor(ext: string): string | undefined {
 }
 
 /** Every refusal is the same bare 404: no body, no details (9.1 Refusals). */
+function safeDecode(s: string): string | null {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return null;
+  }
+}
+
 function notFound(): Response {
   return new Response(null, {
     status: 404,
@@ -474,10 +484,63 @@ const SHELL_MIME: Readonly<Record<string, string>> = {
 };
 
 /**
- * The app:// request→response logic (9.1 Shell view): only `app://shell/<file>` for files inside
- * `shellDirReal` (same confinement as the deck handler), each with the shell CSP. Never throws.
+ * Reads thumbnail `name` of the document window registered under `windowKey` (thumbnails.ts readThumb over that
+ * window's own fileKey, looked up in main), or null. The URL names a window, never a file or folder.
  */
-export async function handleShellRequest(req: RequestLike, shellDirReal: string): Promise<Response> {
+export type ThumbResolver = (windowKey: string, name: string) => Promise<Uint8Array | null>;
+
+let thumbResolver: ThumbResolver | null = null;
+
+/** Main's thumbnail lookup for the app://shell/thumbs/ route (index.ts sets it once; null turns the route off). */
+export function setShellThumbResolver(r: ThumbResolver | null): void {
+  thumbResolver = r;
+}
+
+/** The window key part of a thumbnail URL: a document window's docId (documents.ts isDocumentId). */
+const THUMB_KEY = /^[0-9a-f]{16}$/;
+/** A thumbnail's file name (thumbnails.ts thumbFileName: `<sha256>-<slide>-<width>.png`). */
+const THUMB_NAME = /^[0-9a-f]{64}-\d{1,5}-\d{2,4}\.png$/;
+
+/**
+ * app://shell/thumbs/<windowKey>/<name> (6.9 Navigation, the rail): exactly two segments after `thumbs`, each
+ * percent-decoded once and matched against its pattern, then `resolve` decides (it reads only that window's
+ * thumbnails folder). Anything else under /thumbs/ is a 404, never a file of the shell bundle.
+ */
+export async function handleThumbRequest(segments: readonly string[], method: string, resolve: ThumbResolver | null): Promise<Response> {
+  if (!resolve || segments.length !== 2) return notFound();
+  let key: string;
+  let name: string;
+  try {
+    key = decodeURIComponent(segments[0]);
+    name = decodeURIComponent(segments[1]);
+  } catch {
+    return notFound();
+  }
+  if (!THUMB_KEY.test(key) || !THUMB_NAME.test(name)) return notFound();
+  let bytes: Uint8Array | null;
+  try {
+    bytes = await resolve(key, name);
+  } catch {
+    return notFound();
+  }
+  if (!bytes) return notFound();
+  const headers: Record<string, string> = {
+    'Content-Type': 'image/png',
+    'Content-Length': String(bytes.byteLength),
+    'Content-Security-Policy': SHELL_CSP,
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-store',
+  };
+  if (method === 'HEAD') return new Response(null, { status: 200, headers });
+  return new Response(bytes.slice(), { status: 200, headers });
+}
+
+/**
+ * The app:// request→response logic (9.1 Shell view): only `app://shell/<file>` for files inside
+ * `shellDirReal` (same confinement as the deck handler), each with the shell CSP, and the rail's thumbnails
+ * (handleThumbRequest). Never throws.
+ */
+export async function handleShellRequest(req: RequestLike, shellDirReal: string, thumbs: ThumbResolver | null = thumbResolver): Promise<Response> {
   try {
     const method = String(req.method).toUpperCase();
     if (method !== 'GET' && method !== 'HEAD') return notFound();
@@ -489,6 +552,12 @@ export async function handleShellRequest(req: RequestLike, shellDirReal: string)
     }
     if (u.protocol !== `${SHELL_SCHEME}:` || u.hostname !== SHELL_HOST) return notFound();
     if (u.username !== '' || u.password !== '' || u.port !== '') return notFound();
+    // Split before decoding (9.1 Refusals step 2): an encoded slash stays inside its segment.
+    const segs = u.pathname.split('/');
+    // Any spelling of the first segment (Thumbs, th%75mbs) goes to the route, never to a bundle file of that name.
+    if (safeDecode(segs[1] ?? '')?.toLowerCase() === 'thumbs') {
+      return await handleThumbRequest(segs.slice(2), method, thumbs);
+    }
     const file = resolveConfined(shellDirReal, u.pathname, { allowedExtensions: SHELL_EXTENSIONS });
     if (!file) return notFound();
     const mime = Object.prototype.hasOwnProperty.call(SHELL_MIME, file.ext) ? SHELL_MIME[file.ext] : undefined;

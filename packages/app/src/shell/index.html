@@ -18,7 +18,7 @@
     <button type="button" data-mode="edit" aria-pressed="false">Edit</button>
   </div>
   <div class="spacer"></div>
-  <button id="present" class="tool" type="button" disabled title="Present arrives in Phase 1">&#9654; Present</button>
+  <button id="present" class="tool" type="button">&#9654; Present</button>
   <button id="share" class="tool" type="button" aria-haspopup="menu">Share &#9662;</button>
   <span id="agent-chip" class="agent-chip" hidden></span>
 </header>
@@ -37,12 +37,25 @@
   <button id="banner-open" type="button">Open in Browser</button>
   <button id="banner-close" class="icon" type="button" aria-label="Hide this bar" title="Hide this bar">&#215;</button>
 </div>
+<div id="find-bar" class="find-bar" role="search" aria-label="Find" hidden>
+  <input id="find-input" class="find-input" type="search" placeholder="Find in all slides" aria-label="Find in all slides" autocomplete="off" spellcheck="false" maxlength="256">
+  <span id="find-status" class="find-status" aria-live="polite"></span>
+  <div class="spacer"></div>
+  <button id="find-prev" class="icon" type="button" aria-label="Previous result" title="Previous result (Shift+Enter)">&#8593;</button>
+  <button id="find-next" class="icon" type="button" aria-label="Next result" title="Next result (Enter)">&#8595;</button>
+  <button id="find-close" class="icon" type="button" aria-label="Close Find" title="Close (Esc)">&#215;</button>
+</div>
 <main class="content">
   <nav id="rail" class="rail" aria-label="Slides">
-    <div class="pane-title">Slides</div>
+    <div class="pane-head">
+      <span id="rail-title" class="pane-title">Slides</span>
+      <button id="rail-hide" class="icon small" type="button" aria-label="Hide the rail" title="Hide">&#171;</button>
+    </div>
     <ol id="slide-list" class="slide-list"></ol>
+    <ol id="outline-list" class="outline-list" hidden></ol>
+    <ol id="result-list" class="result-list" hidden></ol>
   </nav>
-  <div id="deck-slot" class="deck-slot"></div>
+  <div id="deck-slot" class="deck-slot"><div id="deck-spacer" class="deck-spacer"></div></div>
   <aside id="panel" class="panel" aria-label="Notes">
     <div class="pane-title">Notes</div>
     <ol id="note-list" class="note-list"></ol>

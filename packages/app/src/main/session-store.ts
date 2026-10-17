@@ -316,6 +316,8 @@ export function readSession(raw: unknown, deck: Session['deck']): ReadResult {
     if (ink === 'open' || ink === 'all' || ink === 'none') s.settings.inkFilter = ink;
     if (typeof field(st, 'smartPunctuation') === 'boolean') s.settings.smartPunctuation = st.smartPunctuation as boolean;
     if (typeof field(st, 'restatement') === 'boolean') s.settings.restatement = st.restatement as boolean;
+    // 6.9 View › Reading Width, remembered per file (added by views).
+    if (typeof field(st, 'readingWidth') === 'boolean') s.settings.readingWidth = st.readingWidth as boolean;
   }
   return { session: s, lossy };
 }

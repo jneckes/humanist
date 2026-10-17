@@ -150,6 +150,21 @@ export function xvfbAppPid(members: readonly ProcStat[], xvfbRunPid: number, exe
   return m ? m.pid : null;
 }
 
+/**
+ * Windows has no signals to pass on, and child.kill() there is TerminateProcess: the app would stop at once,
+ * with no chance to delete map's probe copy or write its result. So the command first asks: `taskkill /PID <pid>
+ * /T` without /F posts WM_CLOSE to the windows of the app's process tree, which Electron handles as a close (a
+ * Ctrl+C in the console also reaches the app itself, as SIGINT). Only a run that has not ended
+ * FORWARD_KILL_AFTER_MS later is ended with /F. taskkill is run from System32 by its full path, never found
+ * through PATH.
+ */
+export function windowsStopCommand(pid: number, o: { force: boolean; systemRoot?: string }): { file: string; args: string[] } {
+  const root = o.systemRoot && path.win32.isAbsolute(o.systemRoot) ? o.systemRoot : 'C:\\Windows';
+  const args = ['/PID', String(pid), '/T'];
+  if (o.force) args.push('/F');
+  return { file: path.win32.join(root, 'System32', 'taskkill.exe'), args };
+}
+
 /** After passing a signal on, the command waits this long for the run to end, then kills the whole group. */
 export const FORWARD_KILL_AFTER_MS = 10_000;
 

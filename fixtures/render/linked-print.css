@@ -1,0 +1,7 @@
+/* The deck's print layout lives in this sibling sheet, served from the -files origin (cross-origin to the page). */
+@page { size: 1600px 900px; margin: 0; }
+@media print {
+  html, body { height: auto; overflow: visible; }
+  .slide { display: block !important; position: relative; break-after: page; }
+  .slide:last-of-type { break-after: auto; }
+}

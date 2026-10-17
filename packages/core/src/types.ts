@@ -118,7 +118,8 @@ export interface Session {
   tombstones: string[];
   deckNav?: { forward: string; back: string };
   viewport?: { w: number; h: number; dpr: number };
-  settings?: { inkFilter?: 'open' | 'all' | 'none'; smartPunctuation?: boolean; restatement?: boolean };
+  // `readingWidth` added by views (6.9: View › Reading Width, "off by default, remembered per file").
+  settings?: { inkFilter?: 'open' | 'all' | 'none'; smartPunctuation?: boolean; restatement?: boolean; readingWidth?: boolean };
 }
 
 // ---------------------------------------------------------------------------------------------

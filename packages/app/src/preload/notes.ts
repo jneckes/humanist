@@ -315,6 +315,39 @@ export class NotesController {
     this.redraw();
   }
 
+  /**
+   * Added by views (6.6 Reload): the open card's note id (null until main answered its create) and text, and
+   * whether main has everything it shows (dirty: a create or an update still to send).
+   */
+  cardState(): { id: string | null; text: string; dirty: boolean } | null {
+    const s = this.open;
+    if (!s || !this.card.isOpen) return null;
+    return { id: s.id, text: s.text, dirty: s.id === null || s.text !== s.sentText || s.marksDirty || s.timer !== null };
+  }
+
+  /**
+   * Added by views (6.6 Reload: "After reloading, it restores that state … the open card"): opens note `id`'s
+   * card again showing `draft`, and sends main any text it does not have yet. False when the note is gone.
+   */
+  restoreCard(id: string, draft: string): boolean {
+    const note = this.notes.get(id);
+    if (!note) return false;
+    if (this.open?.id === id) return true;
+    if (this.open) this.closeCard();
+    const s = this.newSession(this.headerForNote(note));
+    s.id = id;
+    s.sentText = typeof note.text === 'string' ? note.text : '';
+    s.text = draft;
+    s.marks = this.opMarksOf(note);
+    this.open = s;
+    const box = this.ink.boxOf(id) ?? { x: this.win.innerWidth / 2 - 160, y: 80, w: 0, h: 0 };
+    this.card.open(this.view(s), box, true);
+    this.deps.onCardChange?.(true);
+    this.redraw();
+    if (s.text !== s.sentText) this.flush(s);
+    return true;
+  }
+
   /** J / K (6.2): the next or previous note in the deck's order, opening its card. */
   step(dir: 1 | -1): void {
     const ids = this.order.filter((id) => {

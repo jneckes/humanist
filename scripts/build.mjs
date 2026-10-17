@@ -4,9 +4,12 @@
 //   packages/app/dist/editor.cjs          the Edit capability, loaded at runtime if present (D11)
 //   packages/app/dist/preload-deck.cjs    deck/render/diagnostics preload (sandboxed, isolated world)
 //   packages/app/dist/preload-shell.cjs   shell preload (contextBridge API)
+//   packages/app/dist/preload-settings.cjs  the Settings window's preload (contextBridge API, core/ipc-trust.ts)
+//   packages/app/dist/preload-welcome.cjs   the welcome window's preload (contextBridge API, core/ipc-files.ts)
 //   packages/app/dist/shell/              shell UI (HTML, CSS, JS)
 //   packages/app/dist/assets/             bundled decks (diagnostics, sample)
 //   packages/cli/dist/blueline.cjs        the `blueline` command (cli + core)
+//   packages/cli/dist/blueline, blueline.cmd  the shims that run it with Node 22+ (6.1; packages/cli/src/shim)
 //   packages/cli/dist/blueline-editor.cjs editor + MCP SDK, loaded only for `mcp` and `export` (later phases)
 //
 // Flags:
@@ -14,7 +17,7 @@
 //   --watch        rebuild on change
 //   --run          start the app after the first build (with --watch: restart on main changes)
 import * as esbuild from 'esbuild';
-import { cpSync, existsSync, mkdirSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -122,7 +125,29 @@ const configs = [
   },
   {
     ...common,
-    entryPoints: [join(root, 'packages/app/src/shell/shell.ts'), join(root, 'packages/app/src/shell/diagnostics.ts')],
+    entryPoints: [join(root, 'packages/app/src/preload/settings.ts')],
+    outfile: join(appDist, 'preload-settings.cjs'),
+    platform: 'browser',
+    format: 'cjs',
+    target: 'chrome152',
+    external: ['electron'],
+    alias,
+    plugins: [coreSubpaths, forbidEditor],
+  },
+  {
+    ...common,
+    entryPoints: [join(root, 'packages/app/src/preload/welcome.ts')],
+    outfile: join(appDist, 'preload-welcome.cjs'),
+    platform: 'browser',
+    format: 'cjs',
+    target: 'chrome152',
+    external: ['electron'],
+    alias,
+    plugins: [coreSubpaths, forbidEditor],
+  },
+  {
+    ...common,
+    entryPoints: [join(root, 'packages/app/src/shell/shell.ts'), join(root, 'packages/app/src/shell/diagnostics.ts'), join(root, 'packages/app/src/shell/settings.ts'), join(root, 'packages/app/src/shell/welcome.ts')],
     outdir: join(appDist, 'shell'),
     platform: 'browser',
     format: 'iife',
@@ -170,6 +195,12 @@ function copyStatic() {
   if (existsSync(reveal) && statSync(reveal).isDirectory()) {
     cpSync(reveal, join(appDist, 'assets/diagnostics-deck'), { recursive: true });
   }
+  // The `blueline` shims go next to blueline.cjs (6.1; Install Command Line Tool links to dist's or Resources/cli's
+  // copy): the POSIX one executable, the Windows one with CRLF line endings, which cmd.exe needs for its labels.
+  const shim = join(root, 'packages/cli/src/shim');
+  cpSync(join(shim, 'blueline'), join(cliDist, 'blueline'));
+  chmodSync(join(cliDist, 'blueline'), 0o755);
+  writeFileSync(join(cliDist, 'blueline.cmd'), readFileSync(join(shim, 'blueline.cmd'), 'utf8').replace(/\r?\n/g, '\r\n'));
 }
 
 let child = null;

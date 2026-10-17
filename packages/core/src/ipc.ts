@@ -3,6 +3,8 @@
 // schema with size and rate limits (9.1, "Main treats every message from a deck view as written by the page").
 
 import type { ClientMap, DomTextNode, Note, SlideNavKind } from './types';
+import type { FindResponse, ShellIndexReady, ShellThumb } from './ipc-render';
+import type { ShellCommand, ShellIndex, ShellStatus, ShellView } from './ipc-views';
 
 export type AppMode = 'read' | 'review' | 'edit';
 export type TrustState = 'protected' | 'trusted';
@@ -369,6 +371,8 @@ export interface ShellLayout {
   rightPanel: number;
   /** Added by app-shell: height of the "This page tried to leave the document" bar (0 when hidden). */
   banner: number;
+  /** Added by views: height of the Find bar (6.9 Find; 0 when closed). */
+  findBar: number;
 }
 
 export interface ShellState {
@@ -388,6 +392,12 @@ export interface ShellState {
   layout: ShellLayout;
   notes: Pick<Note, 'id' | 'status' | 'text' | 'kind'>[];
   banner: string | null; // e.g. "This page tried to leave the document"
+  /** Added by views (6.9): the deck or document view, its zoom, Reading Width, the rail, Present, scrolling. */
+  view: ShellView;
+  /** Added by views (6.9 Navigation): the slide index of the current version (rail titles, outline, Find). */
+  index: ShellIndex | null;
+  /** Added by views (6.0 Status bar): a long task, a deferred reload (6.6), a file that went away (9.2). */
+  status: ShellStatus;
 }
 
 export interface DiagStep {
@@ -427,6 +437,26 @@ export interface ShellApi {
   dismissBanner(): Promise<void>;
   /** Added by app-shell (ShellToMain.popupMenu): `x`, `y` in the shell's CSS pixels. */
   popupMenu(menu: ShellMenu, x: number, y: number): Promise<void>;
+  /** Added by views (ViewsShellToMain.command): a toolbar or Find bar button. */
+  command(cmd: ShellCommand): Promise<void>;
+  /** Added by views (ViewsShellToMain.show): the rail or the outline; true when the deck view moved there. */
+  show(entry: number): Promise<boolean>;
+  /** Added by views (ViewsShellToMain.scroll): the scroll bars of a deck view larger than the window moved. */
+  scroll(x: number, y: number): Promise<void>;
+  /** Added by views (RenderShellChannels.find): Find across slides (6.9). */
+  find(query: string): Promise<FindResponse>;
+  /** Added by views (RenderShellChannels.findShow): go to a Find hit and highlight it; true when highlighted. */
+  findShow(slide: number, matchIndex: number): Promise<boolean>;
+  /** Added by views (ViewsShellToMain.findClosed). */
+  findClosed(): Promise<void>;
+  /** Added by views (RenderShellChannels.thumb): a thumbnail for the rail is ready. */
+  onThumb(cb: (t: ShellThumb) => void): void;
+  /** Added by views (RenderShellChannels.indexReady): the slide index of a version is ready. */
+  onIndexReady(cb: (r: ShellIndexReady) => void): void;
+  /** Added by views (MainToShellViews.findOpen): Cmd+F. */
+  onFindOpen(cb: () => void): void;
+  /** Added by views (MainToShellViews.scrollTo): main panned the deck view. */
+  onScrollTo(cb: (p: { x: number; y: number }) => void): void;
   diag: {
     getState(): Promise<DiagState>;
     onState(cb: (s: DiagState) => void): void;
@@ -440,7 +470,7 @@ export interface ShellApi {
 // The `blueline` command launches the app with `--bl-cmd=<AppCommand>`, `--bl-args=<base64url JSON>` and,
 // for map and check, `--bl-out=<file>` (6.1; docs/ARCHITECTURE.md, Commands).
 
-export type AppCommand = 'open' | 'map' | 'check';
+export type AppCommand = 'open' | 'map' | 'check' | 'pdf';
 
 /** `--bl-args` of `open`: absolute paths (the CLI resolves them against its own working directory). */
 export interface OpenArgs {
@@ -475,7 +505,7 @@ export interface CheckArgs {
  * and exits with the app's exit code.
  */
 export interface CommandResult {
-  command: 'map' | 'check';
+  command: 'map' | 'check' | 'pdf';
   exitCode: number;
   text: string;
   json: unknown;

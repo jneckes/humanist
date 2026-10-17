@@ -1,17 +1,27 @@
 // The app controller: opening files (6.1), one window per file, and the actions behind the menu, the app
 // chords and the shell's buttons. index.ts creates it after `ready`.
+//
+// Phase 1 (views): files open through 6.10's full decision (folders.ts resolveOpenTrust: the trusted and
+// untrusted folders, and the switches trust.json remembers for the file and its marker); every open lands in
+// Open Recent (recent.ts); the reader commands (Present, Find, Save as PDF, Print, the zoom, Reading Width, the
+// rail) run on the focused window; the menu follows the focused window's state (menu.ts MenuState).
 
 import { execFile, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { BrowserWindow, app, dialog, shell, webContents as allWebContents } from 'electron';
-import type { Capabilities } from '@blueline/core/ipc';
+import type { AppMode, Capabilities } from '@blueline/core/ipc';
+import { PROTECTED_VIEW_HELP, protectedViewHelpText } from '@blueline/core/ipc-trust';
 import type { Person } from '@blueline/core/types';
 import { PHASE_STUBS, SAVE_EXPLANATION, SAVE_RECEIVED_PHASE5, type AppAction } from './actions';
 import type { ConfigStore } from './config';
-import { DocumentRegistry, OpenError, loadDocument, newDocumentId, trustedDocumentId, type BlDocument } from './documents';
+import { DocumentRegistry, OpenError, loadDocument, newDocumentId, trustedDocumentId, type BlDocument, type OpenDecision } from './documents';
 import { openDiagnostics } from './diagnostics';
+import { resolveOpenTrust, toTrustDecision, type TrustSettings } from './folders';
+import { NO_DOCUMENT, type MenuState } from './menu';
+import type { RecentFiles } from './recent';
 import { SessionStore, sessionFileFor, type SaveEvent } from './session-store';
+import type { TrustStore } from './trust-store';
 import { DocWindow, type AppPaths } from './window';
 import { FileKeyMap, fileKeys, type FileKeys } from './window-key';
 
@@ -26,6 +36,22 @@ export interface ControllerDeps {
   devTools: boolean;
   platform: NodeJS.Platform;
   log(msg: string): void;
+  /** Added by views: trust.json (6.10 Remembered). Without it, files open on their marker alone (decideTrust). */
+  trustStore?: TrustStore;
+  /** Added by views: Settings › Trust (folders, the strict option, the allowlist). */
+  trustSettings?: TrustSettings;
+  /** Added by views: File › Open Recent (6.1). */
+  recent?: RecentFiles;
+  /** Added by views: Help › Install Command Line Tool (cli-install.ts). */
+  installCli?(): Promise<unknown>;
+  /** Added by views: Settings… (settings-window.ts). */
+  openSettings?(pane: 'general' | 'trust'): void;
+  /** Added by views: Help › Welcome to Blueline (first-run.ts). */
+  showWelcome?(): void;
+  /** Added by views: a window changed mode (first-run.ts noteMode: the sample deck's tour). */
+  noteMode?(realpath: string, mode: AppMode): void;
+  /** Added by views: the focused window's state changed; the app menu is rebuilt (index.ts). */
+  onMenuState?(): void;
 }
 
 export interface OpenOptions {
@@ -48,6 +74,7 @@ export class AppController {
   private readonly stores = new Set<SessionStore>();
   /** Error dialogs still on screen. */
   private readonly dialogs = new Set<Promise<unknown>>();
+  private menuTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly deps: ControllerDeps) {}
 
@@ -67,6 +94,46 @@ export class AppController {
     return list.length > 0 ? list[list.length - 1] : null;
   }
 
+  /** The document window that has focus now, or null (the menu's state; Settings or welcome may have focus). */
+  private focusedOnly(): DocWindow | null {
+    const fw = BrowserWindow.getFocusedWindow();
+    if (!fw) return null;
+    return this.all().find((w) => w.win === fw) ?? null;
+  }
+
+  /** The app menu's state: the focused document window's views (menu.ts). */
+  menuState(): MenuState {
+    const w = this.focusedOnly() ?? (BrowserWindow.getFocusedWindow() ? null : this.focused());
+    if (!w) return { ...NO_DOCUMENT, railHidden: this.railHidden() };
+    const v = w.viewInfo();
+    return {
+      hasDocument: true,
+      appMode: w.appMode,
+      kind: v.kind,
+      zoomMode: v.zoomMode,
+      readingWidth: v.readingWidth,
+      railHidden: v.railHidden,
+      presenting: v.presenting,
+    };
+  }
+
+  /** The app menu is rebuilt soon (state changes come in bursts: a mode change relayouts and re-renders). */
+  menuChanged(): void {
+    if (this.menuTimer) return;
+    this.menuTimer = setTimeout(() => {
+      this.menuTimer = null;
+      try {
+        this.deps.onMenuState?.();
+      } catch (e) {
+        this.deps.log(`menu: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }, 30);
+  }
+
+  private railHidden(): boolean {
+    return this.deps.config.get().railHidden === true;
+  }
+
   /**
    * Opens a file in its own window, or focuses the window that already shows it (6.1 One window per file).
    * Errors are shown to the user (and logged); resolves to null then.
@@ -78,6 +145,25 @@ export class AppController {
     const job = this.doOpen(abs, o).finally(() => this.opening.delete(abs));
     this.opening.set(abs, job);
     return job;
+  }
+
+  /** 6.10 When it applies, with the remembered switches (folders.ts resolveOpenTrust); null without trust.json. */
+  private decideTrust(): ((realpath: string, requestedProtected: boolean) => Promise<OpenDecision>) | undefined {
+    const store = this.deps.trustStore;
+    const settings = this.deps.trustSettings;
+    if (!store || !settings) return undefined;
+    return async (realpath, requestedProtected) => {
+      const t = await resolveOpenTrust(realpath, requestedProtected, { store, lists: () => settings.lists(), platform: this.deps.platform });
+      this.deps.log(`trust: ${path.basename(realpath)} ${t.state} (${t.rule}${t.allowNetwork ? ', network allowed' : ''}${t.state === 'protected' && t.editing ? ', editing on' : ''})`);
+      return {
+        trust: toTrustDecision(t),
+        allowNetwork: t.allowNetwork,
+        editing: t.editing,
+        // 6.8: trust.json's received state decides alone; otherwise documents.ts counts the location rule too.
+        received: t.receivedRemembered ? t.received : t.received ? true : null,
+        markerUncertain: t.markerUncertain,
+      };
+    };
   }
 
   private async doOpen(abs: string, o: OpenOptions): Promise<DocWindow | null> {
@@ -97,6 +183,7 @@ export class AppController {
         protectedRequested: o.protected,
         // 6.10 Storage: a Trusted file keeps its origin (and so its storage) across opens; Protected never does.
         docIdFor: (trust, fileKey) => (trust === 'trusted' ? trustedDocumentId(this.deps.userData, fileKey) : Promise.resolve(newDocumentId())),
+        decideTrust: this.decideTrust(),
       });
     } catch (e) {
       this.reportOpenError(abs, e);
@@ -163,6 +250,8 @@ export class AppController {
         { path: doc.path, realpath: doc.realpath, fileKey: doc.fileKey, sha256: doc.contentHash, title: doc.title },
         (e: SaveEvent) => win?.onSaved(e),
       );
+      const trustStore = this.deps.trustStore;
+      const config = this.deps.config;
       win = await DocWindow.create({
         doc,
         registry: this.registry,
@@ -180,6 +269,15 @@ export class AppController {
         reveal: (rp) => shell.showItemInFolder(rp),
         closed: (w) => this.onWindowClosed(w),
         log: (m) => this.deps.log(m),
+        rememberTrust: trustStore ? (rp, marker, change) => trustStore.remember(rp, marker, change) : undefined,
+        trustSettings: this.deps.trustSettings,
+        prefs: {
+          railHidden: () => config.get().railHidden === true,
+          setRailHidden: (hidden) => void config.update({ railHidden: hidden }),
+        },
+        onViewChange: () => this.menuChanged(),
+        onModeChange: (w, mode) => this.deps.noteMode?.(w.doc.realpath, mode),
+        openSettings: this.deps.openSettings,
       });
     } catch (e) {
       this.registry.remove(doc);
@@ -191,12 +289,16 @@ export class AppController {
     this.windows.set(keys, win);
     this.stores.add(store);
     win.win.once('closed', () => void store.idle().then(() => this.stores.delete(store)));
+    // 6.1 Open Recent: every successful open (and app.addRecentDocument on macOS and Windows, recent.ts).
+    void this.deps.recent?.add(doc.realpath).catch((e: unknown) => this.deps.log(`recent.json: ${e instanceof Error ? e.message : String(e)}`));
+    this.menuChanged();
     this.deps.log(`opened ${doc.fileName} (${doc.trust()}${doc.trustReason ? `: ${doc.trustReason}` : ''}) docId=${doc.docId}`);
     return win;
   }
 
   private onWindowClosed(w: DocWindow): void {
     this.windows.delete(w);
+    this.menuChanged();
   }
 
   private reportOpenError(p: string, e: unknown): void {
@@ -215,14 +317,26 @@ export class AppController {
     while (this.dialogs.size > 0) await Promise.all([...this.dialogs]);
   }
 
-  /** A session or config write is pending or running. */
+  /** A session, config, trust.json or recent.json write is pending or running. */
   writesPending(): boolean {
-    return this.deps.config.busy || [...this.stores].some((s) => s.busy);
+    return (
+      this.deps.config.busy || [...this.stores].some((s) => s.busy) || this.deps.trustStore?.busy === true || this.deps.recent?.busy === true
+    );
   }
 
-  /** Resolves when every session and config write has finished (before quitting). */
+  /** Resolves when every session, config, trust.json and recent.json write has finished (before quitting). */
   async idle(): Promise<void> {
-    await Promise.all([...[...this.stores].map((s) => s.idle()), this.deps.config.idle()]);
+    await Promise.all([
+      ...[...this.stores].map((s) => s.idle()),
+      this.deps.config.idle(),
+      this.deps.trustStore?.idle() ?? Promise.resolve(),
+      this.deps.recent?.idle() ?? Promise.resolve(),
+    ]);
+  }
+
+  /** Settings › Trust changed: every open document's partition policy is applied again (9.9; trust-hooks update()). */
+  trustSettingsChanged(): void {
+    for (const w of this.all()) void w.reapplyPolicy();
   }
 
   /** File › Open… and File › Open in Protected View… */
@@ -285,7 +399,25 @@ export class AppController {
         void openDiagnostics({ auto: false }).catch((e) => this.deps.log(`diagnostics: ${String(e)}`));
         return;
       case 'install-cli':
-        (w ?? this.focused())?.toast(PHASE_STUBS['install-cli']!, 'info');
+        if (this.deps.installCli) void this.deps.installCli().catch((e: unknown) => this.deps.log(`install cli: ${String(e)}`));
+        return;
+      case 'settings':
+        this.deps.openSettings?.('general');
+        return;
+      case 'welcome':
+        this.deps.showWelcome?.();
+        return;
+      case 'toggle-rail': {
+        // 6.0: the rail can be collapsed; remembered for every window (config.json).
+        const hidden = !this.railHidden();
+        void this.deps.config.update({ railHidden: hidden });
+        for (const x of this.all()) x.railChanged();
+        this.menuChanged();
+        return;
+      }
+      case 'about-protected':
+        if (w && !w.isDestroyed()) w.aboutProtectedView();
+        else void dialog.showMessageBox({ type: 'info', message: PROTECTED_VIEW_HELP.title, detail: protectedViewHelpText(), buttons: ['OK'] }).catch(() => undefined);
         return;
     }
     if (!w || w.isDestroyed()) return;
@@ -310,6 +442,31 @@ export class AppController {
         return;
       case 'save':
         void this.save(w);
+        return;
+      case 'present':
+        // 6.9: Cmd+Option+P starts Present; Esc ends it (main takes it in before-input-event).
+        w.present.enter();
+        return;
+      case 'find':
+        w.openFind();
+        return;
+      case 'save-pdf':
+        void w.savePdf();
+        return;
+      case 'print':
+        void w.print();
+        return;
+      case 'zoom-fit':
+        w.setZoomMode('fit');
+        return;
+      case 'zoom-actual':
+        w.setZoomMode('actual');
+        return;
+      case 'zoom-fill':
+        w.setZoomMode('fill');
+        return;
+      case 'reading-width':
+        w.toggleReadingWidth();
         return;
       case 'undo':
       case 'redo': {

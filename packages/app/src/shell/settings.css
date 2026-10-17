@@ -1,0 +1,243 @@
+/* The Settings window (6.1 Settings › General; 6.10 Settings › Trust). Tabs across the top, one pane at a time,
+   the same tokens as the document shell (shell.css) so both follow the system's light or dark appearance. */
+
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --text: #1c1d21;
+  --muted: #5f6470;
+  --line: #dfe2e8;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --pressed: #e7edfb;
+  --ok: #1a7f37;
+  --error: #b42318;
+
+  color-scheme: light dark;
+  font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f2024;
+    --surface: #26272c;
+    --text: #e8e9ec;
+    --muted: #a2a6b0;
+    --line: #3a3c43;
+    --accent: #5b8cff;
+    --accent-text: #0d0f14;
+    --pressed: #2f3a55;
+    --ok: #7ee2a0;
+    --error: #ff8a80;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 16px 0;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.tab {
+  appearance: none;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  color: var(--muted);
+  font: inherit;
+  font-weight: 600;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.tab[aria-selected='true'] {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.content {
+  overflow: auto;
+  padding: 8px 24px 32px;
+}
+
+.pane {
+  max-width: 680px;
+}
+
+.heading {
+  font-size: 14px;
+  margin: 22px 0 6px;
+}
+
+.subheading {
+  font-size: 13px;
+  margin: 14px 0 4px;
+}
+
+.status {
+  margin: 4px 0 10px;
+  font-weight: 600;
+}
+
+.note {
+  margin: 4px 0 8px;
+  color: var(--muted);
+}
+
+.result {
+  min-height: 1.45em;
+  margin: 6px 0 0;
+}
+
+.result[data-kind='ok'] {
+  color: var(--ok);
+}
+
+.result[data-kind='error'] {
+  color: var(--error);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0 0;
+}
+
+button,
+input[type='text'] {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--pressed);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+input[type='text'] {
+  min-width: 240px;
+  flex: 1 1 240px;
+}
+
+.list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.list .item,
+.list .empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.list .item:first-child,
+.list .empty:first-child {
+  border-top: 0;
+}
+
+.list .empty {
+  color: var(--muted);
+}
+
+.list .path,
+.list .host {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
+.list .remove {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+}
+
+.check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-weight: 600;
+}
+
+.help {
+  margin-top: 28px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.help-list {
+  margin: 4px 0 8px;
+  padding-left: 20px;
+}
+
+.help-list li {
+  margin: 3px 0;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

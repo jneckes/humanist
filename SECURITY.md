@@ -25,6 +25,65 @@ public issue.
   WebRTC limited to proxied connections; storage cleared when the window closes.
 - Electron is upgraded within 14 days of each Electron security release (SPEC 9.6).
 
+## What Phase 1 added (Reader)
+
+Every addition follows the rules above: nothing a deck sends is trusted, a deck view never gives main a path,
+and main changes a file's trust only from the trust bar's buttons and Settings.
+
+- **New shell pages.** Settings (`app://shell/settings.html`) and the welcome window (`app://shell/welcome.html`)
+  follow 9.1 Shell view as the document shell does: their own sandboxed, context-isolated BrowserWindows in the
+  `shell` session, the CSP as a response header and a `<meta>`, a preload whose `contextBridge` API is named,
+  typed functions only, pages built with `textContent` (no `innerHTML`), and no navigation. Their channels
+  (`bl:settings:*`, `bl:welcome:*`) are answered only for that window's own webContents.
+  `test/security/trust-ipc.spec.ts` invokes every Settings channel from a Protected deck view and from a
+  render-mode view: each is refused and nothing changes (config.json, trust.json, the document's trust).
+- **Thumbnails** reach the shell through `app://shell/thumbs/<docId>/<name>`, which exists only in the shell
+  session. Main maps the docId to that window's file itself and serves only a well-formed
+  `<sha256>-<slide>-<width>.png` that is a regular file (no links) in that file's thumbnail cache, with
+  `nosniff` and `no-store`; anything else under `/thumbs/` is a 404.
+- **New IPC.** From the deck view: the measured design size, PageUp/PageDown steps and wheel pans (honoured only
+  right after main saw the matching real input in `before-input-event` or `input-event`), the view state for a
+  reload (scroll, hash, slide, open card and its draft; bounded field by field), the busy state, and a refused
+  file drop (no payload). From the shell: view commands, rail clicks, scroll, Find, and files dropped on the
+  shell (the shell preload reads the path with `webUtils.getPathForFile` in its isolated world; main checks each
+  one again: absolute, an existing regular `.html`/`.htm` file, and opens it with its own trust state). Every
+  payload is rebuilt field by field in main, as `ipc-guard.ts` does. A file dropped on the deck view is stopped
+  in the deck preload's capture phase before the page sees it (`test/e2e/views-open.spec.ts`).
+- **Trust memory** (`<userData>/trust.json`, mode 0600, atomic writes): Allow network, Enable editing and
+  "received" per file realpath, each stored with the whole internet marker it was made on. A decision applies
+  only while the file carries exactly that marker; a new download of the file drops it. Nothing moves trust
+  from one path to another. A malformed file or entry is ignored, never read as Trusted. A decision is not
+  stored when the marker could not be read. A file opened in Protected view on request ignores remembered
+  switches. `blueline pdf` runs with a private app-data folder, so remembered decisions never apply to it.
+- **Trusted and untrusted folders** (Settings › Trust): a marked file in a trusted folder opens Trusted; an
+  unmarked file in an untrusted folder opens Protected; the deepest folder wins, and untrusted wins a tie.
+  Blueline refuses to trust the home folder, Desktop, Downloads, temporary and mail folders, any folder that
+  contains one of them, mount points (`/Volumes`, `/mnt`, `/media`), drive and share roots. Trusted folders
+  match exactly; untrusted folders also match case-insensitively on macOS and Windows (the safe direction).
+- **Settings › Trust** also holds "Block all network in Protected view" (the CDN exception off too) and the CDN
+  allowlist (editable, reset to the defaults); a change applies at once to every open document's partition.
+- **Derived files keep the marker** (9.9): a Save as PDF output and the `blueline map` probe copy get the
+  document's marker (on macOS through the native helper, on Windows a copy of `Zone.Identifier`); a copy of a
+  Protected document that has no marker gets a new one naming the document. A marker that cannot be written
+  fails the save.
+- **Print** of a raster deck shows a print-only page of the slide images, served from app data to a hidden
+  window in a partition of its own that runs no script and reaches no network.
+- **The macOS helper** (`native/macos`) is a long-lived child of main speaking JSON lines: absolute paths only,
+  size caps on every request and line, a timeout per request; it ships in `Resources/helper` and is signed with
+  the app. Without it, main uses `/usr/bin/xattr` for the marker and says so.
+- **The Windows installer** (`packages/app/build/installer.nsh`) writes the `Blueline.HTML` ProgID,
+  `OpenWithProgids` for `.html` and `.htm`, `Software\Blueline\Capabilities` and `RegisteredApplications` in
+  the install mode's hive (per user or per machine), so Blueline appears in Default Apps; an uninstall removes
+  them, an update keeps them. Not run on Windows yet.
+
+Known limits added by Phase 1:
+
+- Render windows (thumbnails, the slide index, PDF pages) use the document's own partition and origin, as 9.1
+  says, so they share its storage: a deck that keeps its current slide in `localStorage` sees the background
+  walk's last slide on its next load (and keeps it, for a Trusted file).
+- The local dogfooding build (`npm run dist` without signing credentials) is signed ad hoc, without the hardened
+  runtime, and not notarized. It is for the machine that built it, not for distribution.
+
 ## Known channels in Protected view
 
 SPEC 9.9 measures "zero escapes" against the security suite (`npm run test:security`). The suite finds two

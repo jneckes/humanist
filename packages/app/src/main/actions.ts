@@ -1,6 +1,6 @@
 // The app actions behind the menu items and the app chords (6.2: the chords are menu accelerators that
-// main also takes in before-input-event and runs itself). One list, so a menu click and a chord run the
-// same code.
+// main also takes in before-input-event and runs itself). One list, so a menu click, a chord and a shell
+// button run the same code.
 
 import type { AppChordAction } from './chords';
 
@@ -12,18 +12,22 @@ export type AppAction =
   | 'reveal'
   | 'close'
   | 'diagnostics'
-  | 'install-cli';
+  | 'install-cli'
+  // Added by views (Phase 1): 6.9 Views, the rail, 6.10 help, Settings and first run.
+  | 'zoom-fit'
+  | 'zoom-actual'
+  | 'zoom-fill'
+  | 'reading-width'
+  | 'toggle-rail'
+  | 'about-protected'
+  | 'settings'
+  | 'welcome';
 
 /** Menu items whose feature belongs to a later phase: a toast says when it arrives. */
 export const PHASE_STUBS: Readonly<Partial<Record<AppAction, string>>> = Object.freeze({
-  present: 'Present arrives in Phase 1.',
-  find: 'Find arrives in Phase 1.',
-  'save-pdf': 'Save as PDF arrives in Phase 1.',
-  print: 'Print arrives in Phase 1.',
   send: 'Send to Claude Code arrives in Phase 4.',
   undo: 'Undo for edits and marks arrives in Phase 2.',
   redo: 'Redo for edits and marks arrives in Phase 2.',
-  'install-cli': 'Install Command Line Tool arrives in Phase 1.',
 });
 
 /** 6.8 Save (Review): the explanation the first Cmd+S on your own document shows, once. */

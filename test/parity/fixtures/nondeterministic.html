@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Parity control</title>
+<!--
+  The render-parity harness's negative control (test/parity/parity.spec.ts): slide 1 paints a box in a colour
+  picked by Math.random() at load, so Blueline's render and the plain render of this file differ there (16% of
+  the slide's pixels); slides 2 and 3 are deterministic and must match. A harness that passed slide 1 would be blind.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; font: 48px/1.2 Arial, sans-serif; }
+  [data-slide] { position: absolute; inset: 0; padding: 80px; visibility: hidden; }
+  [data-slide].on { visibility: visible; }
+  #box { width: 640px; height: 360px; margin-top: 40px; }
+</style>
+</head>
+<body>
+<section data-slide class="on"><h1>Random colour</h1><div id="box"></div></section>
+<section data-slide><h1>Fixed slide</h1><p>Nothing here changes between loads.</p></section>
+<section data-slide><h1>Another fixed slide</h1><p>Three slides: 9.4 detects a generic engine from three siblings.</p></section>
+<script>
+  // Three random channels: two loads land within the gate's tolerance of each other about once in 3,400 runs.
+  function c() { return Math.floor(Math.random() * 256); }
+  document.getElementById('box').style.background = 'rgb(' + c() + ',' + c() + ',' + c() + ')';
+  var slides = document.querySelectorAll('[data-slide]'), cur = 0;
+  document.addEventListener('keydown', function (e) {
+    var next = e.key === 'ArrowRight' ? cur + 1 : e.key === 'ArrowLeft' ? cur - 1 : cur;
+    if (next < 0 || next >= slides.length || next === cur) return;
+    slides[cur].classList.remove('on');
+    slides[next].classList.add('on');
+    cur = next;
+  });
+</script>
+</body>
+</html>

@@ -8,6 +8,7 @@ const repo = path.resolve(__dirname, '../../..');
 const req = createRequire(path.join(repo, 'package.json'));
 const builder = req('./packages/app/electron-builder.config.cjs');
 const fuses = req('./scripts/fuses.cjs');
+const { macSigningFor } = req('./scripts/mac-signing.cjs');
 
 describe('electron-builder config', () => {
   it('declares html and htm with role Editor (9.10 File associations)', () => {
@@ -18,7 +19,7 @@ describe('electron-builder config', () => {
 
   it('ships the CLI outside app.asar in Resources/cli (6.1)', () => {
     expect(builder.asar).toBe(true);
-    expect(builder.extraResources).toEqual([expect.objectContaining({ to: 'cli', filter: ['blueline.cjs', 'blueline-editor.cjs'] })]);
+    expect(builder.extraResources).toEqual([expect.objectContaining({ to: 'cli', filter: ['blueline.cjs', 'blueline-editor.cjs', 'blueline', 'blueline.cmd'] })]);
     expect(builder.extraResources[0].from).toBe(path.join(repo, 'packages/cli/dist'));
   });
 
@@ -41,8 +42,10 @@ describe('electron-builder config', () => {
     for (const s of sources) expect(s).toMatch(/servedDirs\(/);
   });
 
-  it('macOS: hardened runtime; the microphone entitlement in both entitlements files; NSMicrophoneUsageDescription (9.10)', () => {
-    expect(builder.mac.hardenedRuntime).toBe(true);
+  it('macOS: hardened runtime for release signing; the microphone entitlement in both entitlements files; NSMicrophoneUsageDescription (9.10)', () => {
+    expect(macSigningFor({ CSC_LINK: '/secret/cert.p12' })).toEqual({ release: true, mac: { hardenedRuntime: true } });
+    expect(macSigningFor({ CSC_NAME: 'Blueline Contributors (TEAMID)' }).mac.hardenedRuntime).toBe(true);
+    expect(macSigningFor({ BLUELINE_SIGN: '1' }).release).toBe(true);
     expect(builder.mac.extendInfo.NSMicrophoneUsageDescription).toMatch(/\S/);
     for (const f of [builder.mac.entitlements, builder.mac.entitlementsInherit]) {
       const xml = fs.readFileSync(f, 'utf8');
@@ -51,10 +54,25 @@ describe('electron-builder config', () => {
     expect(builder.mac.entitlements).not.toBe(builder.mac.entitlementsInherit);
   });
 
+  it('macOS without a signing identity: an ad-hoc signed, unnotarized local build (SPEC 10 Phase 1 Builds)', () => {
+    // Apple silicon runs no unsigned code, so the local build is signed ad hoc ('-'), not left unsigned; ad hoc
+    // signing under the hardened runtime fails library validation, so the runtime is off; nothing is notarized.
+    expect(macSigningFor({})).toEqual({ release: false, mac: { identity: '-', hardenedRuntime: false, notarize: false } });
+    expect(macSigningFor({ BLUELINE_SIGN: '0' }).release).toBe(false);
+    // The config itself follows the environment it is loaded in (no signing variables in the test run).
+    if (!process.env.CSC_LINK && !process.env.CSC_NAME && process.env.BLUELINE_SIGN !== '1') {
+      expect(builder.mac).toMatchObject({ identity: '-', hardenedRuntime: false, notarize: false });
+    }
+  });
+
   it("validates against electron-builder's own configuration schema", async () => {
     const { validateConfiguration } = req('app-builder-lib/out/util/config/config');
     const { DebugLogger } = req('builder-util/out/DebugLogger');
     await expect(validateConfiguration(JSON.parse(JSON.stringify(builder)), new DebugLogger(false))).resolves.toBeUndefined();
+    // And in release mode (hardened runtime, no ad-hoc identity).
+    const { identity: _i, notarize: _n, ...mac } = builder.mac;
+    const release = { ...builder, mac: { ...mac, ...macSigningFor({ BLUELINE_SIGN: '1' }).mac } };
+    await expect(validateConfiguration(JSON.parse(JSON.stringify(release)), new DebugLogger(false))).resolves.toBeUndefined();
   });
 
   it('afterPack is the fuses script', () => {

@@ -1,0 +1,242 @@
+/* The welcome window (6.0 First run). One column: the three ways to start, the tour once the sample deck is
+   open, the user's name and the crash-report question. The same tokens as the document shell (shell.css) and
+   Settings, so it follows the system's light or dark appearance. */
+
+:root {
+  --bg: #f5f6f8;
+  --surface: #ffffff;
+  --text: #1c1d21;
+  --muted: #5f6470;
+  --line: #dfe2e8;
+  --accent: #2563eb;
+  --accent-text: #ffffff;
+  --pressed: #e7edfb;
+  --ok: #1a7f37;
+  --error: #b42318;
+
+  color-scheme: light dark;
+  font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1f2024;
+    --surface: #26272c;
+    --text: #e8e9ec;
+    --muted: #a2a6b0;
+    --line: #3a3c43;
+    --accent: #5b8cff;
+    --accent-text: #0d0f14;
+    --pressed: #2f3a55;
+    --ok: #7ee2a0;
+    --error: #ff8a80;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.content {
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 28px 28px 24px;
+}
+
+.intro h1 {
+  font-size: 24px;
+  margin: 0 0 6px;
+  letter-spacing: -0.01em;
+}
+
+.lede {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.heading {
+  font-size: 14px;
+  margin: 24px 0 6px;
+}
+
+.note {
+  margin: 4px 0 8px;
+  color: var(--muted);
+}
+
+.result {
+  min-height: 1.45em;
+  margin: 6px 0 0;
+}
+
+.result[data-kind='ok'] {
+  color: var(--ok);
+}
+
+.result[data-kind='error'] {
+  color: var(--error);
+}
+
+.actions {
+  display: grid;
+  gap: 8px;
+}
+
+.action {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 8px;
+}
+
+.action-title {
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.action-text {
+  color: var(--muted);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+button,
+input[type='text'] {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--pressed);
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+  padding: 6px 18px;
+}
+
+button.primary:hover:not(:disabled) {
+  background: var(--accent);
+  filter: brightness(1.08);
+}
+
+input[type='text'] {
+  min-width: 240px;
+  flex: 1 1 240px;
+}
+
+.steps {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 22px 1fr;
+  gap: 8px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.step-mark {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.step[data-done='true'] .step-mark {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+
+.step-title {
+  font-weight: 600;
+}
+
+.step-text {
+  color: var(--muted);
+}
+
+.choices {
+  display: grid;
+  gap: 4px;
+}
+
+.choice {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 28px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.footer .note {
+  margin: 0;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

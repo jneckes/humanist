@@ -1,7 +1,7 @@
 // The `blueline` command line (6.1).
 import { describe, expect, it } from 'vitest';
 import { LATER, encodeAppArgs, parseCli, parseCoverage } from '../../../packages/cli/src/args';
-import { decodeArgs } from '../../../packages/app/src/main/args';
+import { decodeArgs, validatePdfArgs } from '../../../packages/app/src/main/args';
 
 describe('parseCli', () => {
   it('blueline <file> = blueline open <file>', () => {
@@ -36,12 +36,22 @@ describe('parseCli', () => {
     expect(parseCli(['check', 'x']).kind).toBe('usage');
   });
 
-  it('pdf, export, mcp and attach arrive in later phases', () => {
-    expect(parseCli(['pdf', 'deck.html'])).toEqual({ kind: 'later', name: 'pdf', phase: 1 });
+  it('pdf <file> [-o out.pdf] [--protected] [--json] (6.1, Phase 1)', () => {
+    expect(parseCli(['pdf', 'deck.html'])).toEqual({ kind: 'pdf', file: 'deck.html', out: null, protected: false, json: false });
+    expect(parseCli(['pdf', 'deck.html', '-o', 'out.pdf'])).toEqual({ kind: 'pdf', file: 'deck.html', out: 'out.pdf', protected: false, json: false });
+    expect(parseCli(['pdf', '--out', 'x/y.pdf', '--protected', '--json', 'deck.html'])).toEqual({ kind: 'pdf', file: 'deck.html', out: 'x/y.pdf', protected: true, json: true });
+    expect(parseCli(['pdf', 'deck.html', '--out=z.pdf'])).toMatchObject({ out: 'z.pdf' });
+    expect(parseCli(['pdf', '--', '-weird.html'])).toMatchObject({ kind: 'pdf', file: '-weird.html' });
+    for (const bad of [['pdf'], ['pdf', 'a.html', 'b.html'], ['pdf', 'a.html', '-o'], ['pdf', 'a.html', '--out='], ['pdf', 'a.html', '--fast'], ['pdf', 'a\0.html']]) {
+      expect(parseCli(bad).kind).toBe('usage');
+    }
+  });
+
+  it('export, mcp and attach arrive in later phases', () => {
     expect(parseCli(['export', 'deck.html'])).toEqual({ kind: 'later', name: 'export', phase: 3 });
     expect(parseCli(['mcp'])).toEqual({ kind: 'later', name: 'mcp', phase: 4 });
     expect(parseCli(['attach', 'd.html', 'memo.m4a'])).toEqual({ kind: 'later', name: 'attach', phase: 5 });
-    expect(Object.keys(LATER).sort()).toEqual(['attach', 'export', 'mcp', 'pdf']);
+    expect(Object.keys(LATER).sort()).toEqual(['attach', 'export', 'mcp']);
   });
 
   it('help and version', () => {
@@ -61,5 +71,12 @@ describe('parseCli', () => {
   it('--bl-args encoding round-trips through the app parser', () => {
     const v = { deck: '/Users/j/Q4 plan — final.html', report: true, json: true, minCoverage: 0.9 };
     expect(decodeArgs(encodeAppArgs(v))).toEqual({ ok: true, value: v });
+  });
+
+  it("the pdf command's PdfArgs are what the app's validator accepts", () => {
+    for (const v of [{ file: '/d/deck.html', out: null }, { file: '/d/deck.html', out: '/d/out.pdf', protected: true }]) {
+      const d = decodeArgs(encodeAppArgs(v));
+      expect(d.ok && validatePdfArgs(d.value)).toEqual(v);
+    }
   });
 });

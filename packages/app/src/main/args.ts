@@ -2,16 +2,22 @@
 // unit tests drive it directly.
 //
 // The app accepts:
-//   --bl-cmd=<open|map|check>      what to do (default open)
-//   --bl-args=<base64url JSON>     the command's arguments (OpenArgs, MapArgs, CheckArgs in core/ipc)
-//   --bl-out=<file>                map and check: where to write the CommandResult JSON
-//   --bl-parent=<pid>              map and check: the `blueline` command's pid; the run stops when it is
+//   --bl-cmd=<open|map|check|pdf>  what to do (default open)
+//   --bl-args=<base64url JSON>     the command's arguments (OpenArgs, MapArgs, CheckArgs in core/ipc; PdfArgs
+//                                  in core/ipc-render)
+//   --bl-out=<file>                map, check and pdf: where to write the CommandResult JSON
+//   --bl-parent=<pid>              map, check and pdf: the `blueline` command's pid; the run stops when it is
 //                                  gone (a killed command never leaves a probe run or a Diagnostics window)
 //   --protected                    open the given files in Protected view (6.10)
 //   plain paths                    files to open (Windows passes double-clicked files in argv, 6.1)
 // Everything else that starts with `-` is a Chromium or Electron switch and is ignored.
 
+import * as path from 'node:path';
 import type { AppCommand, CheckArgs, MapArgs, OpenArgs } from '@blueline/core/ipc';
+import type { PdfArgs } from '@blueline/core/ipc-render';
+
+/** The app's commands: core/ipc.ts AppCommand plus `pdf` (`blueline pdf deck.html [-o out.pdf]`, 6.1, Phase 1). */
+export type CommandName = AppCommand | 'pdf';
 
 /** argv of the second instance is not exact (Chromium reorders and adds switches), so the CLI's data travels here. */
 export interface SecondInstanceData {
@@ -25,9 +31,10 @@ export interface SecondInstanceData {
 export type ParsedArgs =
   | { cmd: 'open'; files: string[]; protected: boolean; errors: string[] }
   | { cmd: 'map'; map: MapArgs | null; out: string | null; errors: string[] }
-  | { cmd: 'check'; check: CheckArgs; out: string | null; errors: string[] };
+  | { cmd: 'check'; check: CheckArgs; out: string | null; errors: string[] }
+  | { cmd: 'pdf'; pdf: PdfArgs | null; out: string | null; errors: string[] };
 
-const COMMANDS: readonly AppCommand[] = ['open', 'map', 'check'];
+const COMMANDS: readonly CommandName[] = ['open', 'map', 'check', 'pdf'];
 /** Generous caps: argv comes from the local user, but the parser must not choke on junk. */
 const MAX_ARGS_JSON = 256 * 1024;
 const MAX_FILES = 256;
@@ -39,7 +46,7 @@ const MAX_PATH = 32 * 1024;
  */
 export function parseAppArgs(argv: readonly string[], opts: { defaultApp: boolean }): ParsedArgs {
   const errors: string[] = [];
-  let cmd: AppCommand = 'open';
+  let cmd: CommandName = 'open';
   let rawArgs: string | null = null;
   let out: string | null = null;
   let prot = false;
@@ -48,7 +55,7 @@ export function parseAppArgs(argv: readonly string[], opts: { defaultApp: boolea
     if (typeof a !== 'string') continue;
     if (a.startsWith('--bl-cmd=')) {
       const c = a.slice('--bl-cmd='.length);
-      if ((COMMANDS as readonly string[]).includes(c)) cmd = c as AppCommand;
+      if ((COMMANDS as readonly string[]).includes(c)) cmd = c as CommandName;
       else errors.push(`unknown --bl-cmd ${JSON.stringify(c.slice(0, 40))}`);
     } else if (a.startsWith('--bl-args=')) rawArgs = a.slice('--bl-args='.length);
     else if (a.startsWith('--bl-out=')) out = a.slice('--bl-out='.length) || null;
@@ -75,6 +82,11 @@ export function parseAppArgs(argv: readonly string[], opts: { defaultApp: boolea
     const c = json === undefined ? { auto: false } : validateCheckArgs(json);
     if (!c) errors.push('--bl-args: not valid check arguments');
     return { cmd, check: c ?? { auto: false }, out, errors };
+  }
+  if (cmd === 'pdf') {
+    const p = json === undefined ? null : validatePdfArgs(json);
+    if (json !== undefined && !p) errors.push('--bl-args: not valid pdf arguments');
+    return { cmd, pdf: p, out, errors };
   }
   const files = positional.filter((p) => p.length > 0 && p.length <= MAX_PATH);
   if (json !== undefined) {
@@ -153,6 +165,22 @@ export function validateMapArgs(v: unknown): MapArgs | null {
   if (json !== undefined && typeof json !== 'boolean') return null;
   if (min !== undefined && min !== null && (typeof min !== 'number' || !Number.isFinite(min) || min < 0 || min > 1)) return null;
   return { deck, report: report === true, json: json === true, minCoverage: typeof min === 'number' ? min : null, ...(rm === true ? { reducedMotion: true } : {}) };
+}
+
+/**
+ * `--bl-args` of `pdf` (core/ipc-render PdfArgs): the document and the output as absolute paths (the CLI
+ * resolves them against its own working directory; the app's may differ), out null for the default.
+ */
+export function validatePdfArgs(v: unknown): PdfArgs | null {
+  if (!plainObject(v)) return null;
+  const file = own(v, 'file');
+  const out = own(v, 'out');
+  const p = own(v, 'protected');
+  for (const k of Object.keys(v)) if (k !== 'file' && k !== 'out' && k !== 'protected') return null;
+  if (!pathString(file) || !path.isAbsolute(file)) return null;
+  if (out !== null && (!pathString(out) || !path.isAbsolute(out))) return null;
+  if (p !== undefined && typeof p !== 'boolean') return null;
+  return { file, out: out === null ? null : out, ...(p === true ? { protected: true } : {}) };
 }
 
 export function validateCheckArgs(v: unknown): CheckArgs | null {

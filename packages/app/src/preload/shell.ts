@@ -2,8 +2,12 @@
 // isolated world. The shell reaches main only through this contextBridge API of named, typed functions,
 // never a raw ipcRenderer. Event objects never cross into the page: callbacks get the payload only.
 // Used by every window's shell and by the Diagnostics window (the `diag` functions).
+//
+// Files dropped on the shell's areas (toolbar, rail, status bar) open in Blueline (6.1 Ways in): the drop is
+// read here, in the isolated world, with webUtils.getPathForFile, so the shell page never sees a path
+// (drop-guard.ts installShellFileDrop; main checks every path again, drop.ts).
 
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import {
   MainToShell,
   ShellToMain,
@@ -13,6 +17,10 @@ import {
   type ShellMenu,
   type ShellState,
 } from '@blueline/core/ipc';
+import { FilesShellChannels } from '@blueline/core/ipc-files';
+import { RenderShellChannels, type FindResponse, type ShellIndexReady, type ShellThumb } from '@blueline/core/ipc-render';
+import { MainToShellViews, ViewsShellToMain, type ShellCommand } from '@blueline/core/ipc-views';
+import { installShellFileDrop } from './drop-guard';
 
 type Toast = { text: string; kind: 'info' | 'warn' | 'error' };
 
@@ -39,6 +47,17 @@ const api: ShellApi = {
   revealFile: () => ipcRenderer.invoke(ShellToMain.revealFile) as Promise<void>,
   dismissBanner: () => ipcRenderer.invoke(ShellToMain.dismissBanner) as Promise<void>,
   popupMenu: (menu: ShellMenu, x: number, y: number) => ipcRenderer.invoke(ShellToMain.popupMenu, menu, x, y) as Promise<void>,
+  // views (6.9)
+  command: (cmd: ShellCommand) => ipcRenderer.invoke(ViewsShellToMain.command, cmd) as Promise<void>,
+  show: (entry: number) => ipcRenderer.invoke(ViewsShellToMain.show, entry) as Promise<boolean>,
+  scroll: (x: number, y: number) => ipcRenderer.invoke(ViewsShellToMain.scroll, x, y) as Promise<void>,
+  find: (query: string) => ipcRenderer.invoke(RenderShellChannels.find, query) as Promise<FindResponse>,
+  findShow: (slide: number, matchIndex: number) => ipcRenderer.invoke(RenderShellChannels.findShow, slide, matchIndex) as Promise<boolean>,
+  findClosed: () => ipcRenderer.invoke(ViewsShellToMain.findClosed) as Promise<void>,
+  onThumb: (cb) => subscribe<ShellThumb>(RenderShellChannels.thumb, cb),
+  onIndexReady: (cb) => subscribe<ShellIndexReady>(RenderShellChannels.indexReady, cb),
+  onFindOpen: (cb) => subscribe<undefined>(MainToShellViews.findOpen, () => cb()),
+  onScrollTo: (cb) => subscribe<{ x: number; y: number }>(MainToShellViews.scrollTo, cb),
   diag: {
     getState: () => ipcRenderer.invoke(ShellToMain.diagState) as Promise<DiagState>,
     onState: (cb) => subscribe<DiagState>(MainToShell.diag, cb),
@@ -52,3 +71,10 @@ const api: ShellApi = {
 };
 
 contextBridge.exposeInMainWorld('blueline', api);
+
+// 6.1: files dropped on the shell open in Blueline; the page never sees their paths (main refuses the drop
+// from any shell but a document window's or the welcome window's, drop.ts).
+installShellFileDrop(window, {
+  getPathForFile: (f) => webUtils.getPathForFile(f),
+  open: (d) => ipcRenderer.invoke(FilesShellChannels.openDropped, d),
+});

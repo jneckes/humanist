@@ -3,12 +3,16 @@
 //
 // open, the bare form: start the app with the files (a running app gets them through second-instance, as
 // a double-click does) and return once it has started (exit 1 when it could not start).
-// map, check: run the app standalone with --bl-out, wait for it, print its CommandResult (text, or JSON with
-// --json) and exit with the result's exit code. The app runs in its own process group. SIGINT, SIGTERM and
+// map, check, pdf: run the app standalone with --bl-out, wait for it, print its CommandResult (text, or JSON
+// with --json) and exit with the result's exit code. The app runs in its own process group. SIGINT, SIGTERM and
 // SIGHUP sent to the command are passed on to the app's main process (under xvfb-run it is found in that
 // group, so xvfb-run still stops Xvfb and cleans up); a run that has not ended 10 s later is killed as a
-// group. The app is told the command's pid (--bl-parent), so it stops if the command is killed outright.
-// pdf, export, mcp, attach: later phases (exit 2).
+// group. On Windows, which has no signals, the app is asked to close first (taskkill without /F) and forced
+// only after those 10 s. The app is told the command's pid (--bl-parent), so it stops if the command is killed
+// outright. Each run has its own folder in the temp folder (run-dir.ts), removed on every way out; folders
+// that killed commands left behind are swept at the next start.
+// pdf (6.1, 6.9 Save as PDF): `blueline pdf deck.html [-o out.pdf]` renders the file headless, as map does.
+// export, mcp, attach: later phases (exit 2).
 
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -16,6 +20,7 @@ import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { CheckArgs, CommandResult, MapArgs, OpenArgs } from '@blueline/core/ipc';
+import type { PdfArgs } from '@blueline/core/ipc-render';
 import { USAGE, encodeAppArgs, parseCli } from './args';
 import {
   FORWARDED_SIGNALS,
@@ -24,11 +29,15 @@ import {
   findApp,
   parseProcStat,
   planLaunch,
+  windowsStopCommand,
   xvfbAppPid,
   type LaunchContext,
   type LaunchPlan,
   type ProcStat,
 } from './launch';
+import { makeRunDir, sweepStaleRunDirs } from './run-dir';
+
+type RunCommand = 'map' | 'check' | 'pdf';
 
 /** Kept equal to packages/cli/package.json. */
 const VERSION = '0.0.0';
@@ -94,6 +103,27 @@ function launchPlan(appArgs: string[]): LaunchPlan | string {
   if (!plan.ok) return plan.error;
   for (const w of plan.value.warnings) process.stderr.write(`blueline: ${w}\n`);
   return plan.value;
+}
+
+/**
+ * `-o` as an absolute path (the app's working directory may differ), or null for the app's default (the deck's
+ * name with .pdf, next to it). An existing folder, or a name ending in a separator, gets the deck's name.pdf in it.
+ */
+export function pdfOut(out: string | null, deck: string): string | null {
+  if (out === null) return null;
+  const abs = path.resolve(out);
+  let folder = out.endsWith('/') || (process.platform === 'win32' && out.endsWith('\\'));
+  if (!folder) {
+    try {
+      folder = fs.statSync(abs).isDirectory();
+    } catch {
+      folder = false;
+    }
+  }
+  if (!folder) return abs;
+  const base = path.basename(deck);
+  const dot = base.lastIndexOf('.');
+  return path.join(abs, `${dot > 0 ? base.slice(0, dot) : base}.pdf`);
 }
 
 /** An existing regular file, as an absolute path (the app's working directory may differ). */
@@ -165,21 +195,53 @@ function groupMembers(pgid: number): ProcStat[] {
   return out;
 }
 
-function readResult(file: string, command: 'map' | 'check'): CommandResult | null {
+/** The app's result: core/ipc.ts CommandResult for map and check, core/ipc-render.ts PdfCommandResult for pdf. */
+interface RunResult {
+  command: RunCommand;
+  exitCode: number;
+  text: string;
+  json: unknown;
+}
+
+function readResult(file: string, command: RunCommand): RunResult | null {
   try {
-    const r = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<CommandResult>;
-    if (r && r.command === command && typeof r.exitCode === 'number' && typeof r.text === 'string') return r as CommandResult;
+    const r = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<CommandResult | RunResult>;
+    if (r && r.command === command && typeof r.exitCode === 'number' && typeof r.text === 'string') return r as RunResult;
   } catch {
     // missing or unreadable
   }
   return null;
 }
 
-/** Runs the app for map or check, waits, prints the result. */
-function runAndReport(command: 'map' | 'check', payload: MapArgs | CheckArgs, json: boolean): Promise<number> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'blueline-cli-'));
-  const out = path.join(dir, 'result.json');
-  const cleanup = () => fs.rmSync(dir, { recursive: true, force: true });
+/** Stops the app on Windows: a close request first, /F when forced (launch.ts windowsStopCommand). */
+function windowsStop(pid: number, force: boolean): void {
+  const c = windowsStopCommand(pid, { force, systemRoot: process.env.SystemRoot });
+  try {
+    const t = spawn(c.file, c.args, { stdio: 'ignore', windowsHide: true });
+    t.on('error', () => undefined);
+  } catch {
+    // taskkill missing: the app's own parent watch stops it once this command exits
+  }
+}
+
+/** Runs the app for map, check or pdf, waits, prints the result. */
+function runAndReport(command: RunCommand, payload: MapArgs | CheckArgs | PdfArgs, json: boolean): Promise<number> {
+  // Leftovers of commands that were killed outright (run-dir.ts); this run's own folder is made after.
+  sweepStaleRunDirs();
+  let run: ReturnType<typeof makeRunDir>;
+  try {
+    run = makeRunDir();
+  } catch (e) {
+    return Promise.resolve(fail(`cannot make a folder for the run in ${os.tmpdir()}: ${e instanceof Error ? e.message : String(e)}`, 1));
+  }
+  const out = run.out;
+  // The backstop: the folder goes when this process exits, however it exits (an uncaught error included).
+  const onExit = () => run.cleanup();
+  process.once('exit', onExit);
+  const cleanup = () => {
+    run.cleanup();
+    process.removeListener('exit', onExit);
+  };
   const plan = launchPlan([`--bl-cmd=${command}`, `--bl-args=${encodeAppArgs(payload)}`, `--bl-out=${out}`, `--bl-parent=${process.pid}`]);
   if (typeof plan === 'string') {
     cleanup();
@@ -216,6 +278,11 @@ function runAndReport(command: 'map' | 'check', payload: MapArgs | CheckArgs, js
     const send = (sig: NodeJS.Signals) => {
       const pid = child.pid;
       if (pid === undefined) return; // not started yet: sent on 'spawn'
+      if (process.platform === 'win32') {
+        // No signals on Windows: child.kill() would be TerminateProcess. Ask the app to close instead.
+        windowsStop(pid, false);
+        return;
+      }
       if (!plan.ownGroup || !plan.viaXvfb) {
         // The child is the app's main process; it stops its helpers itself.
         child.kill(sig);
@@ -232,7 +299,8 @@ function runAndReport(command: 'map' | 'check', payload: MapArgs | CheckArgs, js
         send(sig);
         // A run that does not end on its own (map stops within about 3 s) is killed with its whole group.
         killTimer ??= setTimeout(() => {
-          if (plan.ownGroup && child.pid !== undefined) kill(-child.pid, 'SIGKILL');
+          if (process.platform === 'win32' && child.pid !== undefined) windowsStop(child.pid, true);
+          else if (plan.ownGroup && child.pid !== undefined) kill(-child.pid, 'SIGKILL');
           else child.kill('SIGKILL');
         }, FORWARD_KILL_AFTER_MS);
       };
@@ -243,14 +311,34 @@ function runAndReport(command: 'map' | 'check', payload: MapArgs | CheckArgs, js
       if (received) send(received);
     });
     // Once the direct child (xvfb-run, or Electron) has exited, the app has had every signal it needs; a
-    // later signal ends this command the default way instead of being swallowed while the run winds down.
-    child.once('exit', unforward);
+    // later signal ends this command the default way instead of being swallowed while the run winds down
+    // (its output may still be draining). It removes the run folder first: the app is gone, and a signal's
+    // default action skips process 'exit'.
+    const enders = new Map<NodeJS.Signals, () => void>();
+    const unend = () => {
+      for (const [sig, h] of enders) process.removeListener(sig, h);
+      enders.clear();
+    };
+    child.once('exit', () => {
+      unforward();
+      if (done) return;
+      for (const sig of FORWARDED_SIGNALS) {
+        const h = () => {
+          unend();
+          cleanup();
+          process.kill(process.pid, sig);
+        };
+        enders.set(sig, h);
+        process.on(sig, h);
+      }
+    });
     // 'error' (the app could not start) and 'close' may both fire; the first one decides.
     let done = false;
     const finish = (): boolean => {
       if (done) return false;
       done = true;
       unforward();
+      unend();
       if (killTimer) clearTimeout(killTimer);
       return true;
     };
@@ -309,6 +397,12 @@ export async function main(argv: readonly string[]): Promise<number> {
     case 'check': {
       const args: CheckArgs = { auto: cmd.auto };
       return runAndReport('check', args, cmd.json);
+    }
+    case 'pdf': {
+      const file = existingFile(cmd.file);
+      if (!file) return fail(`no such file: ${cmd.file}`, 1);
+      const args: PdfArgs = { file, out: pdfOut(cmd.out, file), ...(cmd.protected ? { protected: true } : {}) };
+      return runAndReport('pdf', args, cmd.json);
     }
   }
 }

@@ -12,13 +12,28 @@
 // - macOS: hardened runtime with entitlements; the microphone entitlement is in both entitlements files,
 //   because Electron's helper processes take the inherited set (9.10).
 // - afterPack flips the Electron fuses (scripts/fuses.cjs, 9.9).
+// - The macOS native helper (native/macos, 6.1, 9.9) ships outside app.asar in Resources/helper, signed and
+//   notarized with the app, only when native/macos/build.sh has built it, so this config still works on
+//   Linux and in CI without it (main then falls back to /usr/bin/xattr and cannot set the default app).
+// - Windows: the NSIS include (build/installer.nsh) writes the ProgID, OpenWithProgids, Capabilities and the
+//   RegisteredApplications value in the install mode's hive, and removes them on uninstall (6.1).
+// - Local unsigned builds for dogfooding (SPEC 10 Phase 1, Builds): without a configured signing identity,
+//   `npm run dist` on a Mac makes an ad-hoc signed, unnotarized build (scripts/mac-signing.cjs; README.md,
+//   Dogfooding on a Mac). Developer ID signing and notarization (9.10) are Phase 6, from CI.
 'use strict';
 
+const fs = require('node:fs');
 const path = require('node:path');
+const { macSigningFor } = require('../../scripts/mac-signing.cjs');
 
 const appDir = __dirname;
 const root = path.resolve(appDir, '..', '..');
 const buildResources = path.join(appDir, 'assets', 'build');
+/** native/macos/build.sh's output (6.1, 9.6 native/). */
+const macHelper = path.join(root, 'native', 'macos', 'build', 'blueline-helper');
+
+/** Release signing, or the ad-hoc local build (scripts/mac-signing.cjs). */
+const signing = macSigningFor(process.env);
 
 /** @type {import('electron-builder').Configuration} */
 module.exports = {
@@ -37,7 +52,9 @@ module.exports = {
     {
       from: path.join(root, 'packages', 'cli', 'dist'),
       to: 'cli',
-      filter: ['blueline.cjs', 'blueline-editor.cjs'],
+      // The shims (the POSIX script and blueline.cmd) find Node 22+ and run blueline.cjs; Help › Install Command
+      // Line Tool links to Resources/cli/blueline (6.1; cli-install.ts shippedCommand).
+      filter: ['blueline.cjs', 'blueline-editor.cjs', 'blueline', 'blueline.cmd'],
     },
   ],
   asar: true,
@@ -46,7 +63,8 @@ module.exports = {
   mac: {
     category: 'public.app-category.productivity',
     target: ['dmg', 'zip'],
-    hardenedRuntime: true,
+    // Release: hardened runtime, Developer ID, notarization; local: ad hoc, no hardened runtime (macSigningFor).
+    ...signing.mac,
     gatekeeperAssess: false,
     entitlements: path.join(buildResources, 'entitlements.mac.plist'),
     entitlementsInherit: path.join(buildResources, 'entitlements.mac.inherit.plist'),
@@ -54,6 +72,10 @@ module.exports = {
       // 6.8 / 9.10: the in-card recorder (Phase 5) records in the shell; main asks for access first.
       NSMicrophoneUsageDescription: 'Blueline records voice notes on your documents when you press the microphone button on a note.',
     },
+    // The native helper, outside app.asar (an executable cannot run from inside the archive): main runs
+    // process.resourcesPath/helper/blueline-helper (src/main/native-helper.ts findHelperBinary). osx-sign signs
+    // it with the app (hardened runtime, the inherited entitlements). Added to the top-level extraResources.
+    extraResources: fs.existsSync(macHelper) ? [{ from: path.dirname(macHelper), to: 'helper', filter: ['blueline-helper'] }] : [],
   },
   linux: {
     // Linux packages are Later (9.10); the name is where the `blueline` command looks (packages/cli/src/launch.ts).
@@ -64,10 +86,13 @@ module.exports = {
     // Phase 6: Azure Artifact Signing, and verifyUpdateCodeSignature with publisherName (9.10).
   },
   nsis: {
+    // An assisted installer that offers both install modes: per user (HKCU, no admin) or per machine (HKLM,
+    // after elevation). installer.nsh writes into the chosen mode's hive (SHELL_CONTEXT), and main opens
+    // Default Apps with registeredAppUser= or registeredAppMachine= to match (6.1).
     oneClick: false,
     perMachine: false,
-    // Phase 1/6: a custom nsis.include writes the ProgID, OpenWithProgids, Capabilities and the
-    // RegisteredApplications value for the install mode, and removes them on uninstall (6.1).
+    allowElevation: true,
+    include: path.join(appDir, 'build', 'installer.nsh'),
   },
   // Phase 6: electron-updater on GitHub Releases, stable channel, never allowDowngrade (9.10).
   publish: null,

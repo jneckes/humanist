@@ -28,7 +28,7 @@ import { decodeDeck, encodeDeck } from '@blueline/core/text';
 import { createWriteQueue } from '@blueline/editor';
 import { sha256Hex } from '../../../packages/app/src/main/atomic-write';
 import { DeckWalker } from '../../../packages/app/src/main/map-command';
-import { ProbeCopy, SENTINEL, batchSentinel, judgeNode, locatorKey, normalizeConsoleMessage, runProbe, type NodeCheck } from '../../../packages/app/src/main/probe';
+import { ProbeCopy, ProbeRefused, SENTINEL, batchSentinel, judgeNode, locatorKey, normalizeConsoleMessage, runProbe, type NodeCheck } from '../../../packages/app/src/main/probe';
 import type { CountedNode } from '../../../packages/app/src/main/report';
 import type { KeyPress, NavKey, RenderView } from '../../../packages/app/src/main/render-service';
 
@@ -78,6 +78,59 @@ describe('judgeNode: other nodes holding the sentinel (review finding 31; PHASE0
     expect(v).toMatchObject({ pass: false, why: expect.stringContaining('shadow root') });
     const inFrame: NodeLocator = { stamp: null, cssPath: '#f >>frame>> html > body:nth-of-type(1) > p:nth-of-type(1)', childIndex: 0 };
     expect(judgeNode(check(m(inFrame, `x${SENTINEL}`, { visible: true, tree: 'frame' }), [self, inFrame])).pass).toBe(false);
+  });
+});
+
+// ------------------------------------------------------------------------------------------- derived file
+
+describe('the probe copy keeps the deck’s internet marker (9.9 Derived files keep the marker)', () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-probe-marker-'));
+  });
+  afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const bytes = encodeDeck('<!doctype html><title>T</title><h1>One</h1>\n');
+  const deck = (trust: 'protected' | 'trusted', marker: string | null) => ({
+    folderReal: dir,
+    fileName: 'deck.html',
+    bytes,
+    trust: () => trust,
+    networkAllowed: () => false,
+    servedProtected: () => trust === 'protected',
+    realpath: path.join(dir, 'deck.html'),
+    marker,
+  });
+
+  it('marks the copy with the deck’s marker and trust once it is written', async () => {
+    const seen: unknown[] = [];
+    const copy = await ProbeCopy.create(deck('protected', '0083;65f1c2a3;Safari;'), '0123456789abcdef', {
+      mark: async (c, src) => {
+        expect(fs.readFileSync(c)).toEqual(Buffer.from(bytes));
+        seen.push({ c, ...src });
+      },
+    });
+    expect(seen).toEqual([{ c: copy.path, realpath: path.join(dir, 'deck.html'), marker: '0083;65f1c2a3;Safari;', protectedView: true }]);
+    copy.removeSync();
+  });
+
+  it('a copy whose marker cannot be written is removed, and the probe is refused', async () => {
+    const name = path.join(dir, '.deck.bl-probe.html');
+    await expect(
+      ProbeCopy.create(deck('protected', null), 'fedcba9876543210', {
+        mark: async () => {
+          throw new Error('helper down');
+        },
+      }),
+    ).rejects.toBeInstanceOf(ProbeRefused);
+    expect(fs.existsSync(name)).toBe(false);
+  });
+
+  it('without the deck’s realpath (older callers) nothing is marked', async () => {
+    let called = false;
+    const { realpath: _r, marker: _m, ...plain } = deck('trusted', null);
+    const copy = await ProbeCopy.create(plain, '00112233445566aa', { mark: async () => void (called = true) });
+    expect(called).toBe(false);
+    copy.removeSync();
   });
 });
 

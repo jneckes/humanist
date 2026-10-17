@@ -15,6 +15,11 @@ import {
   type RenderReply,
   type SlideState,
 } from '@blueline/core/ipc';
+import { FilesDeckToMain, type DeckBusy, type ViewStateReply } from '@blueline/core/ipc-files';
+import { ViewsDeckToMain, type DesignReport, type PageStep, type WheelPan } from '@blueline/core/ipc-views';
+import { validateDropRefused } from './drop';
+import { validateDeckBusy, validateViewStateReply } from './view-state';
+import { validateDesignReport, validatePageStep, validateWheelPan } from './views';
 import {
   DeckIpc,
   ShellIpc,
@@ -41,6 +46,18 @@ export interface DeckViewHandlers {
   note?(from: DeckSender, p: NoteOp): void;
   diag?(from: DeckSender, p: DiagEvent): void;
   renderReply?(from: DeckSender, p: RenderReply): void;
+  /** Added by views (6.6 Reload; files-lifecycle's channels): the view state the page reported. */
+  viewState?(from: DeckSender, p: ViewStateReply): void;
+  /** Added by views (6.6): what holds a reload back (an edit, a card with unsaved input). */
+  busy?(from: DeckSender, p: DeckBusy): void;
+  /** Added by views (6.1): a file drag was refused on the deck view (no payload: 9.1, never a path). */
+  dropRefused?(from: DeckSender): void;
+  /** Added by views (6.9): the design size the page measured. */
+  design?(from: DeckSender, p: DesignReport): void;
+  /** Added by views (6.9 Navigation): PageUp or PageDown the deck did not use. */
+  pageStep?(from: DeckSender, p: PageStep): void;
+  /** Added by views (6.9): a wheel the page did not use, over a deck view larger than the window. */
+  wheel?(from: DeckSender, p: WheelPan): void;
 }
 
 const handlers = new Map<number, DeckViewHandlers>();
@@ -74,6 +91,13 @@ export function deckRouter(): DeckIpc {
   d.on(DeckToMain.note, validateNote, route('note'));
   d.on(DeckToMain.diag, validateDiag, route('diag'));
   d.on(DeckToMain.renderReply, validateRenderReply, route('renderReply'));
+  // Phase 1 (views wires the files-lifecycle and views channels). The deck view only: render views have no UI.
+  d.on(FilesDeckToMain.viewState, validateViewStateReply, route('viewState'), { kinds: ['deck'] });
+  d.on(FilesDeckToMain.busy, validateDeckBusy, route('busy'), { kinds: ['deck'] });
+  d.on(FilesDeckToMain.dropRefused, validateDropRefused, (from) => route('dropRefused')(from, undefined), { kinds: ['deck', 'diagnostics'] });
+  d.on(ViewsDeckToMain.design, validateDesignReport, route('design'), { kinds: ['deck'] });
+  d.on(ViewsDeckToMain.pageStep, validatePageStep, route('pageStep'), { kinds: ['deck'] });
+  d.on(ViewsDeckToMain.wheel, validateWheelPan, route('wheel'), { kinds: ['deck'] });
   deck = d;
   return d;
 }

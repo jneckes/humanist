@@ -1,7 +1,12 @@
 // An X display for Electron under Linux (docs/ARCHITECTURE.md, Running Electron in the dev container).
 //
-// Playwright's global setup starts one Xvfb for the whole run and exports DISPLAY, so every worker and every
-// app it launches shares it. Why our own server instead of whatever DISPLAY the shell had:
+// Playwright's global setup starts one Xvfb per worker and exports their names in BL_TEST_DISPLAYS; each
+// worker process takes its own one into DISPLAY when it loads the Playwright config (useWorkerDisplay), so
+// every app and command a worker starts runs on that worker's display. One display per worker, because an X
+// server has one clipboard: tests that write the system clipboard and then paste (card-input,
+// preload-electron, diagnostics) raced when two workers' apps shared a display, and one app pasted the
+// other's text. A worker runs its tests one at a time, so nothing else writes its clipboard in between.
+// Why our own servers instead of whatever DISPLAY the shell had:
 // - the screen must be at least 3840×2160: an offscreen BrowserWindow is clamped to the X screen size
 //   (docs/PHASE0-FINDINGS.md F2), and xvfb-run's default screen is 1280×1024;
 // - the security suite runs the app as the unprivileged user `bltest` (so the OS sandbox is on), and an
@@ -74,20 +79,54 @@ export async function startXvfb(from = 140): Promise<DisplayHandle> {
   throw new Error('no free X display number for Xvfb');
 }
 
+/** The environment variable through which global setup hands the workers their displays. */
+export const DISPLAYS_ENV = 'BL_TEST_DISPLAYS';
+
 /**
- * Makes sure process.env.DISPLAY names a display the app can use. Linux only; elsewhere a no-op.
- * Returns the handle to stop in global teardown.
+ * Makes sure process.env.DISPLAY names a display the app can use, and starts one display per worker (`count`)
+ * so no two workers share an X clipboard. Linux only; elsewhere a no-op. Returns the handles to stop in global
+ * teardown. With BL_TEST_DISPLAY=:N every worker uses that one display (clipboard tests may then race).
  */
-export async function ensureDisplay(): Promise<DisplayHandle | null> {
-  if (process.platform !== 'linux') return null;
+export async function ensureDisplays(count: number): Promise<DisplayHandle[]> {
+  if (process.platform !== 'linux') return [];
   const given = process.env.BL_TEST_DISPLAY;
   if (given) {
     process.env.DISPLAY = given;
-    return { display: given, process: null, stop: async () => undefined };
+    process.env[DISPLAYS_ENV] = given;
+    return [{ display: given, process: null, stop: async () => undefined }];
   }
-  const h = await startXvfb();
-  process.env.DISPLAY = h.display;
-  // Our server needs no cookie; a stale XAUTHORITY from the shell would only confuse clients.
+  const handles: DisplayHandle[] = [];
+  let from = 140;
+  try {
+    for (let i = 0; i < Math.max(1, count); i++) {
+      const h = await startXvfb(from);
+      handles.push(h);
+      from = Number(h.display.slice(1)) + 1;
+    }
+  } catch (e) {
+    await Promise.all(handles.map((h) => h.stop()));
+    throw e;
+  }
+  // The runner itself (and anything global setup starts) uses the first; each worker switches to its own.
+  process.env.DISPLAY = handles[0].display;
+  process.env[DISPLAYS_ENV] = handles.map((h) => h.display).join(',');
+  // Our servers need no cookie; a stale XAUTHORITY from the shell would only confuse clients.
   delete process.env.XAUTHORITY;
-  return h;
+  return handles;
+}
+
+/**
+ * In a Playwright worker process, points DISPLAY at the worker's own display from BL_TEST_DISPLAYS. Called at
+ * the top of the Playwright configs: a worker sets TEST_PARALLEL_INDEX (0 to workers - 1, stable for the
+ * worker's slot) before it loads the config, and it loads the config before any test file, so every spec, its
+ * helpers and the processes it spawns see the worker's display. A no-op in the runner (no TEST_PARALLEL_INDEX)
+ * and when global setup did not start the displays.
+ */
+export function useWorkerDisplay(env: NodeJS.ProcessEnv = process.env): string | null {
+  const list = (env[DISPLAYS_ENV] ?? '').split(',').filter((d) => /^:\d+$/.test(d));
+  const slot = Number(env.TEST_PARALLEL_INDEX);
+  if (list.length === 0 || env.TEST_PARALLEL_INDEX === undefined || !Number.isInteger(slot) || slot < 0) return null;
+  const display = list[slot % list.length];
+  env.DISPLAY = display;
+  return display;
 }

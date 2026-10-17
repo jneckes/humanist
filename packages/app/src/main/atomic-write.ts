@@ -17,6 +17,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { DeckIO } from '@blueline/core/capabilities';
+// markers.ts imports only the XattrCopier type from this file, so there is no cycle at run time.
+import { markerXattrCopier } from './markers';
 
 /** Thrown when the file on disk no longer has the hash the write was planned against (9.2 step 4.3). */
 export class WriteConflictError extends Error {
@@ -102,9 +104,14 @@ export function windowsZoneCopier(
 /** Linux and others carry no internet marker. */
 export const noXattrs: XattrCopier = { copy: async () => undefined };
 
+/**
+ * 9.9 Write protocol addition: the platform's copier of the deck's extended attributes. macOS and Windows use
+ * markers.ts (trust-native): on macOS the native helper's copyfile(deck, temp, NULL, COPYFILE_XATTR), every
+ * attribute (/usr/bin/xattr for the quarantine marker without the helper); on Windows the Zone.Identifier
+ * stream. macQuarantineCopier and windowsZoneCopier stay for their tests and as the reference behaviour.
+ */
 export function xattrCopierFor(platform: NodeJS.Platform): XattrCopier {
-  if (platform === 'darwin') return macQuarantineCopier();
-  if (platform === 'win32') return windowsZoneCopier();
+  if (platform === 'darwin' || platform === 'win32') return markerXattrCopier({ platform });
   return noXattrs;
 }
 

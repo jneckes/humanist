@@ -12,27 +12,39 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { app, session, webContents as allWebContents } from 'electron';
+import { app, dialog, session, shell, webContents as allWebContents } from 'electron';
 import type { CommandResult } from '@blueline/core/ipc';
-import { servedDirs } from './app-paths';
+import { assetsDir, servedDirs } from './app-paths';
 import { parseAppArgs, parseParentArg, validateSecondInstanceData, type ParsedArgs, type SecondInstanceData } from './args';
+import { chooseWithDialog, createCliInstallEnv, runInstallCommandLineTool, type CliInstallUi } from './cli-install';
 import { ConfigStore } from './config';
 import { AppController } from './controller';
 import { interruptDiagnostics, openDiagnostics } from './diagnostics';
+import { dropResultText, installDropHandler } from './drop';
 import { loadEditorDetailed } from './editor-loader';
+import { SAMPLE_FILE, configFirstRunSettings, installFirstRun, type FirstRunController } from './first-run';
+import { TrustSettings } from './folders';
 import { gitUserName, osUserName, resolvePerson } from './identity';
 import { runMapCommand } from './map-command';
+import { runPdfCommand } from './pdf-command';
 import { installAppMenu } from './menu';
+import { appBundleOf, configureNativeHelper, disposeNativeHelper, findHelperBinary, nativeHelper } from './native-helper';
 import { pickClosedLoopbackPort } from './network-policy';
 import { OpenFileRouter, handOffToRegularInstance, type PendingOpen } from './open-file';
-import { registerPrivilegedSchemes } from './protocol';
-import type { AppPaths } from './window';
+import { registerPrivilegedSchemes, setShellThumbResolver } from './protocol';
+import { RecentFiles } from './recent';
+import { setRenderHost } from './render-service';
+import { appLocationOptions, installSettingsWindow, type SettingsController } from './settings-window';
+import { readThumb } from './thumbnails';
+import { TrustStore } from './trust-store';
+import { docWindowByKey, type AppPaths } from './window';
 
 // ------------------------------------------------------------------------------------------- 1. open-file
 
 // parseAppArgs is pure and synchronous: the command decides where an open-file path goes (open-file.ts).
 const parsed: ParsedArgs = parseAppArgs(process.argv, { defaultApp: process.defaultApp === true });
 const openFiles = new OpenFileRouter(
+  // Only `open` opens documents: a file macOS delivers to map, check or pdf goes to a regular instance.
   () => parsed.cmd,
   // map and check never open documents: a file macOS routes to them goes to a regular instance (6.1).
   (file) =>
@@ -96,8 +108,8 @@ if (userDataOverride) {
   const ud = path.resolve(userDataOverride);
   fs.mkdirSync(ud, { recursive: true, mode: 0o700 });
   app.setPath('userData', ud);
-} else if (parsed.cmd === 'map') {
-  // `map` keeps no session state (section 10, Mutation probe step 1): a private userData.
+} else if (parsed.cmd === 'map' || parsed.cmd === 'pdf') {
+  // `map` keeps no session state (section 10, Mutation probe step 1), nor does `pdf`: a private userData.
   app.setPath('userData', privateDir('userdata'));
 }
 if (parsed.cmd !== 'open') {
@@ -234,7 +246,24 @@ function watchParent(pid: number, onGone: () => void): void {
   timer.unref();
 }
 
-if (parsed.cmd === 'map' || parsed.cmd === 'check') {
+if (parsed.cmd === 'pdf') {
+  // `blueline pdf` (6.1, 6.9 Save as PDF): headless like map; pdf-command.ts handles its signals, its parent
+  // and its result file.
+  const cmd = parsed;
+  app.on('window-all-closed', () => undefined);
+  void app.whenReady().then(async () => {
+    denyDefaultSession();
+    let code: number;
+    try {
+      code = await runPdfCommand(cmd, { parent: parseParentArg(process.argv) });
+    } catch (e) {
+      log(`blueline pdf failed: ${e instanceof Error ? e.message : String(e)}`);
+      code = 1;
+    }
+    removeTempDirs();
+    app.exit(code);
+  });
+} else if (parsed.cmd === 'map' || parsed.cmd === 'check') {
   const cmd = parsed;
   // `map --reduced-motion`: Chromium switches only take effect before ready. map runs in its own process, so
   // the switch reaches only the render views of this run.
@@ -306,6 +335,7 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
   });
 
   let controllerRef: AppController | null = null;
+  let welcomeRef: FirstRunController | null = null;
 
   // 6.1: one window per document; the app quits with its last window, except on macOS.
   app.on('window-all-closed', () => {
@@ -329,6 +359,37 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
       app.exit(1);
       return;
     }
+    const devTools = !app.isPackaged || TEST;
+
+    // 9.6 native/: the macOS helper (default app, quarantine) or Windows' Default Apps link; markers read
+    // through it from the first open on (trust-native).
+    if (process.platform === 'darwin') {
+      configureNativeHelper({ binary: findHelperBinary({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, distDir }), appBundle: app.isPackaged ? appBundleOf(app.getPath('exe')) : null, log });
+    } else if (process.platform === 'win32') {
+      configureNativeHelper({ openExternal: (u) => shell.openExternal(u), log });
+    } else {
+      configureNativeHelper({ log });
+    }
+    app.on('will-quit', () => disposeNativeHelper());
+    // 6.10: decisions remembered per realpath and marker (trust.json), and Settings › Trust (config.json).
+    const trustStore = TrustStore.forUserData(userData, (e) => log(`trust.json not saved: ${e.message}`)).load();
+    const trustSettings = new TrustSettings(config, appLocationOptions());
+    // 6.1 Open Recent (recent.json, and the system's lists on macOS and Windows).
+    const recent = RecentFiles.forUserData(userData, { app, platform: process.platform, log });
+    recent.load();
+    void recent.refresh();
+    // 6.7, 6.9: every render product reads the host (the deck preload, app data for thumbnails, the log).
+    setRenderHost({ preload: paths.preloadDeck, userData, log, devTools: false });
+
+    let settings: SettingsController | null = null;
+    let firstRun: FirstRunController | null = null;
+    const cliUi: CliInstallUi = {
+      showMessageBox: (opts) => {
+        const parent = controllerRef?.focused()?.win;
+        return parent && !parent.isDestroyed() ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts);
+      },
+      log,
+    };
     const controller = new AppController({
       capabilities: editor.capabilities,
       paths,
@@ -337,27 +398,117 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
       person,
       blockPort,
       test: TEST,
-      devTools: !app.isPackaged || TEST,
+      devTools,
       platform: process.platform,
       log,
+      trustStore,
+      trustSettings,
+      recent,
+      // Help › Install Command Line Tool (6.1): links `blueline` to the shipped command (cli-install.ts).
+      installCli: () =>
+        runInstallCommandLineTool(
+          createCliInstallEnv({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, distDir, choose: chooseWithDialog(cliUi) }),
+          cliUi,
+        ),
+      openSettings: (pane) => settings?.open(pane),
+      showWelcome: () => firstRun?.show(),
+      noteMode: (realpath, mode) => firstRun?.noteMode(realpath, mode),
+      onMenuState: () => buildMenu(),
     });
     controllerRef = controller;
-    installAppMenu({ run: (a) => controller.run(a), platform: process.platform, devTools: !app.isPackaged || TEST });
+
+    // The app menu follows the focused window (menu.ts MenuState) and the recent list.
+    const buildMenu = (): void =>
+      installAppMenu({
+        run: (a) => controller.run(a),
+        platform: process.platform,
+        devTools,
+        state: controller.menuState(),
+        recent: recent.menuItems((p) => void controller.open(p, { protected: false })),
+        appName: app.getName(),
+      });
+    buildMenu();
+    recent.onChange(() => controller.menuChanged());
+    app.on('browser-window-focus', () => {
+      controller.menuChanged();
+      void recent.refresh();
+    });
+    app.on('browser-window-blur', () => controller.menuChanged());
+
+    // The rail's thumbnails: app://shell/thumbs/<docId>/<name>, read from that window's own cache (protocol.ts).
+    setShellThumbResolver((key, name) => {
+      const w = docWindowByKey(key);
+      return w && !w.closing ? readThumb(userData, w.doc.fileKey, name) : Promise.resolve(null);
+    });
+
+    // Settings (6.1 General, 6.10 Trust): one window; a change of the strict option or the allowlist re-applies
+    // every open document's policy (folders apply at the next open, 6.10 When it applies).
+    settings = installSettingsWindow({
+      settings: trustSettings,
+      helper: nativeHelper,
+      preload: path.join(distDir, 'preload-settings.cjs'),
+      shellDir: paths.shellDir,
+      platform: process.platform,
+      devTools,
+      onTrustSettingsChanged: () => controller.trustSettingsChanged(),
+      log,
+      test: TEST,
+    });
+
+    // 6.1 Ways in: files dropped on a window's shell areas (or the welcome window) open as File › Open does.
+    installDropHandler({
+      open: (p) => controller.open(p, { protected: false }),
+      report: (from, r) => {
+        const text = dropResultText(r);
+        if (!text) return;
+        const w = docWindowByKey(from.windowKey);
+        if (w) w.toast(text, r.opened > 0 ? 'info' : 'warn');
+        else void dialog.showMessageBox({ type: 'warning', message: 'Some files were not opened', detail: text, buttons: ['OK'] }).catch(() => undefined);
+      },
+      log,
+    });
+
+    // 6.0 First run: the welcome window.
+    firstRun = installFirstRun({
+      settings: configFirstRunSettings(config, () => person.name),
+      helper: nativeHelper,
+      open: async (p) => (await controller.open(p, { protected: false })) !== null,
+      sampleSource: path.join(assetsDir(distDir, app.isPackaged), 'sample', SAMPLE_FILE),
+      userData,
+      preload: path.join(distDir, 'preload-welcome.cjs'),
+      shellDir: paths.shellDir,
+      platform: process.platform,
+      devTools,
+      onNameChanged: (n) => {
+        person.name = n;
+      },
+      log,
+      test: TEST,
+    });
+    welcomeRef = firstRun;
+
     if (TEST) exposeTestHooks(controller);
 
     const queued = openFiles.start((o) => void controller.open(o.path, { protected: o.protected }));
     for (const o of queued) await controller.open(o.path, { protected: o.protected });
+    // Tests launch with files and drive the welcome window themselves, unless they ask for the real first run.
+    const autoWelcome = !TEST || process.env.BLUELINE_TEST_FIRST_RUN === '1';
 
     if (controller.all().length === 0 && queued.length === 0) {
-      // No file given. macOS may still deliver one through open-file right after launch; elsewhere ask.
-      // Phase 1 replaces this with the first-run welcome window (6.0).
+      // No file given. macOS may still deliver one through open-file right after launch.
       setTimeout(
         () => {
-          if (controller.all().length === 0) {
-            void controller.showOpenDialog(false).then(() => {
-              if (controller.all().length === 0 && process.platform !== 'darwin') app.quit();
-            });
+          if (controller.all().length > 0) return;
+          if (autoWelcome) {
+            // 6.0 First run: on the first launch, and on every launch without a file (it replaces the Open dialog),
+            // the welcome window offers Open a file, the default app and the sample deck. The app quits when it
+            // closes with no document open (window-all-closed).
+            firstRun?.show();
+            return;
           }
+          void controller.showOpenDialog(false).then(() => {
+            if (controller.all().length === 0 && process.platform !== 'darwin') app.quit();
+          });
         },
         process.platform === 'darwin' ? 600 : 0,
       );
@@ -366,11 +517,15 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
       await controller.dialogsSettled();
       if (controller.all().length === 0) app.quit();
     }
+    // Started to open a file (or to run a command): no welcome window; the file is what the user wanted.
   });
 
   app.on('activate', () => {
-    // macOS: clicking the Dock icon with no window open asks for a file (Phase 1: the welcome window).
-    if (controllerRef && controllerRef.all().length === 0) void controllerRef.showOpenDialog(false);
+    // macOS: clicking the Dock icon with no window open shows the welcome window (6.0).
+    if (controllerRef && controllerRef.all().length === 0) {
+      if (welcomeRef) welcomeRef.show();
+      else void controllerRef.showOpenDialog(false);
+    }
   });
 
   // Notes are written atomically; a write still in flight finishes before the process exits (at most 3 s).
@@ -408,14 +563,43 @@ function exposeTestHooks(controller: AppController): void {
         shellWebContentsId: w.win.webContents.id,
         deckWebContentsId: w.deck.webContents.id,
         deckUrl: w.deck.webContents.getURL(),
-        deckBounds: w.deck.getBounds(),
+        // The deck view in the window's content coordinates (it sits in a clipping container, views.ts).
+        deckBounds: (() => {
+          const c = w.slot.getBounds();
+          const d = w.deck.getBounds();
+          return { x: c.x + d.x, y: c.y + d.y, width: d.width, height: d.height };
+        })(),
+        containerBounds: w.slot.getBounds(),
+        zoomFactor: w.deck.webContents.getZoomFactor(),
+        view: w.viewInfo(),
+        reloads: w.reloads,
+        reloadStatus: w.reloadStatus,
+        fullScreen: w.win.isFullScreen(),
+        contentSize: w.win.getContentSize(),
         state: w.state(),
       })),
+    menu: () => controller.menuState(),
     focusedWebContentsId: () => allWebContents.getFocusedWebContents()?.id ?? null,
     open: (p: string, prot = false) => controller.open(p, { protected: prot }).then((w) => w?.doc.docId ?? null),
     run: (action: string, docId?: string) => {
       const w = docId ? controller.all().find((x) => x.doc.docId === docId) ?? null : controller.focused();
       controller.run(action as Parameters<AppController['run']>[0], w);
+    },
+    /** The rail: show entry `entry` of a window (as a click on its thumbnail or outline entry does). */
+    show: (docId: string, entry: number) => controller.all().find((x) => x.doc.docId === docId)?.showEntry(entry) ?? Promise.resolve(false),
+    /** Find (6.9) as the shell calls it. */
+    find: (docId: string, query: string) => controller.all().find((x) => x.doc.docId === docId)?.find(query) ?? null,
+    findShow: (docId: string, slide: number, matchIndex: number) =>
+      controller.all().find((x) => x.doc.docId === docId)?.findShow(slide, matchIndex) ?? Promise.resolve(false),
+    /**
+     * Blueline's own write of a document (what Phase 2's write queue does: DeckIO.atomicWrite, which sets
+     * knownHash), so the tests can check that it never reloads the view (9.2 Watcher step 3).
+     */
+    ownWrite: async (docId: string, text: string) => {
+      const w = controller.all().find((x) => x.doc.docId === docId);
+      if (!w) throw new Error('no such window');
+      const io = w.doc.io(() => true);
+      await io.atomicWrite(new TextEncoder().encode(text), io.sha256(await io.read()));
     },
   };
 }

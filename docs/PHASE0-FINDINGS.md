@@ -139,7 +139,12 @@ under Review round 1, at the end; its new entries, F18 to F24, sit in the sectio
 - **Code.** Fit is a Phase 1 feature and is not built yet. Phase 1 implements Fit with
   `webContents.setZoomFactor` on the deck view, not with the preload's CSS `zoom` that 6.9 first proposed (6.9:
   "keeps whichever matches Chrome's layout at the design size"). Chromium keeps zoom per host, and each deck
-  has its own partition and host, so one deck's zoom does not leak to another; Phase 1 confirms this.
+  has its own partition and host, so one deck's zoom does not leak to another deck.
+- **Phase 1 correction.** Zoom did leak *within* one document's partition: the document's offscreen render
+  windows (thumbnails, slide index, PDF pages) share its partition and host, and a render view measured an
+  `innerWidth` of 2723 instead of 1600 at a deck zoom of 0.5875. The deck view now sets
+  `webPreferences.zoomMode: 'isolated'`, which keeps render views at 1 (`window.ts`; `test/e2e/views-fit.spec.ts`
+  checks that the render views are not zoomed). See `docs/PHASE1-RESULTS.md`.
 
 ## Serving and the page's world
 
@@ -755,7 +760,8 @@ in [`spec-amendments/`](spec-amendments/README.md), pending his review. The code
   (`coverage.wording`, `--min-coverage`); `docs/spec-amendments/README.md` has the wording for SPEC.md. What
   remains is listed in F30: shared labels (`duplicate`) and assembled text need Edit mode's "also changes N
   other places" and multi-literal edits (Phase 2), not a matching rule.
-- **Diagnostics on Josh's Mac: no longer a gate** (Josh, 2026-10-17). Josh edits by selecting text and typing,
+- **Diagnostics on Josh's Mac: no longer a gate** (Josh, 2026-10-17). The Mac dogfooding steps in README.md
+  (Dogfooding on a Mac) include `blueline check --auto` on the installed build. Josh edits by selecting text and typing,
   or with any dictation tool; Wispr Flow specifically is not required, so the guided Wispr steps do not gate
   Phase 1. Typing, selection and paste into the card and an editable heading are covered by the E2E suite here.
   The design rules that keep any dictation tool working stay: real text fields, no shortcut on Cmd+V, and no
@@ -764,19 +770,26 @@ in [`spec-amendments/`](spec-amendments/README.md), pending his review. The code
 - **The input guard after `document.open()`** (F19): listeners that a deck's `document.write()` scripts register
   synchronously still see card input first; and a deck can select an open card's text (`SECURITY.md`, Known
   limits of the note card).
-- **The command on macOS and Windows** (F24): `open-file` routing from a `map` or `check` process is not run
-  on macOS here; Windows still stops the app with `child.kill`; a `blueline` command killed with SIGKILL
-  leaves its own run folder (`tmp/blueline-cli-*`), though the app still stops.
+- **The command on macOS** (F24): `open-file` routing from a `map` or `check` process is not run on macOS
+  here. *Windows and the run folder: closed by Phase 1* (`packages/cli/src/launch.ts`, `run-dir.ts`): on
+  Windows the command first asks the app to close (`taskkill /PID /T`, without `/F`) and forces it only after
+  10 s; run folders record their owner's pid, are removed on every way out, and the next run sweeps folders
+  older than a day whose owner is gone (`test/unit/cli/`, `test/e2e/files-lifecycle-pdf.spec.ts`). The Windows
+  path was not run on Windows.
 - **Walk limits** (F23): a document that scrolls inside its own container is walked only as far as
   `scrollIntoView` takes it. Key-gated build steps are now walked and counted (F25).
 - **Slide detection trade-offs** (review finding 29): a deck that shows its first slide only after `load`,
   without inserting DOM nodes, is detected as scroll or single by the visible view until the next structural
   change; a real deck nested inside the visible member of an outer group of three siblings with one or two
   visible members loses to the outer group.
-- **Index replay keys.** `Session.deckNav` can now hold `ArrowDown` and `ArrowUp`, but the render service's
-  `acceleratorKeyFor` maps only `ArrowRight`, `ArrowLeft`, `PageDown`, `PageUp` and space. Phase 1's Index
-  replay must map Down and Up or fall back to the default keys.
-- **The two DNS channels** (F11) remain; Phase 1's Protected view help states them.
+- ~~**Index replay keys.**~~ *Closed by Phase 1:* `render-service.ts acceleratorKeyFor` maps `ArrowDown` →
+  `Down` and `ArrowUp` → `Up`, and the slide index, thumbnails and PDF replay `Session.deckNav`'s keys
+  (`slide-index.ts replayKeys`; `test/e2e/render-products-index.spec.ts` "Index replay presses
+  Session.deckNav's ArrowDown"). What remains: the render agent's synthetic-key fallback (for a deck that
+  refuses trusted input) still knows only the 6.7 keys.
+- **The two DNS channels** (F11) remain. *The help text is done (Phase 1):* Help › About Protected View and the
+  trust bar's overflow menu show `PROTECTED_VIEW_HELP` (`packages/core/src/ipc-trust.ts`), which states both
+  channels and that "Block all network in Protected view" does not change them.
 - **The CSP recording card.** 9.1 wants the `default-src 'none'` fixture to include a note card with a
   recording; recordings arrive in Phase 5.
 - **`script-src 'self'` decks lose their sibling scripts and styles,** because sibling files come from the

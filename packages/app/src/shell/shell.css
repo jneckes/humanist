@@ -7,6 +7,7 @@
   --toolbar: 44px;
   --trust: 0px;
   --banner: 0px;
+  --find: 0px;
   --status: 26px;
   --rail: 0px;
   --panel: 0px;
@@ -27,6 +28,8 @@
   --banner-line: #f1b7b2;
   --warn: #8a5a00;
   --error: #b42318;
+  --letterbox: #e3e5ea;
+  --mark: #ffe066;
 
   color-scheme: light dark;
   font: 13px/1.35 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
@@ -50,6 +53,8 @@
     --banner-line: #6e2c27;
     --warn: #f5c451;
     --error: #ff8a80;
+    --letterbox: #16171a;
+    --mark: #8a6d00;
   }
 }
 
@@ -68,7 +73,7 @@ body {
   background: var(--bg);
   color: var(--text);
   display: grid;
-  grid-template-rows: var(--toolbar) var(--trust) var(--banner) minmax(0, 1fr) var(--status);
+  grid-template-rows: var(--toolbar) var(--trust) var(--banner) var(--find) minmax(0, 1fr) var(--status);
   grid-template-columns: minmax(0, 1fr);
   user-select: none;
 }
@@ -204,7 +209,7 @@ button.icon {
 /* ------------------------------------------------------------------------------------------- content */
 
 .content {
-  grid-row: 4;
+  grid-row: 5;
   display: grid;
   grid-template-columns: var(--rail) minmax(0, 1fr) var(--panel);
   min-height: 0;
@@ -231,8 +236,43 @@ button.icon {
   border: 0;
 }
 
+/* The letterbox around the deck view (6.9 Fit), and the scroll bars beside a deck view larger than the window
+   (100%, Fill width): the slot scrolls a spacer of the deck view's size; main moves the deck view to follow.
+   The bars are fixed at 12 px (views.ts SCROLLBAR_SIZE), so they are never overlay bars hidden under the view. */
 .deck-slot {
-  background: var(--bg);
+  background: var(--letterbox);
+  overflow: hidden;
+  min-width: 0;
+  min-height: 0;
+}
+
+.deck-slot.scrolling {
+  overflow: auto;
+}
+
+.deck-spacer {
+  width: 0;
+  height: 0;
+}
+
+.deck-slot::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  background: var(--surface);
+}
+
+.deck-slot::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 6px;
+  border: 2px solid var(--surface);
+}
+
+.deck-slot::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+.deck-slot::-webkit-scrollbar-corner {
+  background: var(--surface);
 }
 
 .pane-title {
@@ -251,28 +291,211 @@ button.icon {
   padding: 0 6px 12px;
 }
 
-.slide-list li {
+/* ------------------------------------------------------------------------------------------- the rail */
+
+.pane-head {
   display: flex;
-  gap: 8px;
-  padding: 5px 6px;
-  border-radius: 5px;
-  overflow: hidden;
+  align-items: center;
+  justify-content: space-between;
+  padding-right: 6px;
+}
+
+button.icon.small {
+  width: 22px;
+  height: 22px;
+  font-size: 14px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+/* Slides: the number, then the thumbnail (152 px wide, views.ts railThumbWidth), then the title. */
+.slide-list li.slide {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 6px 6px;
+  border-radius: 6px;
 }
 
 .slide-list li[aria-current='true'] {
   background: var(--pressed);
 }
 
-.slide-list .num {
-  color: var(--muted);
-  min-width: 2ch;
-  text-align: right;
+.slide-button {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
 }
 
-.slide-list .title {
+.slide-list .num {
+  color: var(--muted);
+  min-width: 2.5ch;
+  font-size: 11px;
+  text-align: right;
+  padding-top: 2px;
+}
+
+.slide-list .thumb {
+  display: block;
+  width: 152px;
+  height: 86px;
+  flex: none;
+  border-radius: 3px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+
+.slide-list li[aria-current='true'] .thumb {
+  border-color: var(--accent);
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.slide-list .thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.slide-list .slide-title {
+  font-size: 11px;
+  color: var(--muted);
+  padding-left: calc(2.5ch + 6px);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* The outline of a document (6.9: from h1–h3). */
+.outline-list,
+.result-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 12px;
+}
+
+.outline-button,
+.result-button {
+  display: block;
+  width: 100%;
+  height: auto;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  border-radius: 5px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.outline-button:hover,
+.result-button:hover {
+  background: var(--pressed);
+}
+
+.outline-list .level-1 .outline-button {
+  font-weight: 600;
+}
+
+.outline-list .level-2 .outline-button {
+  padding-left: 16px;
+}
+
+.outline-list .level-3 .outline-button {
+  padding-left: 28px;
+  color: var(--muted);
+}
+
+/* Find results, by slide (6.9 Find). */
+.result-group {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 8px 6px 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.result-list li[aria-current='true'] .result-button {
+  background: var(--pressed);
+}
+
+.result-button mark {
+  background: var(--mark);
+  color: inherit;
+  border-radius: 2px;
+}
+
+/* ------------------------------------------------------------------------------------------- Find bar */
+
+.find-bar {
+  grid-row: 4;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.find-bar[hidden] {
+  display: none;
+}
+
+.find-input {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  height: 26px;
+  padding: 2px 8px;
+  width: min(360px, 50vw);
+  user-select: text;
+}
+
+.find-input:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.find-status {
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------------------------------- Present */
+
+/* 6.9 Present: no chrome; the deck view fills the window over a black letterbox. */
+body.presenting {
+  background: #000;
+}
+
+body.presenting > * {
+  visibility: hidden;
+}
+
+body.presenting .content,
+body.presenting .deck-slot {
+  visibility: visible;
+}
+
+body.presenting .content > :not(.deck-slot) {
+  visibility: hidden;
+}
+
+body.presenting .deck-slot {
+  background: #000;
 }
 
 .note-list li {
@@ -314,7 +537,7 @@ button.icon {
 /* ------------------------------------------------------------------------------------------- status */
 
 .status {
-  grid-row: 5;
+  grid-row: 6;
   display: flex;
   align-items: center;
   gap: 12px;

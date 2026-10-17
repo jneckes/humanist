@@ -34,6 +34,7 @@ import { buildMap } from '@blueline/core/mapper';
 import { buildServedCopy } from '@blueline/core/served';
 import { decodeDeck, encodeDeck, encodeLatin1 } from '@blueline/core/text';
 import { atomicWriteFile, createDeckIO, readRegularFile, sha256Hex } from './atomic-write';
+import { markDerivedFile, type DerivedSource } from './markers';
 import type { ServedDoc } from './protocol';
 import type { CountedNode, ProbeVerdict } from './report';
 import type { ConsoleError, RenderView } from './render-service';
@@ -72,6 +73,18 @@ export interface ProbeOriginal {
   networkAllowed(): boolean;
   /** The Protected network policy applies to the served copy (no resource hints, connect-src 'none'). */
   servedProtected(): boolean;
+  /**
+   * The deck's realpath and the marker it opened with (BlDocument has both). When given, the copy gets the
+   * deck's marker (9.9 Derived files keep the marker): a copy that an interrupted run (SIGKILL) leaves next to
+   * a marked deck must not open Trusted.
+   */
+  realpath?: string;
+  marker?: string | null;
+}
+
+export interface ProbeCopyOptions {
+  /** Marks the copy as derived from the deck; default markers.markDerivedFile (a no-op on Linux). */
+  mark?: (copy: string, source: DerivedSource) => Promise<void>;
 }
 
 /**
@@ -138,7 +151,7 @@ export class ProbeCopy implements ServedDoc {
    * Creates the copy with O_EXCL and O_NOFOLLOW. A file already at that path is never overwritten: it is
    * another map run's copy, or one an interrupted run left, and the user is told to remove it.
    */
-  static async create(original: ProbeOriginal, docId: string): Promise<ProbeCopy> {
+  static async create(original: ProbeOriginal, docId: string, opts: ProbeCopyOptions = {}): Promise<ProbeCopy> {
     const name = probeCopyName(original.fileName);
     const p = path.join(original.folderReal, name);
     const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | (fs.constants.O_NOFOLLOW ?? 0);
@@ -162,6 +175,18 @@ export class ProbeCopy implements ServedDoc {
       throw new ProbeRefused(`the probe copy ${name} could not be written (${e instanceof Error ? e.message : String(e)})`);
     }
     await fh.close();
+    if (original.realpath !== undefined) {
+      try {
+        await (opts.mark ?? ((c: string, src: DerivedSource) => markDerivedFile(c, src)))(p, {
+          realpath: original.realpath,
+          marker: original.marker ?? null,
+          protectedView: original.trust() === 'protected',
+        });
+      } catch (e) {
+        copy.removeSync();
+        throw new ProbeRefused(`the probe copy ${name} could not be given the deck's internet marker (${e instanceof Error ? e.message : String(e)})`);
+      }
+    }
     return copy;
   }
 

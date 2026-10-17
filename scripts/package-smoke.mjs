@@ -6,8 +6,10 @@
 // no trust bar) and the Diagnostics deck without reveal.js. This script packs the current build with the
 // repo's electron-builder config (unpacked dir target, the local Electron, so nothing is downloaded) into a
 // scratch folder, then:
-//   1. checks the layout: dist/shell and dist/assets in app.asar.unpacked, the CLI in resources/cli;
-//   2. runs the packaged `blueline check --auto` through the packaged CLI (exit 0: every automatic check passed);
+//   1. checks the layout: dist/shell and dist/assets in app.asar.unpacked, the CLI and its shims in
+//      resources/cli, the sample deck and the Settings and welcome pages (Phase 1);
+//   2. runs the packaged `blueline check --auto` through the packaged CLI (exit 0: every automatic check passed),
+//      and the packaged `blueline pdf` on a fixture (one page per slide);
 //   3. launches the packaged app with Playwright on a fixture deck with --protected and asserts the shell
 //      (app://shell/index.html) loads with its toolbar and the Protected-view trust bar.
 //
@@ -83,6 +85,13 @@ step('dist/shell is unpacked', fs.existsSync(path.join(unpacked, 'shell', 'index
 step('dist/assets is unpacked', fs.existsSync(path.join(unpacked, 'assets', 'diagnostics-deck', 'index.html')));
 step('dist/assets/build is not shipped', !fs.existsSync(path.join(unpacked, 'assets', 'build')));
 step('the CLI ships in resources/cli', fs.existsSync(path.join(resources, 'cli', 'blueline.cjs')));
+// Phase 1: the shims Help › Install Command Line Tool links to (6.1), the sample deck (6.0 First run), and the
+// Settings and welcome shell pages (9.1 Shell view), all outside the archive.
+const shim = path.join(resources, 'cli', 'blueline');
+step('the shims ship next to it (blueline, blueline.cmd)', fs.existsSync(shim) && fs.existsSync(path.join(resources, 'cli', 'blueline.cmd')));
+if (process.platform !== 'win32') step('the POSIX shim is executable', fs.existsSync(shim) && (fs.statSync(shim).mode & 0o111) !== 0);
+step('the sample deck is unpacked', fs.existsSync(path.join(unpacked, 'assets', 'sample', 'blueline-tour.html')));
+step('the Settings and welcome pages are unpacked', ['settings.html', 'settings.js', 'welcome.html', 'welcome.js'].every((f) => fs.existsSync(path.join(unpacked, 'shell', f))));
 step('the executable exists', fs.existsSync(exe), exe);
 
 // ------------------------------------------------------------------------------------------- 2. check --auto
@@ -104,6 +113,25 @@ const check = await new Promise((resolve) => {
   });
 });
 step('packaged `blueline check --auto` passes', check.code === 0, check.code === 0 ? '' : `exit ${check.code}\n${check.text.slice(-3000)}`);
+
+// Phase 1: `blueline pdf` through the packaged CLI (6.9 Save as PDF; pdf-lib is loaded from app.asar on first use).
+const pdfDir = fs.mkdtempSync(path.join(os.tmpdir(), 'blueline-smoke-pdf-'));
+fs.copyFileSync(path.join(root, 'fixtures', 'decks', 'generic-index.html'), path.join(pdfDir, 'deck.html'));
+const pdf = await new Promise((resolve) => {
+  const c = spawn(process.execPath, [path.join(resources, 'cli', 'blueline.cjs'), 'pdf', path.join(pdfDir, 'deck.html'), '--json'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let text = '';
+  c.stdout.on('data', (b) => (text += b));
+  c.stderr.on('data', (b) => (text += b));
+  const timer = setTimeout(() => c.kill('SIGTERM'), 180_000);
+  c.on('close', (code) => {
+    clearTimeout(timer);
+    resolve({ code, text });
+  });
+});
+const pdfFile = path.join(pdfDir, 'deck.pdf');
+const pdfOk = pdf.code === 0 && fs.existsSync(pdfFile) && fs.readFileSync(pdfFile).subarray(0, 5).toString('latin1') === '%PDF-' && /"pages":\s*6\b/.test(pdf.text);
+step('packaged `blueline pdf` writes one page per slide', pdfOk, pdfOk ? '' : `exit ${pdf.code}\n${pdf.text.slice(-2000)}`);
+if (!keep) fs.rmSync(pdfDir, { recursive: true, force: true });
 
 // ------------------------------------------------------------------------------------------- 3. the shell
 

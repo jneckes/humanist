@@ -6,7 +6,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { servedDirs, unpackedPath } from '../../../packages/app/src/main/app-paths';
+import { assetsDir, servedDirs, unpackedPath } from '../../../packages/app/src/main/app-paths';
 import { FILES_EXTENSIONS, resolveConfined } from '../../../packages/app/src/main/confine';
 
 describe('unpackedPath', () => {
@@ -81,5 +81,13 @@ describe('servedDirs', () => {
     const reveal = resolveConfined(path.dirname(deckReal), '/vendor/reveal.js', { allowedExtensions: FILES_EXTENSIONS });
     expect(reveal).not.toBeNull();
     if (reveal) fs.closeSync(reveal.fd);
+  });
+});
+
+describe('assetsDir (the sample deck first run copies, 6.0)', () => {
+  it('dev: dist/assets; packaged: from app.asar.unpacked', () => {
+    expect(assetsDir('/repo/packages/app/dist', false, 'linux')).toBe('/repo/packages/app/dist/assets');
+    expect(assetsDir('/Applications/Blueline.app/Contents/Resources/app.asar/dist', true, 'darwin')).toBe('/Applications/Blueline.app/Contents/Resources/app.asar.unpacked/dist/assets');
+    expect(assetsDir('C:\\B\\resources\\app.asar\\dist', true, 'win32')).toBe('C:\\B\\resources\\app.asar.unpacked\\dist\\assets');
   });
 });

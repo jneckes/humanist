@@ -22,6 +22,9 @@
     "test": "vitest run",
     "test:e2e": "node scripts/build.mjs && playwright test -c test/e2e/playwright.config.ts",
     "test:security": "node scripts/build.mjs && playwright test -c test/security/playwright.config.ts",
+    "test:parity": "node scripts/build.mjs && vitest run -c test/parity/vitest.config.mts && playwright test -c test/parity/playwright.config.ts",
+    "parity": "node scripts/parity.mjs",
+    "first-paint": "node scripts/first-paint.mjs",
     "map": "node packages/cli/dist/blueline.cjs map",
     "dist": "node scripts/build.mjs && electron-builder --config packages/app/electron-builder.config.cjs",
     "package:smoke": "node scripts/build.mjs && node scripts/package-smoke.mjs"

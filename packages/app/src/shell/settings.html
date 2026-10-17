@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- 9.1 Shell view: main also sends this policy as a header with every app:// response. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Settings</title>
+<link rel="stylesheet" href="settings.css">
+<script src="settings.js" defer></script>
+</head>
+<body>
+<nav class="tabs" role="tablist" aria-label="Settings">
+  <button id="tab-general" class="tab" role="tab" type="button" aria-controls="pane-general" aria-selected="true">General</button>
+  <button id="tab-trust" class="tab" role="tab" type="button" aria-controls="pane-trust" aria-selected="false" tabindex="-1">Trust</button>
+</nav>
+<main class="content">
+  <section id="pane-general" class="pane" role="tabpanel" aria-labelledby="tab-general">
+    <h2 class="heading">Default HTML app</h2>
+    <p id="default-status" class="status" role="status" aria-live="polite">Checking which app opens HTML files…</p>
+    <div class="row">
+      <button id="make-default" class="primary" type="button" disabled>Make Blueline your HTML app</button>
+    </div>
+    <p id="default-note" class="note"></p>
+    <p id="default-result" class="result" role="status" aria-live="polite"></p>
+    <!-- Phase 6: automatic updates, with a persistent warning while they are off (9.9 Updates, 9.10). -->
+  </section>
+
+  <section id="pane-trust" class="pane" role="tabpanel" aria-labelledby="tab-trust" hidden>
+    <h2 class="heading">Trusted folders</h2>
+    <p class="note">Files in these folders open Trusted, even when they came from the internet. A file you open with File › Open in Protected View still opens Protected.</p>
+    <ul id="trusted-list" class="list" aria-label="Trusted folders"></ul>
+    <div class="row">
+      <button id="add-trusted" type="button">Add…</button>
+    </div>
+    <p id="trusted-result" class="result" role="status" aria-live="polite"></p>
+
+    <h2 class="heading">Untrusted folders</h2>
+    <p class="note">Files in these folders open in Protected view, even when they did not come from the internet.</p>
+    <ul id="untrusted-list" class="list" aria-label="Untrusted folders"></ul>
+    <div class="row">
+      <button id="add-untrusted" type="button">Add…</button>
+    </div>
+    <p id="untrusted-result" class="result" role="status" aria-live="polite"></p>
+
+    <h2 class="heading">Network in Protected view</h2>
+    <label class="check" for="strict"><input id="strict" type="checkbox"> Block all network in Protected view</label>
+    <p class="note">Also blocks the fonts, styles, scripts and images Protected view otherwise loads from the CDN allowlist.</p>
+
+    <h2 class="heading">CDN allowlist</h2>
+    <p class="note">In Protected view, documents may load fonts, styles, scripts and images (GET only) from these hosts. A request to one of them can still carry data in its address.</p>
+    <ul id="allowlist" class="list hosts" aria-label="CDN allowlist"></ul>
+    <form id="host-form" class="row" autocomplete="off">
+      <label class="visually-hidden" for="host-input">Host to allow</label>
+      <input id="host-input" type="text" placeholder="cdn.example.com" maxlength="1024" spellcheck="false">
+      <button id="add-host" type="submit">Add host</button>
+      <button id="reset-allowlist" type="button">Restore defaults</button>
+    </form>
+    <p id="host-result" class="result" role="status" aria-live="polite"></p>
+
+    <section id="help" class="help" aria-labelledby="help-title">
+      <h2 id="help-title" class="heading"></h2>
+    </section>
+  </section>
+</main>
+</body>
+</html>
