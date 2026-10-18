@@ -1,0 +1,87 @@
+# The Estate Drive: Bermuda Dunes Racquet Club
+
+An interactive 3D drive through the Bermuda Dunes Racquet Club estate, built to embed in the
+[bermudadunesracquet.com](https://bermudadunesracquet.com/#stay) site. A '58-style convertible in the
+site's clay red drives from the street, through the gates and around the grounds. It stops at seven
+points, and the light moves from golden hour to after hours along the way.
+
+![Six frames from the drive](preview.jpg)
+
+It is one self-contained file, `index.html`. It needs no build step and no server code.
+
+## The drive
+
+| Stop | What you see | Copy from the site |
+| --- | --- | --- |
+| Arrive | The car pulls up to the gates and the halo-lit crest sign | "Play well. Stay well." |
+| The Estate | A drone shot down the palm allée to the residence | "The Racquet Club, Reimagined." ~3 acres, 8 bedrooms, 7.5 baths |
+| Stay | The midcentury residence, warm light in the glass | "Settle into something special." |
+| Courts | Aerial of the tennis court, two pickleball courts and the putting green | "A love of the game." |
+| Pool | The lagoon pool, waterslide, swim-up bar and cabana at sunset | "Nowhere else to be." |
+| Fireside | Corten wall, fire table and string lights at dusk | "Good company. Great setting." |
+| Book | A crane shot over the lit estate at blue hour | "Come for the play. Stay for everything else." |
+
+Every headline, fact and drive time comes from the current site. The layout of the grounds is an
+interpretation of the site's photos and the estate video, not a survey.
+
+**Controls:** drag to look around · Space to pause or resume · ← → to skip between stops · hold ↑ ↓ to
+drive freely · click a stop on the timeline to go there · drag the sun/moon slider to set the time of
+day (Auto puts it back on the drive's timeline) · click a pulsing hotspot to see the real photo.
+
+## Embedding
+
+Host `index.html` anywhere static, for example as `/drive/index.html` on the same site. Then drop it
+into a section with an iframe:
+
+```html
+<iframe
+  src="/drive/?brand=0"
+  title="Take the scenic route: a 3D drive through Bermuda Dunes Racquet Club"
+  style="display:block;width:100%;aspect-ratio:16/9;min-height:520px;border:0"
+  allow="fullscreen; autoplay"
+  loading="lazy"></iframe>
+```
+
+- `allow="fullscreen"` turns on the full screen button. Without it, the button hides itself.
+- `allow="autoplay"` lets the "Watch the video" dialog start the YouTube film straight away.
+- The drive waits behind a "Start the drive" button, so nothing moves until a visitor asks.
+- It stops rendering when it scrolls out of view or the tab is hidden.
+- Inside an iframe, vertical swipes scroll the host page, so a phone visitor doesn't get stuck.
+- Layouts were checked at 1280 × 720, 800 × 450 (a 16:9 embed) and 390 × 844 (a phone). On phones the card and controls stack.
+
+### URL options
+
+| Parameter | Effect |
+| --- | --- |
+| `brand=0` | Hides the crest and wordmark in the corner (use it when the host page already shows them) |
+| `autostart` | Skips the intro and starts driving |
+| `chapter=arrive\|estate\|stay\|courts\|pool\|gather\|book` | Opens parked at that stop, for deep links such as `?chapter=pool` next to the Play section |
+| `time=golden\|sunset\|dusk\|night` or `0`–`1` | Locks the time of day |
+| `paused` | Starts with auto-drive off, so the car waits at each stop |
+| `debug` | Shows frame rate, resolution and position |
+
+## What it loads
+
+- **Three.js r170** from jsDelivr (`three@0.170.0`, pinned) and **Cormorant + Jost** from Google
+  Fonts. Cormorant and Jost are the faces the site already uses.
+- **The crest and the popover photos** from `https://bermudadunesracquet.com/assets/`. If the file moves
+  to another host, or the asset paths change, edit `ASSET` near the top of the script.
+- **Booking links** go to `https://www.nestvillas.com/villas`, and the film is YouTube `z86pMY77Dsc`.
+  Both are constants at the top of the script.
+
+Everything else is generated in the browser: the palms, rocks, house, courts, pool, car, sky,
+mountains and textures. No 3D models or image textures are downloaded. A browser without WebGL 2, or
+one where the CDN is blocked, gets a still frame with the video and booking buttons instead.
+
+## Performance
+
+- Rendering is capped at about 4.2 megapixels.
+- On phones and machines with four or fewer cores, the pixel ratio and shadow resolution start lower.
+- Resolution drops further if frames run slow for more than two seconds.
+- With `prefers-reduced-motion`, the camera drift and intro orbit are off and the intro swoop is shorter.
+
+## Editing
+
+The stops, their copy, camera shots and time of day live in the `CH` array. Hotspots are in `HOT`.
+The route is the `ROUTE` list of points in metres; the gate is at `z = 62` and the estate runs about
+132 × 124 m. The light keyframes for golden hour, sunset and after hours are in `KEYS`.
