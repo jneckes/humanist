@@ -352,7 +352,8 @@ function media(file, onProgress) {
       const total = +res.headers.get('content-length') || 0, reader = res.body.getReader(), parts = [];
       let got = 0;
       for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); got += value.length; if (onProgress && total) onProgress(got / total); }
-      const type = res.headers.get('content-type') || (file.endsWith('.m4a') ? 'audio/mp4' : 'video/mp4');
+      const served = res.headers.get('content-type') || '';
+      const type = /^(video|audio)\//.test(served) ? served : file.endsWith('.m4a') ? 'audio/mp4' : 'video/mp4'; // some hosts send octet-stream
       urls[file] = URL.createObjectURL(new Blob(parts, { type }));
     } catch (err) {
       urls[file] = MEDIA + file; // opened from disk or blocked: fall back to the plain URL
