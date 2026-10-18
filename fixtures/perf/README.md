@@ -19,7 +19,7 @@ The first version of this deck was 98.8% base64 images (25 KB of markup, 1.5 KB 
 |---|---|---|---|
 | File size | 84 KB – 1.15 MB | 467 KB | 2.00 MB (2,099,025 bytes) |
 | Inline script (data URLs inside it not counted) | 1.3 – 43% of the file (3 – 193 KB) | 13% | 25% (513 KB) |
-| Library code (inline blocks of 20 KB or more: GSAP and its plugins, and the like) | in 8 decks: 2 – 35% | 17% of those 8; D6–D9: 21 – 35% | 24.5% (502 KB in 7 blocks of 10 – 235 KB) |
+| Library code (inline blocks of 20 KB or more: GSAP and its plugins, and the like) | in 8 decks: 2 – 35% | 17% of those 8; D6–D9: 21 – 35% | 24.5% (502 KB in 6 blocks of 20 – 235 KB); with its seventh library block (10 KB), 25.0% (512 KB) |
 | `@font-face` fonts, base64 woff2 | in 11 decks, 2 – 14 faces: 0 – 71% (0 – 679 KB) | 34% (142 KB, 5 faces) | 34.2% (701 KB, 12 faces) |
 | Images, base64 | in 5 decks: 0 – 61% | 0% | 34.1% (698 KB, 10 PNGs) |
 | CSS, fonts not counted | 23 – 122 KB | 55 KB | 58 KB |

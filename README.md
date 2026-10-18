@@ -192,7 +192,7 @@ npm test                 # vitest: unit and fuzz tests (test/unit)
 npm run test:e2e         # builds, then Playwright's Electron launcher (test/e2e)
 npm run test:security    # builds, then the security suite in both trust states (test/security)
 npm run test:parity      # builds, then the exit gate's committed check (test/parity: 3 fixtures, the seeded-random and delayed-build fixtures, the negative controls)
-npm run parity -- --committed --perf --trust both --pdf   # render and PDF parity on every committed fixture (about 35 min)
+npm run parity -- --committed --perf --trust both --pdf   # render and PDF parity on every committed fixture (about an hour)
 npm run first-paint      # first paint of the generated 2 MB deck, warm and cold
 npm run package:smoke    # builds, packs an unpacked test build (local Electron), checks the shell, trust bar and check --auto on it
 ```
@@ -207,19 +207,21 @@ it as root with `--no-sandbox`.
 `fixtures/decks/<name>.expect.json`, and fails when a deck's coverage drops more than 1 point below its
 baseline in `fixtures/expected/`.
 
-Phase 1 results (2026-10-18, Linux, Electron 44.7.2, from a clean build): 1,643 unit tests pass (85 files; the
-exit-gate parity harness adds 37 more); 192 of 192 E2E tests pass, of which 1 is an expected failure for the
-note-card ordering limit described in SECURITY.md; the security suite passes 59 of 59, of which 6 are expected
-failures (the two DNS channels and the drop-guard limits for a frame rewritten with `document.open()` or made
-`about:blank` inside a shadow root, all described in SECURITY.md); `blueline check --auto` passes all 6 checks;
-`npm run package:smoke` passes 17 of 17. The exit gate (docs/PHASE1-RESULTS.md), with the seeded `Math.random`
-and a per-channel tolerance of 2: render parity is exact on all 324 slide renders of the committed fixtures (42
-decks) and passes on all 12 of Josh's decks (D12 identical, D2 within the gate, D11 0.343%); every deck's PDF
-passes under the amended criterion (raster pages against Blueline's slide render, pages Chromium prints against
-its own print); a real-shaped 2 MB deck paints in 437 ms with the app running and 820 ms from a cold start
-(Linux; the gate is 1 s on the Mac). Across the 18 committed fixtures every `exact`
-node (411 of 411) passes the mutation probe, and coverage equals the baselines; on Josh's 12 decks every slide
-is reached and coverage holds against their local baselines (90.7% of all text, 94.5% of the wording).
+Phase 1 results (2026-10-18, Linux, Electron 44.7.2, from a clean build, after review round 1): 1,639 unit
+tests pass (84 files; the exit-gate parity harness adds 37 more); the E2E suite runs 194 tests, 193 pass and 1 is
+an expected failure for the note-card ordering limit described in SECURITY.md; the security suite runs 57 tests,
+51 pass and 6 are expected failures (the two DNS channels, and the file-drop limits for a frame rewritten with
+`document.open()` or made `about:blank` inside a shadow root, in both trust states; all in SECURITY.md);
+`blueline check --auto` passes all 6 checks; `npm run package:smoke` passes 17 of 17. The exit gate
+(docs/PHASE1-RESULTS.md), with the seeded `Math.random`, a control render per slide and a per-channel tolerance
+of 2: render parity is exact on all 424 slide renders of the committed fixtures (49 decks, the 2 MB deck
+included) and passes on all 12 of Josh's decks (370 of 386 renders identical; worst D11, 0.343%); all 122 PDFs
+pass under the amended criterion (raster pages against Blueline's slide render, pages Chromium prints against
+its own print); the real-shaped 2 MB deck paints in 430 ms (Trusted) and 413 ms (Protected) with the app
+running and 831 and 810 ms from a cold start (medians of 5, every run painted; Linux, the gate is 1 s on the
+Mac). Across the 19 committed fixtures every `exact` node (423 of 423) passes the mutation probe, and coverage
+equals the baselines; on Josh's 12 decks every slide is reached and coverage holds against their local
+baselines (90.7% of all text, 94.5% of the wording; D5's ticker moves its count by a few nodes from run to run).
 
 Phase 0 results are in docs/PHASE0-FINDINGS.md (and this file's history).
 

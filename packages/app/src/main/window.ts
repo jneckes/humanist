@@ -711,8 +711,8 @@ export class DocWindow {
     // File drops are refused by the deck preload in every frame it reaches (drop-guard.ts; D-4). Chromium drag
     // interception (CDP Input.setInterceptDrags) is deliberately not used: it only holds drags the page itself
     // starts (RenderWidgetHostImpl::StartDragging), never a drag from the desktop (DragTargetDragEnter), and a
-    // held drag that is never continued leaves Blink ignoring every key and click on the deck until a reload
-    // (test/e2e/views-drag-inpage.spec.ts).
+    // held drag that is never continued never ends (no drop, no dragend) and leaves the deck taking no keys
+    // (clicks were not tested; test/e2e/views-drag-inpage.spec.ts).
     deckWc.on('before-input-event', (event, input) => this.onDeckInput(event, input));
     deckWc.on('input-event', (_e, ev) => {
       if (ev.type === 'mouseWheel') this.lastWheelAt = Date.now();

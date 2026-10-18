@@ -59,11 +59,13 @@ and main changes a file's trust only from the trust bar's buttons and Settings.
   `blob:` or same-origin frame, shows no notice; it simply does nothing). `test/e2e/views-open.spec.ts` checks the main frame; `test/security/drop-frames.spec.ts` drops
   a local file onto srcdoc, `about:blank` (scripted and written), `data:`, `blob:`, same-origin, nested and
   `-files` frames, and in Trusted view a cross-origin `http` frame: no frame sees a File, and a text drag at the
-  same point (the positive control) reaches each one. The test's drag (CDP `Input.dispatchDragEvent`) enters the
-  page through the same browser-process calls as a drag from the desktop (`RenderWidgetHostImpl`'s
-  `DragTargetDragEnter`, `DragTargetDragOver`, `DragTargetDrop`). Chromium's drag interception
-  (`Input.setInterceptDrags`) is not used: it holds only drags the page itself starts, never one from the
-  desktop, and a held drag left the deck ignoring every key and click (`test/e2e/views-drag-inpage.spec.ts`).
+  same point (the positive control) reaches each frame that can record it, which is every one but the `-files`
+  frame (served with a CSP sandbox, so no script runs there to record anything). The test's drag (CDP
+  `Input.dispatchDragEvent`) enters the page through the same browser-process calls as a drag from the desktop
+  (`RenderWidgetHostImpl`'s `DragTargetDragEnter`, `DragTargetDragOver`, `DragTargetDrop`). Chromium's drag
+  interception (`Input.setInterceptDrags`) is not used: it holds only drags the page itself starts, never one
+  from the desktop, and a drag the deck started was held and never finished (no `drop`, no `dragend`), after
+  which the deck took no keys (clicks were not tested; `test/e2e/views-drag-inpage.spec.ts`).
 - **Trust memory** (`<userData>/trust.json`, mode 0600, atomic writes): Allow network, Enable editing and
   "received" per file realpath, each stored with the whole internet marker it was made on. A decision applies
   only while the file carries exactly that marker; a new download with a new marker drops it. Where the marker
@@ -81,10 +83,15 @@ and main changes a file's trust only from the trust bar's buttons and Settings.
 - **A file that changes on disk is decided again.** On every external change, and when a file that went away
   comes back, Blueline decides 6.10 again for the file as it is on disk, the same way an open does (the
   marker, the trusted and untrusted folders, trust.json), and reads the marker once more 500 ms later, because
-  some browsers write it just after the rename. If the decision differs in any way (trust state, reason,
-  marker, whether the marker could be read, or a remembered Allow network or Enable editing), the view is never
-  reloaded in place: the window closes and the file opens again at the same place, with its view state, a
-  fresh docId and the partition its trust needs, and the trust bar states the new reason. Blueline's own writes
+  some browsers write it just after the rename. If the decision differs (trust state, reason, marker, whether
+  the marker could be read, or, in a Protected window, a remembered Allow network or Enable editing), the view
+  is not reloaded in place: the window closes and the file opens again at the same place, with its view state,
+  a fresh docId and the partition its trust needs, and the trust bar states the new reason. There are two
+  exceptions (`view-state.ts` `trustDifferences`, `reopenForTrust`). A change from one Trusted decision to
+  another (a different marker, or one that now can or cannot be read; for example a marked download saved over
+  an unmarked file in a trusted folder) reloads in place: a Trusted file keeps its docId and partition on every
+  open, and Trusted view has network and editing on, so opening it again would give the same window. And a
+  window opened Protected on request does not compare the switches (Known limits, below). Blueline's own writes
   never reach this path (it knows their hash). `test/e2e/views-reload-trust.spec.ts`.
 - **`blueline pdf` and `blueline map` decide trust as the app decides an open**: `--protected`, then the
   trusted and untrusted folders, then the internet marker. Their partition policy uses "Block all network in
@@ -136,13 +143,17 @@ Known limits added by Phase 1:
   requests to a test server first). A marker written **later than that** (a slow antivirus or Zone.Identifier
   write) is not seen while the window stays open: the file is decided again only on the next external change or
   the next open. The two reads cover the common case; Blueline does not poll the marker indefinitely.
-- **A window opened Protected on request keeps its session switches on an in-place reload.** When a window was
-  opened in Protected view on request (`--protected`, File › Open in Protected View), its Allow network and
-  Enable editing are the user's choice for this session only (a file opened Protected on request neither uses
-  nor stores remembered switches). An external change that does not alter the file's trust state, reason or
-  marker reloads in place and keeps those switches; only a real trust change (a marker appears, the file becomes Trusted, a new identity for a remembered
-  decision) reopens the window, which turns them off. An ordinary agent save of an unmarked file is the former,
-  so the switches survive it.
+- **A window opened Protected on request keeps its switches on an in-place reload, and remembers them.** A
+  window opened in Protected view on request (`--protected`, File › Open in Protected View) never uses
+  remembered switches: it opens with Allow network and Enable editing off. When the user turns either on in it,
+  the switch is remembered in trust.json as in any Protected window (for the file's marker, and its identity
+  where the decision is bound to the file), so it applies at the next ordinary open of that file that opens
+  Protected (a marked file, or an unmarked one in an untrusted folder). The decision for such a window is always
+  Protected with the reason "Opened at your request", so on an external change only a change in the marker, or
+  in whether the marker could be read, reopens it, which turns the switches off. Any other change reloads it in
+  place and keeps them: also when the folder lists would now open the file Trusted, and when the change is a
+  new unmarked file saved at the path. An ordinary agent save of an unmarked file is such a change, so the
+  switches survive it.
 - **A file written in place keeps its decision.** A program that writes new content into the existing file,
   instead of saving a new file, keeps the file's identity, and on Windows it can keep the same
   `Zone.Identifier` text (on macOS the quarantine value stays the same in that case too), so the file keeps a

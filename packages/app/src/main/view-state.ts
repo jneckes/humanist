@@ -220,9 +220,11 @@ export function trustDifferences(
   if (now.reason !== d.trust.reason) out.push('reason');
   if (now.marker !== d.trust.marker) out.push('marker');
   if (now.markerUncertain !== d.markerUncertain) out.push('markerUncertain');
-  // A window opened Protected on request never remembers Allow network or Enable editing (6.10; D-3), so those
-  // switches are the user's within-session choice, not a trust input: an unmarked change that does not alter
-  // the state, reason or marker must not reopen the window and drop them (review finding 0 re-verification).
+  // A window opened Protected on request never uses remembered Allow network or Enable editing (folders.ts
+  // trustFor, rule 1), although what the user turns on in it is remembered as in any Protected window
+  // (DocWindow.remember). So its switches are the user's choice in this window, not a trust input: an unmarked
+  // change that does not alter the state, reason or marker must not reopen the window and drop them (review
+  // finding 0 re-verification).
   if (!opts.requested && now.trust === 'protected' && d.trust.trust === 'protected') {
     if (now.networkAllowed !== d.allowNetwork) out.push('allowNetwork');
     if (now.editingAllowed !== d.editing) out.push('editing');

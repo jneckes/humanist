@@ -5,9 +5,10 @@
 // file-drop backstop. Interception only applies to drags the page itself starts (RenderWidgetHostImpl::
 // StartDragging); a drag that enters from the desktop reaches the page through DragTargetDragEnter, which it
 // never sees, so it guarded nothing. What it did do: every drag a deck started (an image, a link, selected text,
-// a draggable card) was held and never continued, and Blink, which stops handling input while a drag it started
-// is in progress (WebFrameWidgetImpl doing_drag_and_drop_), then ignored every key and click on the deck until a
-// reload. This spec drags with CDP mouse events, which Chromium turns into a real drag when interception is off.
+// a draggable card) was held and never continued, so it never ended (no drop, no dragend), and the deck then took
+// no keys (likely because Blink stops handling input while a drag it started is in progress, WebFrameWidgetImpl
+// doing_drag_and_drop_; clicks were not measured). This spec drags with CDP mouse events, which Chromium turns
+// into a real drag when interception is off, and checks the drag events and two typed keys after each drag.
 
 import { expect, test } from '@playwright/test';
 import * as fs from 'node:fs';
