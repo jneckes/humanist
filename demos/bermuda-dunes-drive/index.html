@@ -249,7 +249,7 @@ body.ready .loader{opacity:0}
 
 <dialog class="film" id="film" aria-label="Bermuda Dunes Racquet Club video">
   <div class="fh"><div>Bermuda Dunes Racquet Club <span>The estate video</span></div><button class="icon-btn" id="filmClose" type="button" aria-label="Close video"><svg viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div>
-  <iframe id="filmFrame" title="Bermuda Dunes Racquet Club | Play Well. Stay Well." allow="autoplay; encrypted-media; picture-in-picture; fullscreen"></iframe>
+  <iframe id="filmFrame" title="Bermuda Dunes Racquet Club | Play Well. Stay Well."></iframe>
 </dialog>
 
 <script type="importmap">
@@ -2158,6 +2158,7 @@ function hidePop() { if (pop.hidden) return; pop.classList.remove('on'); tour.ho
 document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !pop.contains(e.target) && !e.target.closest('.hs')) hidePop(); });
 // film
 function openFilm() {
+  filmFrame.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen'; // set here, not in markup, so an idle frame asks for nothing
   filmFrame.src = `https://www.youtube-nocookie.com/embed/${VIDEO}?autoplay=1&rel=0&playsinline=1`;
   if (film.showModal) film.showModal(); else window.open(`https://www.youtube.com/watch?v=${VIDEO}`, '_blank', 'noopener');
 }

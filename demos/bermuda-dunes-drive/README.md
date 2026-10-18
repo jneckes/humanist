@@ -7,7 +7,18 @@ points, and the light moves from golden hour to after hours along the way.
 
 ![Six frames from the drive](preview.jpg)
 
-It is one self-contained file, `index.html`. It needs no build step and no server code.
+`index.html` is a single file that needs no build step and no server code. It loads Three.js and the
+fonts from CDNs, and the crest and hotspot photos from the club's site.
+
+**Fully self-contained copy:** `bermuda-dunes-3d-tour.html` (1.8 MB) has everything inside it. Three.js
+r170 is bundled and minified into the page, and the fonts, crest and hotspot photos are embedded. It
+works opened straight from disk, emailed, or uploaded anywhere. Only the booking links and the YouTube
+film need a connection. Rebuild it after editing `index.html`:
+
+```sh
+npm install --no-save three@0.170.0 esbuild@0.24.0
+node build-standalone.mjs
+```
 
 A second version built from the real estate film and photos, with the same stops and copy, is in
 [`../bermuda-dunes-film`](../bermuda-dunes-film).
