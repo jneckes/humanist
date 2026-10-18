@@ -1,0 +1,668 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#172018">
+<title>The Estate Tour · Bermuda Dunes Racquet Club</title>
+<meta name="description" content="A guided tour of Bermuda Dunes Racquet Club in real footage, from golden hour to after hours.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant:ital,wght@0,300..700;1,300..700&family=Jost:wght@300..600&display=swap" rel="stylesheet">
+<link rel="preload" href="media/poster-arrive.jpg" as="image">
+<style>
+:root{
+  --sage:#b1b99d;--cream:#f4f1e9;--paper:#eae6dc;--ink:#333e2d;--clay:#a24b27;--night:#172018;
+  --sand:#e9c39d;--hair:rgba(244,241,233,.22);
+  --serif:"Cormorant",Georgia,"Times New Roman",serif;--sans:"Jost",Arial,Helvetica,sans-serif;
+  --gutter:clamp(16px,3.6vw,48px);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:var(--night);color:var(--cream);font-family:var(--sans);-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:0;padding:0}
+a{color:inherit;text-decoration:none}
+:focus-visible{outline:2px solid var(--cream);outline-offset:4px}
+h1,h2,h3{font-family:var(--serif);font-weight:400;margin:0}
+p,dl,dd,ul{margin:0}
+.eyebrow{font-size:10px;letter-spacing:.25em;text-transform:uppercase;line-height:1.7}
+
+/* stage: two video layers and two still layers, crossfaded */
+.stage{position:fixed;inset:0;overflow:hidden;background:#0d120e;touch-action:pan-y;user-select:none;-webkit-user-select:none}
+.layer{position:absolute;inset:0;opacity:0;transition:opacity 1.2s ease;overflow:hidden}
+.layer.on{opacity:1}
+.layer.fast{transition-duration:.45s}
+.vlayer video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.vfill{position:absolute;inset:-8%;background:#0d120e center/cover no-repeat;filter:blur(28px) brightness(.5) saturate(1.15);display:none}
+/* on tall screens the film is shown whole (its titles sit at the frame edge), over a blurred fill */
+@media (max-aspect-ratio:6/5){ .vlayer video{object-fit:contain} .vfill{display:block} }
+.frame{position:absolute;left:0;top:0;will-change:transform}
+.frame img{position:absolute;inset:0;width:100%;height:100%;display:block}
+.scrim{position:fixed;inset:0;pointer-events:none;z-index:1;background:
+  linear-gradient(180deg,rgba(14,20,16,.5) 0%,rgba(14,20,16,0) 18%,rgba(14,20,16,0) 52%,rgba(14,20,16,.6) 100%),
+  linear-gradient(90deg,rgba(14,20,16,.42) 0%,rgba(14,20,16,0) 46%);transition:opacity 1s ease}
+body.playing-clip .scrim{opacity:.55}
+
+/* top bar */
+.topbar{position:fixed;top:0;left:0;right:0;z-index:6;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:calc(16px + env(safe-area-inset-top)) var(--gutter) 16px;border-bottom:1px solid rgba(244,241,233,.16)}
+.brand{display:flex;align-items:center;gap:12px;min-width:0}
+.brand img{width:52px;height:40px;object-fit:contain}
+.brand-type{font-family:var(--serif);font-size:20px;line-height:1;letter-spacing:-.02em;white-space:nowrap}
+.brand-type span{display:block;font-family:var(--sans);font-size:7px;letter-spacing:.3em;text-align:center;margin-top:6px}
+body.no-brand .brand{visibility:hidden}
+.top-actions{display:flex;align-items:center;gap:10px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:22px;min-height:42px;padding:12px 20px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;border:1px solid rgba(244,241,233,.62);white-space:nowrap;transition:background .25s,color .25s,transform .25s,border-color .25s}
+.btn:hover{background:var(--cream);color:var(--ink);transform:translateY(-1px)}
+.btn .arr{font-size:15px;letter-spacing:0;line-height:1}
+.btn-cream{background:var(--cream);color:var(--ink);border-color:var(--cream)}
+.btn-cream:hover{background:var(--sage);border-color:var(--sage)}
+.btn-clay{background:var(--clay);border-color:var(--clay);color:var(--cream)}
+.btn-clay:hover{background:#853b1e;border-color:#853b1e;color:var(--cream)}
+.btn[disabled]{opacity:.6;cursor:progress;transform:none}
+.icon-btn{width:40px;height:40px;flex:none;border-radius:50%;border:1px solid var(--hair);display:grid;place-items:center;background:rgba(20,28,22,.28);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);transition:background .25s,border-color .25s}
+.icon-btn:hover{background:rgba(244,241,233,.16);border-color:rgba(244,241,233,.55)}
+.icon-btn svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}
+.icon-btn.play svg .p,.icon-btn.play.paused svg .s{display:none}
+.icon-btn.play.paused svg .p{display:block}
+.sound{display:flex;align-items:center;gap:10px;font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:rgba(244,241,233,.82)}
+.sound .icon-btn .off,.sound.muted .icon-btn .on{display:none}
+.sound.muted .icon-btn .off{display:block}
+.eq{display:flex;gap:2px;align-items:flex-end;height:11px}
+.eq i{width:2px;background:currentColor;height:30%;animation:eq 1s ease-in-out infinite}
+.eq i:nth-child(2){animation-delay:-.3s}.eq i:nth-child(3){animation-delay:-.6s}
+.sound.muted .eq i,body.paused .eq i{animation:none;height:2px}
+@keyframes eq{0%,100%{height:25%}50%{height:100%}}
+
+/* chapter card */
+.card{position:fixed;z-index:4;left:var(--gutter);bottom:calc(104px + env(safe-area-inset-bottom));width:min(520px,calc(100% - 2 * var(--gutter)));pointer-events:none}
+.card>*{opacity:0;transform:translateY(16px);transition:opacity .6s ease,transform .9s cubic-bezier(.2,.7,.1,1)}
+.card.show>*{opacity:1;transform:none}
+.card.show>*:nth-child(2){transition-delay:.07s}.card.show>*:nth-child(3){transition-delay:.14s}.card.show>*:nth-child(4){transition-delay:.21s}.card.show>*:nth-child(5){transition-delay:.28s}.card.show>*:nth-child(6){transition-delay:.35s}.card.show>*:nth-child(7){transition-delay:.42s}
+.card .eyebrow{color:var(--sand)}
+.card h2{font-size:clamp(40px,4.6vw,70px);line-height:.92;letter-spacing:-.035em;margin:12px 0 18px;text-shadow:0 2px 30px rgba(0,0,0,.3)}
+.card .body{font-size:15px;line-height:1.65;max-width:40ch;color:rgba(244,241,233,.92);text-shadow:0 1px 14px rgba(0,0,0,.4)}
+.card .stats{display:flex;gap:34px;margin-top:20px}
+.card .stats dt{font-family:var(--serif);font-size:46px;line-height:1}
+.card .stats dd{margin-top:6px;font-size:8px;letter-spacing:.22em;text-transform:uppercase;color:rgba(244,241,233,.8)}
+.card .list{list-style:none;padding:0;margin-top:18px;display:grid;gap:8px;font-size:13px;color:rgba(244,241,233,.92)}
+.card .list li{display:flex;gap:12px;align-items:baseline}
+.card .list li::before{content:"";flex:none;width:14px;height:1px;background:var(--sand);transform:translateY(-4px)}
+.card .tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:18px}
+.card .tags span{border:1px solid var(--hair);background:rgba(20,28,22,.25);padding:7px 11px;font-size:9px;letter-spacing:.14em;text-transform:uppercase;border-radius:40px}
+.card .times{display:flex;gap:26px;margin-top:20px}
+.card .times dt{font-family:var(--serif);font-size:38px;line-height:1}
+.card .times dt span{font-family:var(--sans);font-size:10px;letter-spacing:.1em;margin-left:3px}
+.card .times dd{margin-top:6px;font-size:8px;letter-spacing:.16em;text-transform:uppercase;line-height:1.5;color:rgba(244,241,233,.8)}
+.card .meta{margin-top:16px;font-family:var(--serif);font-style:italic;font-size:19px;color:rgba(244,241,233,.88)}
+.card .fine{margin-top:14px;font-size:10px;letter-spacing:.04em;color:rgba(244,241,233,.62)}
+.card .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:22px}
+.card a,.card button{pointer-events:auto}
+.text-link{display:inline-flex;gap:26px;align-items:center;font-size:10px;letter-spacing:.12em;text-transform:uppercase;padding:10px 0;border-bottom:1px solid rgba(244,241,233,.7);transition:color .2s,border-color .2s}
+.text-link:hover{color:var(--sand);border-color:var(--sand)}
+
+/* dock */
+.dock{position:fixed;z-index:5;left:var(--gutter);right:var(--gutter);bottom:calc(18px + env(safe-area-inset-bottom));display:flex;align-items:center;gap:20px;opacity:0;transform:translateY(10px);transition:opacity .9s ease,transform .9s ease}
+body.touring .dock{opacity:1;transform:none}
+.ctrl{display:flex;gap:8px}
+.timeline{position:relative;flex:1;height:52px;min-width:0}
+.tl-line,.tl-fill{position:absolute;left:0;top:18px;height:1px}
+.tl-line{right:0;background:rgba(244,241,233,.28)}
+.tl-fill{width:0;background:var(--cream)}
+.tl-dot{position:absolute;top:18px;left:0;width:9px;height:9px;margin:-4px 0 0 -4.5px;border-radius:50%;background:var(--cream);box-shadow:0 0 0 4px rgba(244,241,233,.16),0 0 18px rgba(255,214,170,.9);pointer-events:none}
+.tl-stop{position:absolute;top:0;height:52px;width:76px;margin-left:-38px;display:flex;flex-direction:column;align-items:center}
+.tl-stop i{display:block;width:7px;height:7px;margin-top:15px;border-radius:50%;background:var(--night);border:1px solid rgba(244,241,233,.7);transition:background .3s,transform .3s}
+.tl-stop span{margin-top:9px;font-size:8.5px;letter-spacing:.2em;text-transform:uppercase;white-space:nowrap;color:rgba(244,241,233,.55);transition:color .3s}
+.tl-stop:hover span,.tl-stop.on span{color:var(--cream)}
+.tl-stop.on i{background:var(--cream);transform:scale(1.25)}
+.tl-stop.past i{background:rgba(244,241,233,.8)}
+
+/* hotspots live inside the still frame, so they ride the slow zoom */
+.hs{position:absolute;width:36px;height:36px;margin:-18px 0 0 -18px;border-radius:50%;display:grid;place-items:center;opacity:0;pointer-events:none;transition:opacity .5s ease}
+.hs.on{opacity:1;pointer-events:auto}
+.hs::before{content:"";position:absolute;inset:0;border-radius:50%;border:1px solid rgba(244,241,233,.9);animation:pulse 2.6s cubic-bezier(.2,.6,.3,1) infinite}
+.hs::after{content:"";position:absolute;inset:7px;border-radius:50%;background:rgba(20,28,22,.35);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);border:1px solid rgba(244,241,233,.55)}
+.hs i{position:relative;z-index:1;width:7px;height:7px;border-radius:50%;background:var(--cream);box-shadow:0 0 12px rgba(255,226,190,.95)}
+.hs span{position:absolute;left:42px;top:50%;transform:translate(-6px,-50%);white-space:nowrap;font-size:9px;letter-spacing:.2em;text-transform:uppercase;opacity:0;transition:opacity .3s,transform .3s;text-shadow:0 1px 10px rgba(0,0,0,.7)}
+.hs:hover span,.hs:focus-visible span{opacity:1;transform:translate(0,-50%)}
+@keyframes pulse{0%{transform:scale(.55);opacity:.95}70%{transform:scale(1.45);opacity:0}100%{opacity:0}}
+
+/* popover */
+.pop{position:fixed;z-index:7;width:270px;background:var(--cream);color:var(--ink);box-shadow:0 34px 70px -24px rgba(0,0,0,.6);opacity:0;transform:translateY(8px) scale(.98);transition:opacity .3s ease,transform .4s cubic-bezier(.2,.7,.1,1)}
+.pop.on{opacity:1;transform:none}
+.pop[hidden]{display:none}
+.pop img{display:block;width:100%;aspect-ratio:4/3;object-fit:cover;background:var(--paper)}
+.pop .pc{padding:18px 20px 20px}
+.pop .eyebrow{color:var(--clay)}
+.pop h3{font-size:28px;line-height:1;letter-spacing:-.02em;margin-top:6px}
+.pop p.t{font-size:13px;line-height:1.55;margin-top:8px}
+.pop .x{position:absolute;top:8px;right:8px;width:30px;height:30px;border-radius:50%;background:rgba(244,241,233,.92);color:var(--ink);display:grid;place-items:center;font-size:13px}
+
+/* intro */
+.intro{position:fixed;inset:0;z-index:9;display:grid;place-items:center;text-align:center;padding:24px;overflow:hidden;transition:opacity 1.3s ease,visibility 1.3s}
+.intro.gone{opacity:0;visibility:hidden}
+.intro-bg{position:absolute;inset:-2%;background:#172018 url('media/poster-arrive.jpg') center 40%/cover no-repeat;animation:introkb 26s ease-out forwards}
+.intro::after{content:"";position:absolute;inset:0;background:radial-gradient(ellipse 48% 44% at 50% 54%,rgba(14,20,16,.5),rgba(14,20,16,.12) 100%),linear-gradient(180deg,rgba(14,20,16,.35),rgba(14,20,16,.55))}
+@keyframes introkb{from{transform:scale(1.02)}to{transform:scale(1.12)}}
+.intro-inner{position:relative;z-index:1;max-width:760px}
+.intro .crest{width:86px;height:auto;margin:0 auto 20px;display:block}
+.intro .eyebrow{color:var(--sand)}
+.intro h1{font-size:clamp(58px,9.2vw,138px);line-height:.84;letter-spacing:-.045em;margin:18px 0 0;text-shadow:0 2px 40px rgba(0,0,0,.3)}
+.intro h1 em{padding-left:.42em}
+.intro .lede{font-family:var(--serif);font-size:clamp(19px,2.1vw,27px);line-height:1.3;margin:24px auto 30px;max-width:31ch;text-shadow:0 1px 20px rgba(0,0,0,.35)}
+.intro-actions{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+.loader{width:150px;height:1px;margin:28px auto 0;background:rgba(244,241,233,.22);overflow:hidden;transition:opacity .6s}
+.loader i{display:block;height:100%;width:0;background:var(--cream);transition:width .35s ease}
+body.ready .loader{opacity:0}
+.keys{margin-top:18px;font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:rgba(244,241,233,.7)}
+
+.hint{position:fixed;z-index:5;left:50%;top:calc(92px + env(safe-area-inset-top));transform:translate(-50%,-6px);padding:9px 16px;border:1px solid var(--hair);border-radius:40px;background:rgba(20,28,22,.3);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);font-size:9px;letter-spacing:.2em;text-transform:uppercase;opacity:0;pointer-events:none;transition:opacity .8s,transform .8s;white-space:nowrap}
+.hint.on{opacity:1;transform:translate(-50%,0)}
+
+.film{border:0;padding:0;width:min(1100px,94vw);background:#000;color:var(--cream);box-shadow:0 40px 120px rgba(0,0,0,.6)}
+.film::backdrop{background:rgba(10,14,11,.82);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.film .fh{display:flex;justify-content:space-between;align-items:center;padding:12px 14px 12px 20px;background:var(--night);font-family:var(--serif);font-size:20px}
+.film .fh span{font-family:var(--sans);font-size:9px;letter-spacing:.2em;text-transform:uppercase;margin-left:12px;color:rgba(244,241,233,.6)}
+.film iframe{display:block;width:100%;aspect-ratio:16/9;border:0}
+
+@media (max-width:760px){
+  .brand-type{font-size:17px}
+  .top-actions .btn{padding:10px 14px;gap:12px}
+  .top-actions .btn .long{display:none}
+  .dock{flex-wrap:wrap;row-gap:4px;gap:12px}
+  .timeline{order:3;flex-basis:100%;height:40px}
+  .tl-stop span{display:none}
+  .tl-stop.on span{display:block;position:absolute;top:24px}
+  .sound{margin-left:auto}
+  .sound .lbl{display:none}
+  .card{bottom:calc(150px + env(safe-area-inset-bottom))}
+  .card h2{font-size:clamp(34px,10vw,46px);margin:8px 0 12px}
+  .card .body{font-size:13.5px;line-height:1.55}
+  .card .list,.card .tags,.card .meta,.card .fine{display:none}
+  .card .stats{gap:24px;margin-top:14px}.card .stats dt{font-size:34px}
+  .card .times dt{font-size:30px}
+  .scrim{background:linear-gradient(180deg,rgba(14,20,16,.5) 0%,rgba(14,20,16,0) 18%,rgba(14,20,16,0) 36%,rgba(14,20,16,.8) 100%)}
+}
+@media (max-width:420px){ .brand-type{display:none} .card .times{display:none} }
+@media (max-height:620px){
+  .card h2{font-size:clamp(32px,4.4vw,48px);margin:6px 0 10px}
+  .card .list,.card .tags,.card .times,.card .meta,.card .fine{display:none}
+  .card .body{font-size:13px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+  .card .stats{margin-top:12px}.card .stats dt{font-size:30px}
+  .card .actions{margin-top:14px}
+  .intro .crest{width:58px;margin-bottom:10px}
+  .intro .lede{margin:14px auto 18px}
+  .keys{display:none}
+  .hint{top:calc(76px + env(safe-area-inset-top))}
+}
+@media (max-height:440px){ .card .body{display:none} .topbar{padding-top:10px;padding-bottom:10px} }
+@media (prefers-reduced-motion:reduce){ .card>*{transition:opacity .4s ease;transform:none} .hs::before{animation:none} .intro-bg{animation:none} .eq i{animation:none;height:60%} }
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <div class="layer vlayer"><div class="vfill"></div><video id="v0" muted playsinline preload="auto" disablepictureinpicture aria-hidden="true"></video></div>
+  <div class="layer vlayer"><div class="vfill"></div><video id="v1" muted playsinline preload="auto" disablepictureinpicture aria-hidden="true"></video></div>
+  <div class="layer" id="s0"><div class="frame"><img alt=""><div class="spots"></div></div></div>
+  <div class="layer" id="s1"><div class="frame"><img alt=""><div class="spots"></div></div></div>
+</div>
+<div class="scrim" aria-hidden="true"></div>
+
+<header class="topbar">
+  <a class="brand" href="https://bermudadunesracquet.com/" target="_blank" rel="noopener" aria-label="Bermuda Dunes Racquet Club">
+    <img src="media/crest-white.png" alt="" width="240" height="165">
+    <span class="brand-type">BERMUDA DUNES<span>RACQUET CLUB</span></span>
+  </a>
+  <div class="top-actions">
+    <a class="btn" href="https://www.nestvillas.com/villas" target="_blank" rel="noopener noreferrer"><span>Book<span class="long"> your stay</span></span> <span class="arr" aria-hidden="true">↗</span></a>
+    <button class="icon-btn" id="fs" type="button" aria-label="Full screen"><svg viewBox="0 0 16 16"><path d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"/></svg></button>
+  </div>
+</header>
+
+<aside class="card" id="card" aria-live="polite"></aside>
+
+<div class="dock" id="dock">
+  <div class="ctrl">
+    <button class="icon-btn" id="prev" type="button" aria-label="Previous stop"><svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></svg></button>
+    <button class="icon-btn play" id="play" type="button" aria-label="Pause the tour"><svg viewBox="0 0 16 16"><path class="s" d="M5.5 3.5v9M10.5 3.5v9"/><path class="p" d="M5 3.2 12.5 8 5 12.8Z"/></svg></button>
+    <button class="icon-btn" id="next" type="button" aria-label="Next stop"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5"/></svg></button>
+  </div>
+  <nav class="timeline" id="timeline" aria-label="Stops on the tour">
+    <div class="tl-line"></div><div class="tl-fill" id="tlFill"></div><div class="tl-dot" id="tlDot"></div>
+  </nav>
+  <div class="sound" id="sound">
+    <span class="eq" aria-hidden="true"><i></i><i></i><i></i></span><span class="lbl">Sound</span>
+    <button class="icon-btn" id="soundBtn" type="button" aria-label="Mute the music" aria-pressed="true"><svg viewBox="0 0 16 16"><path d="M3 6h2.5L9 3v10L5.5 10H3z"/><path class="on" d="M11.2 5.6a3.4 3.4 0 0 1 0 4.8M12.9 3.9a5.8 5.8 0 0 1 0 8.2"/><path class="off" d="m11.5 6 3 4M14.5 6l-3 4"/></svg></button>
+  </div>
+</div>
+
+<div class="hint" id="hint"></div>
+
+<section class="intro" id="intro" aria-labelledby="intro-title">
+  <div class="intro-bg" aria-hidden="true"></div>
+  <div class="intro-inner">
+    <img class="crest" src="media/crest-white.png" alt="" width="240" height="165">
+    <p class="eyebrow">Bermuda Dunes Racquet Club · Est. 1958</p>
+    <h1 id="intro-title">Take the<br><em>grand tour.</em></h1>
+    <p class="lede">Nearly three gated acres of desert play, from golden hour to after hours.</p>
+    <div class="intro-actions">
+      <button class="btn btn-cream" id="start" type="button" disabled><span id="startLabel">Loading the tour</span> <span class="arr" aria-hidden="true">→</span></button>
+      <button class="btn" id="introFilm" type="button">Watch the full film</button>
+    </div>
+    <div class="loader" aria-hidden="true"><i id="loadbar"></i></div>
+    <p class="keys">Space to pause · ← → to skip · music on</p>
+  </div>
+</section>
+
+<div class="pop" id="pop" role="dialog" aria-label="Details" hidden></div>
+
+<dialog class="film" id="film" aria-label="Bermuda Dunes Racquet Club video">
+  <div class="fh"><div>Bermuda Dunes Racquet Club <span>The estate video</span></div><button class="icon-btn" id="filmClose" type="button" aria-label="Close video"><svg viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div>
+  <iframe id="filmFrame" title="Bermuda Dunes Racquet Club | Play Well. Stay Well." allow="autoplay; encrypted-media; picture-in-picture; fullscreen"></iframe>
+</dialog>
+
+<audio id="music" preload="auto" loop></audio>
+
+<script type="module">
+/* ============================================================
+   Settings and copy
+   ============================================================ */
+const $ = (s) => document.querySelector(s);
+const Q = new URLSearchParams(location.search);
+const MEDIA = 'media/';
+const BOOK = 'https://www.nestvillas.com/villas';
+const VIDEO = 'z86pMY77Dsc';
+const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const COARSE = matchMedia('(pointer: coarse)').matches;
+if (Q.get('brand') === '0') document.body.classList.add('no-brand');
+const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+const lerp = (a, b, t) => a + (b - a) * t;
+
+// Each stop plays one stretch of the estate film, then holds on a photograph with a slow zoom.
+// `zoom` is [from, to] scale around `focus` (percent of the photo); hotspots are percent positions too.
+const CH = [
+  { id: 'arrive', label: 'Arrive', clip: 'arrive', still: 'still-hero.webp', focus: [60, 52], zoom: [1, 1.12], hold: 9,
+    eyebrow: 'The estate · Est. 1958', title: 'The Racquet Club,<br><em>Reimagined.</em>',
+    body: 'A desert original since 1958, the former Bermuda Dunes Tennis Club pairs a storied past with beautifully appointed interiors and palm-lined grounds.',
+    stats: [['~3', 'Gated acres'], ['8', 'Bedrooms'], ['7.5', 'Baths']],
+    spots: [
+      { x: 61, y: 52, t: 'Resort-style pool', d: 'A resort-style pool with a waterslide and swim-up bar.' },
+      { x: 82, y: 50, t: 'Poolside cabana', d: 'An illuminated poolside cabana beside the swim-up bar.' },
+      { x: 40, y: 27, t: 'In the heart of it', d: '10 minutes to the Coachella and Stagecoach festival grounds, 15 to Indian Wells Tennis Garden and 25 to Palm Springs International Airport.' },
+    ] },
+  { id: 'stay', label: 'Stay', clip: 'stay', still: 'still-bedroom.webp', focus: [28, 62], zoom: [1.02, 1.1], hold: 10,
+    eyebrow: '01 / Stay well', title: 'Settle into<br><em>something special.</em>',
+    body: 'Eight bedrooms and 7.5 baths across roughly 4,400 square feet, with open living spaces and thoughtful details that make everyone feel at home.',
+    list: ['Organic bamboo linens on every bed', 'Chef’s kitchen with Sub-Zero + Wolf', 'Fully stocked, with non-toxic cookware', 'Indoor-outdoor spaces made for gathering'],
+    actions: `<a class="text-link" href="${BOOK}" target="_blank" rel="noopener noreferrer">Find your dates at Nest Villas <span aria-hidden="true">↗</span></a>`,
+    spots: [
+      { x: 16, y: 78, t: 'Rest, organically', d: 'Simply Organic Bamboo linens on every bed.' },
+      { x: 37, y: 50, t: 'Step outside', d: 'A light-filled bedroom with direct access to the grounds.' },
+    ] },
+  { id: 'play', label: 'Play', clip: 'play', still: 'still-tennis.webp', focus: [56, 42], zoom: [1, 1.08], hold: 10,
+    eyebrow: '02 / Play well', title: 'A love of<br><em>the game.</em>',
+    body: 'A full tennis court, two pickleball courts, and putt-putt keep the club’s sporting spirit alive.',
+    stats: [['1', 'Tennis court'], ['2', 'Pickleball courts'], ['1', 'Putting green']],
+    spots: [
+      { x: 82, y: 42, t: 'Full tennis court', d: 'One private, full-size tennis court.' },
+      { x: 36, y: 28, t: 'Two pickleball courts', d: 'Side by side, steps from the tennis court.' },
+      { x: 12, y: 45, t: 'Putt-putt', d: 'A putting green for a little friendly competition.' },
+    ] },
+  { id: 'pool', label: 'Swim', clip: 'pool', still: 'still-pool.webp', focus: [45, 60], zoom: [1.1, 1], hold: 9,
+    eyebrow: '02 / Play well', title: 'Nowhere<br><em>else to be.</em>',
+    body: 'A resort-style pool with a waterslide and swim-up bar, made for long afternoons between matches.',
+    meta: 'The day is yours from the first serve to the last swim.',
+    spots: [
+      { x: 45, y: 52, t: 'Poolside cabana', d: 'Shade, seating and the swim-up bar under one roof.' },
+      { x: 32, y: 86, t: 'Resort-style pool', d: 'Framed by palms and desert mountains.' },
+    ] },
+  { id: 'gather', label: 'Gather', clip: 'gather', still: 'still-cabana.webp', focus: [47, 52], zoom: [1, 1.1], hold: 11,
+    eyebrow: '03 / Host well', title: 'Good company.<br><em>Great setting.</em>',
+    body: 'From weddings, private celebrations, and corporate retreats to brand activations and production stays, the estate is designed to host. A dedicated 120-car parking lot and separate staging areas make room for the bigger picture.',
+    tags: ['Weddings', 'Private celebrations', 'Corporate retreats', 'Brand activations', 'Festival stays'],
+    fine: 'Events require prior approval, permits where applicable, and additional insurance.',
+    spots: [
+      { x: 47, y: 30, t: 'Illuminated cabana', d: 'An illuminated poolside cabana, lit for long evenings by the water.' },
+      { x: 70, y: 61, t: 'Swim-up bar', d: 'Barstools set right in the pool.' },
+    ] },
+  { id: 'fire', label: 'Fireside', clip: 'fire', still: 'still-fire.webp', focus: [61, 62], zoom: [1, 1.1], hold: 10,
+    eyebrow: 'After hours', title: 'Sunset cocktails become<br><em>fireside conversations.</em>',
+    body: 'Festival weekends become something unforgettable. Behind the gates, there’s space to bring your people together.',
+    spots: [
+      { x: 61, y: 62, t: 'Fireside lounge', d: 'A private fireside lounge glowing at dusk beneath the palms.' },
+    ] },
+  { id: 'book', label: 'Book', clip: null, still: 'still-dusk.jpg', focus: [52, 55], zoom: [1.14, 1], hold: Infinity,
+    eyebrow: 'Your desert days start here', title: 'Come for the play.<br><em>Stay for everything else.</em>',
+    body: '2027 dates are booking now.',
+    times: [['10', 'Coachella +<br>Stagecoach'], ['15', 'Indian Wells<br>Tennis Garden'], ['25', 'Palm Springs<br>Int’l Airport']],
+    actions: `<a class="btn btn-clay" href="${BOOK}" target="_blank" rel="noopener noreferrer">Book at Nest Villas <span class="arr" aria-hidden="true">↗</span></a><button class="btn" type="button" data-act="film">Watch the full film</button><button class="btn" type="button" data-act="again">Tour again ↺</button>`,
+    spots: [] },
+];
+
+/* ============================================================
+   Media: fetched as blobs so playback never depends on the host
+   supporting byte-range requests (Safari needs those for <video>)
+   ============================================================ */
+const urls = {}, pending = {};
+function media(file, onProgress) {
+  if (urls[file]) return Promise.resolve(urls[file]);
+  if (pending[file]) return pending[file];
+  pending[file] = (async () => {
+    try {
+      const res = await fetch(MEDIA + file);
+      if (!res.ok || !res.body) throw new Error(String(res.status));
+      const total = +res.headers.get('content-length') || 0, reader = res.body.getReader(), parts = [];
+      let got = 0;
+      for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); got += value.length; if (onProgress && total) onProgress(got / total); }
+      const type = res.headers.get('content-type') || (file.endsWith('.m4a') ? 'audio/mp4' : 'video/mp4');
+      urls[file] = URL.createObjectURL(new Blob(parts, { type }));
+    } catch (err) {
+      urls[file] = MEDIA + file; // opened from disk or blocked: fall back to the plain URL
+    }
+    return urls[file];
+  })();
+  return pending[file];
+}
+const clipFile = (c) => `clip-${c.clip}.mp4`;
+function preloadStill(c) { if (!c.img) { c.img = new Image(); c.img.decoding = 'async'; c.img.src = MEDIA + c.still; } return c.img; }
+
+/* ============================================================
+   Layers
+   ============================================================ */
+const vids = [$('#v0'), $('#v1')];
+const stills = [$('#s0'), $('#s1')].map((el) => ({ el, frame: el.querySelector('.frame'), img: el.querySelector('img'), spots: el.querySelector('.spots'), anim: null, ch: null }));
+let vi = 0, si = 0, zTop = 1;
+function showLayer(el, fast = false) {
+  el.classList.toggle('fast', fast);
+  el.style.zIndex = ++zTop;
+  el.classList.add('on');
+  const others = [...vids.map((v) => v.parentElement), ...stills.map((s) => s.el)].filter((x) => x !== el);
+  clearTimeout(showLayer.t);
+  showLayer.t = setTimeout(() => { for (const o of others) { o.classList.remove('on'); const ov = o.querySelector('video'); if (ov && ov !== activeVideo) ov.pause(); } }, fast ? 500 : 1300);
+}
+let activeVideo = null;
+function layoutStill(s) {
+  const iw = s.img.naturalWidth, ih = s.img.naturalHeight;
+  if (!iw || !s.ch) return;
+  const W = innerWidth, H = innerHeight, k = Math.max(W / iw, H / ih), w = iw * k, h = ih * k;
+  const [fx, fy] = s.ch.focus;
+  const left = clamp(W / 2 - (fx / 100) * w, W - w, 0), top = clamp(H / 2 - (fy / 100) * h, H - h, 0);
+  Object.assign(s.frame.style, { width: `${w}px`, height: `${h}px`, left: `${left}px`, top: `${top}px`, transformOrigin: `${fx}% ${fy}%` });
+}
+addEventListener('resize', () => { stills.forEach(layoutStill); });
+
+/* ============================================================
+   The tour
+   ============================================================ */
+const T = { k: 0, phase: 'intro', holdT: 0, playing: true, started: false, seq: 0, hold: false };
+const music = $('#music');
+let soundOn = Q.get('sound') !== '0';
+
+async function playClip(k, seq) {
+  const c = CH[k];
+  const v = vids[(vi ^= 1)];
+  v.pause(); v.removeAttribute('src'); v.load();
+  v.poster = `${MEDIA}poster-${c.clip}.jpg`;
+  v.parentElement.querySelector('.vfill').style.backgroundImage = `url('${v.poster}')`;
+  activeVideo = v;
+  showLayer(v.parentElement);
+  document.body.classList.add('playing-clip');
+  const url = await media(clipFile(c));
+  if (seq !== T.seq) return;
+  v.src = url;
+  v.onended = () => { if (seq === T.seq) enterHold(k, seq); };
+  v.onerror = () => { if (seq === T.seq) enterHold(k, seq); };
+  try { if (T.playing && visible) await v.play(); }
+  catch (err) { if (seq === T.seq) enterHold(k, seq); }
+  preloadAhead(k);
+}
+async function enterHold(k, seq) {
+  const c = CH[k];
+  T.phase = 'hold'; T.holdT = 0;
+  document.body.classList.remove('playing-clip');
+  const s = stills[(si ^= 1)];
+  s.ch = c; s.spots.innerHTML = '';
+  if (s.anim) { s.anim.cancel(); s.anim = null; }
+  const img = preloadStill(c);
+  try { await img.decode(); } catch (err) { /* draw whatever arrived */ }
+  if (seq !== T.seq) return;
+  s.img.src = img.src;
+  try { await s.img.decode(); } catch (err) { /* layout once it lands */ }
+  if (seq !== T.seq) return;
+  layoutStill(s);
+  if (!REDUCED) {
+    s.anim = s.frame.animate([{ transform: `scale(${c.zoom[0]})` }, { transform: `scale(${c.zoom[1]})` }], { duration: (Number.isFinite(c.hold) ? c.hold + 4 : 22) * 1000, easing: 'cubic-bezier(.3,.1,.3,1)', fill: 'forwards' });
+    if (!T.playing) s.anim.pause();
+  } else s.frame.style.transform = `scale(${Math.max(...c.zoom)})`;
+  activeVideo = null;
+  showLayer(s.el);
+  setCard(k);
+  setTimeout(() => { if (seq === T.seq) buildSpots(s, c); }, 900);
+  if (k === CH.length - 1) fadeMusicLater();
+  preloadAhead(k);
+}
+function preloadAhead(k) { for (const c of CH.slice(k + 1, k + 3)) { if (c.clip) media(clipFile(c)); preloadStill(c); } }
+function go(k) {
+  k = clamp(k, 0, CH.length - 1);
+  hidePop();
+  T.k = k; T.holdT = 0; const seq = ++T.seq;
+  setCard(-1);
+  restoreMusic();
+  if (CH[k].clip) { T.phase = 'clip'; playClip(k, seq); } else { T.phase = 'wait'; enterHold(k, seq); }
+}
+const next = () => go(T.k + 1);
+const prev = () => go(T.phase === 'clip' && activeVideo && activeVideo.currentTime > 2 ? T.k : T.k - 1);
+function setPlaying(p) {
+  T.playing = p;
+  document.body.classList.toggle('paused', !p);
+  playBtn.classList.toggle('paused', !p);
+  playBtn.setAttribute('aria-label', p ? 'Pause the tour' : 'Resume the tour');
+  applyMedia();
+}
+function applyMedia() {
+  const run = T.playing && visible && !film.open && T.started;
+  if (activeVideo && T.phase === 'clip') { if (run) activeVideo.play().catch(() => {}); else activeVideo.pause(); }
+  for (const s of stills) if (s.anim) { if (run) s.anim.play(); else s.anim.pause(); }
+  if (run && soundOn) music.play().catch(() => {}); else music.pause();
+}
+
+/* music fades where the platform allows volume (iOS treats volume as read-only, so mute stands in) */
+let fadeRaf = 0, fadeTimer = 0;
+function fadeMusic(to, ms = 1200) {
+  cancelAnimationFrame(fadeRaf);
+  const from = music.volume, t0 = performance.now();
+  const step = (now) => { const e = clamp((now - t0) / ms, 0, 1); music.volume = lerp(from, to, e); if (e < 1) fadeRaf = requestAnimationFrame(step); };
+  fadeRaf = requestAnimationFrame(step);
+}
+function fadeMusicLater() { clearTimeout(fadeTimer); fadeTimer = setTimeout(() => fadeMusic(0.25, 6000), 14000); }
+function restoreMusic() { clearTimeout(fadeTimer); if (music.volume < 0.99) fadeMusic(1, 1500); }
+function setSound(on) {
+  soundOn = on;
+  $('#sound').classList.toggle('muted', !on);
+  $('#soundBtn').setAttribute('aria-pressed', String(on));
+  $('#soundBtn').setAttribute('aria-label', on ? 'Mute the music' : 'Play the music');
+  if (on && T.started && T.playing) { music.volume = 0; music.play().catch(() => {}); fadeMusic(1, 900); }
+  else music.pause();
+}
+$('#soundBtn').addEventListener('click', () => setSound(!soundOn));
+
+/* ============================================================
+   UI: card, timeline, hotspots, popover, film
+   ============================================================ */
+const cardEl = $('#card');
+let shownK = -2, cardTimer = 0;
+function cardHTML(c) {
+  let h = `<p class="eyebrow">${c.eyebrow}</p><h2>${c.title}</h2>`;
+  if (c.body) h += `<p class="body">${c.body}</p>`;
+  if (c.stats) h += `<dl class="stats">${c.stats.map(([a, b]) => `<div><dt>${a}</dt><dd>${b}</dd></div>`).join('')}</dl>`;
+  if (c.list) h += `<ul class="list">${c.list.map((x) => `<li>${x}</li>`).join('')}</ul>`;
+  if (c.tags) h += `<div class="tags">${c.tags.map((x) => `<span>${x}</span>`).join('')}</div>`;
+  if (c.times) h += `<dl class="times">${c.times.map(([a, b]) => `<div><dt>${a}<span>min</span></dt><dd>${b}</dd></div>`).join('')}</dl>`;
+  if (c.meta) h += `<p class="meta">${c.meta}</p>`;
+  if (c.fine) h += `<p class="fine">${c.fine}</p>`;
+  if (c.actions) h += `<div class="actions">${c.actions}</div>`;
+  return h;
+}
+function setCard(k) {
+  if (k === shownK) return;
+  shownK = k;
+  cardEl.classList.remove('show');
+  clearTimeout(cardTimer);
+  cardTimer = setTimeout(() => {
+    if (k < 0) { cardEl.innerHTML = ''; return; }
+    cardEl.innerHTML = cardHTML(CH[k]);
+    void cardEl.offsetWidth; cardEl.classList.add('show');
+  }, k < 0 ? 450 : cardEl.innerHTML ? 380 : 0);
+}
+cardEl.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  if (b.dataset.act === 'film') openFilm(); else if (b.dataset.act === 'again') { setPlaying(true); go(0); }
+});
+const tl = $('#timeline'), tlFill = $('#tlFill'), tlDot = $('#tlDot'), playBtn = $('#play');
+const stopPct = CH.map((c, i) => 4 + (i * 92) / (CH.length - 1));
+const stopBtns = CH.map((c, i) => {
+  const b = document.createElement('button'); b.type = 'button'; b.className = 'tl-stop'; b.style.left = `${stopPct[i]}%`;
+  b.innerHTML = `<i></i><span>${c.label}</span>`; b.setAttribute('aria-label', `Go to ${c.label}`);
+  b.addEventListener('click', () => { if (!T.started) start(i); else { setPlaying(true); go(i); } });
+  tl.appendChild(b); return b;
+});
+function progressPct() {
+  const c = CH[T.k], a = stopPct[T.k], b = stopPct[T.k + 1] ?? stopPct[T.k];
+  let f = 0;
+  if (T.phase === 'clip' && activeVideo && activeVideo.duration) f = 0.6 * (activeVideo.currentTime / activeVideo.duration);
+  else if (T.phase === 'hold') f = Number.isFinite(c.hold) ? 0.6 + 0.4 * clamp(T.holdT / c.hold, 0, 1) : 0;
+  return lerp(a, b, f);
+}
+playBtn.addEventListener('click', () => setPlaying(!T.playing));
+$('#next').addEventListener('click', next);
+$('#prev').addEventListener('click', prev);
+
+function buildSpots(s, c) {
+  s.spots.innerHTML = '';
+  for (const sp of c.spots) {
+    const el = document.createElement('button'); el.type = 'button'; el.className = 'hs';
+    el.style.left = `${sp.x}%`; el.style.top = `${sp.y}%`;
+    el.innerHTML = `<i></i><span>${sp.t}</span>`; el.setAttribute('aria-label', sp.t);
+    el.addEventListener('click', (e) => { e.stopPropagation(); openPop(sp, c, el); });
+    s.spots.appendChild(el); sp.el = el;
+  }
+  checkSpots();
+}
+// Hide a hotspot when the crop pushes it off screen, or when it sits under the card or the controls.
+function checkSpots() {
+  const s = stills.find((x) => x.el.classList.contains('on') && +x.el.style.zIndex === zTop);
+  if (!s || T.phase !== 'hold') return;
+  const W = innerWidth, H = innerHeight, cr = cardEl.classList.contains('show') ? cardEl.getBoundingClientRect() : null;
+  for (const el of s.spots.children) {
+    const r = el.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2;
+    let on = x > 24 && x < W - 24 && y > 90 && y < H - 120;
+    if (on && cr && x > cr.left - 20 && x < cr.right + 20 && y > cr.top - 20 && y < cr.bottom + 20) on = false;
+    el.classList.toggle('on', on); el.tabIndex = on ? 0 : -1;
+  }
+}
+const pop = $('#pop');
+function openPop(sp, c, el) {
+  pop.innerHTML = `${sp.img ? `<img src="${MEDIA + sp.img}" alt="">` : ''}<div class="pc"><p class="eyebrow">${c.label}</p><h3>${sp.t}</h3><p class="t">${sp.d}</p></div><button class="x" type="button" aria-label="Close">✕</button>`;
+  pop.querySelector('.x').addEventListener('click', hidePop);
+  pop.hidden = false;
+  const r = el.getBoundingClientRect(), pw = Math.min(270, innerWidth - 32), ph = pop.offsetHeight || 200;
+  let x = r.left + 28, y = r.top - ph / 2;
+  if (x + pw > innerWidth - 16) x = r.left - pw - 12;
+  x = clamp(x, 16, innerWidth - pw - 16); y = clamp(y, 76, innerHeight - ph - 16);
+  if (innerWidth < 560) { x = (innerWidth - pw) / 2; y = Math.max(76, innerHeight - ph - 130); }
+  Object.assign(pop.style, { left: `${x}px`, top: `${y}px`, width: `${pw}px` });
+  requestAnimationFrame(() => pop.classList.add('on'));
+  T.hold = true;
+}
+function hidePop() { if (pop.hidden) return; pop.classList.remove('on'); T.hold = false; setTimeout(() => { if (!pop.classList.contains('on')) pop.hidden = true; }, 300); }
+document.addEventListener('pointerdown', (e) => { if (!pop.hidden && !pop.contains(e.target) && !e.target.closest('.hs')) hidePop(); });
+
+const film = $('#film'), filmFrame = $('#filmFrame');
+function openFilm() {
+  filmFrame.src = `https://www.youtube-nocookie.com/embed/${VIDEO}?autoplay=1&rel=0&playsinline=1`;
+  if (film.showModal) { film.showModal(); applyMedia(); } else window.open(`https://www.youtube.com/watch?v=${VIDEO}`, '_blank', 'noopener');
+}
+film.addEventListener('close', () => { filmFrame.src = 'about:blank'; applyMedia(); });
+$('#filmClose').addEventListener('click', () => film.close());
+film.addEventListener('click', (e) => { if (e.target === film) film.close(); });
+$('#introFilm').addEventListener('click', openFilm);
+
+const fsBtn = $('#fs');
+if (!document.fullscreenEnabled) fsBtn.remove();
+else fsBtn.addEventListener('click', () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {}); });
+
+const hint = $('#hint');
+function showHint() { hint.textContent = COARSE ? 'Swipe to skip · tap a dot to explore' : '← → to skip · Space to pause'; hint.classList.add('on'); setTimeout(() => hint.classList.remove('on'), 5200); }
+
+// swipe between stops; vertical swipes still scroll a host page around an embed
+const stage = $('#stage');
+let sx = 0, sy = 0, st = 0;
+stage.addEventListener('pointerdown', (e) => { sx = e.clientX; sy = e.clientY; st = performance.now(); });
+stage.addEventListener('pointerup', (e) => {
+  const dx = e.clientX - sx, dy = e.clientY - sy;
+  if (T.started && Math.abs(dx) > 60 && Math.abs(dy) < 60 && performance.now() - st < 800) { setPlaying(true); dx < 0 ? next() : prev(); }
+});
+addEventListener('keydown', (e) => {
+  if (film.open || e.target.closest?.('input, textarea')) return;
+  if (!T.started) return;
+  if (e.key === 'Escape') { hidePop(); return; }
+  if (e.target.closest?.('button, a') && (e.key === ' ' || e.key === 'Enter')) return;
+  if (e.key === ' ') { e.preventDefault(); setPlaying(!T.playing); }
+  else if (e.key === 'ArrowRight') { setPlaying(true); next(); }
+  else if (e.key === 'ArrowLeft') { setPlaying(true); prev(); }
+});
+
+/* ============================================================
+   Start, loop, visibility
+   ============================================================ */
+const intro = $('#intro'), startBtn = $('#start');
+function start(k = startK) {
+  if (T.started) return;
+  T.started = true;
+  intro.classList.add('gone'); document.body.classList.add('touring');
+  if (document.activeElement && intro.contains(document.activeElement)) document.activeElement.blur();
+  if (soundOn) { music.volume = 0; music.play().then(() => fadeMusic(1, 2000)).catch(() => setSound(false)); } // inside the click, so browsers allow sound
+  go(k);
+  setTimeout(showHint, 2500);
+}
+startBtn.addEventListener('click', () => start());
+
+let visible = true, last = performance.now(), spotT = 0;
+new IntersectionObserver(([e]) => { visible = e.isIntersecting; applyMedia(); }).observe(stage);
+document.addEventListener('visibilitychange', () => { visible = !document.hidden; applyMedia(); });
+function loop(now) {
+  requestAnimationFrame(loop);
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (!T.started) return;
+  const c = CH[T.k];
+  if (T.phase === 'hold' && T.playing && visible && !T.hold && !film.open && Number.isFinite(c.hold)) {
+    T.holdT += dt;
+    if (T.holdT >= c.hold) go(T.k + 1);
+  }
+  const p = progressPct();
+  tlFill.style.width = `${p}%`; tlDot.style.left = `${p}%`;
+  stopBtns.forEach((b, i) => { b.classList.toggle('on', i === T.k); b.classList.toggle('past', i < T.k); });
+  if ((spotT += dt) > 0.25) { spotT = 0; checkSpots(); }
+}
+requestAnimationFrame(loop);
+
+/* boot: the first clip and the soundtrack load before Start is offered; the rest stream in behind */
+const cq = CH.findIndex((c) => c.id === Q.get('chapter'));
+const startK = cq >= 0 ? cq : 0;
+setSound(soundOn);
+(async () => {
+  const bar = $('#loadbar'), first = CH[startK];
+  const parts = { clip: 0, music: 0 };
+  const show = () => { bar.style.width = `${Math.round((parts.clip * 0.7 + parts.music * 0.3) * 100)}%`; };
+  const jobs = [first.clip ? media(clipFile(first), (p) => { parts.clip = p; show(); }) : Promise.resolve(), media('soundtrack.m4a', (p) => { parts.music = p; show(); })];
+  preloadStill(first);
+  await Promise.all(jobs);
+  music.src = urls['soundtrack.m4a'];
+  parts.clip = parts.music = 1; show();
+  document.body.classList.add('ready');
+  startBtn.disabled = false; $('#startLabel').textContent = 'Start the tour'; startBtn.focus({ preventScroll: true });
+  if (Q.has('autostart')) { if (soundOn) setSound(false); start(); }
+  for (const c of CH) { if (c.clip) await media(clipFile(c)); preloadStill(c); }
+})();
+window.__tour = { T, CH, go, setPlaying, ready: () => document.body.classList.contains('ready') };
+</script>
+</body>
+</html>

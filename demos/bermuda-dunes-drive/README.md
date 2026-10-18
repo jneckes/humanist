@@ -9,6 +9,9 @@ points, and the light moves from golden hour to after hours along the way.
 
 It is one self-contained file, `index.html`. It needs no build step and no server code.
 
+A second version built from the real estate film and photos, with the same stops and copy, is in
+[`../bermuda-dunes-film`](../bermuda-dunes-film).
+
 ## The drive
 
 | Stop | What you see | Copy from the site |
