@@ -58,7 +58,9 @@ into a section with an iframe:
 | `chapter=arrive\|estate\|stay\|courts\|pool\|gather\|book` | Opens parked at that stop, for deep links such as `?chapter=pool` next to the Play section |
 | `time=golden\|sunset\|dusk\|night` or `0`–`1` | Locks the time of day |
 | `paused` | Starts with auto-drive off, so the car waits at each stop |
-| `debug` | Shows frame rate, resolution and position |
+| `quality=ultra\|high\|balanced\|low` | Picks a rendering preset (see below). Ultra is the default on desktop, high on phones and tablets |
+| `scale=1.5` | Renders above the screen's pixel density (0.5–2), for extra-sharp stills and screen recordings |
+| `debug` | Shows the preset, frame rate, resolution, MSAA and position |
 
 ## What it loads
 
@@ -70,15 +72,38 @@ into a section with an iframe:
   Both are constants at the top of the script.
 
 Everything else is generated in the browser: the palms, rocks, house, courts, pool, car, sky,
-mountains and textures. No 3D models or image textures are downloaded. A browser without WebGL 2, or
+mountains and textures. The surface textures (decomposed granite, concrete, flagstone, stucco, wood,
+corten, palm bark, asphalt, turf, granite boulders and foliage) are rendered on the GPU at load, each
+with a matching normal map. No 3D models or image textures are downloaded. A browser without WebGL 2, or
 one where the CDN is blocked, gets a still frame with the video and booking buttons instead.
 
-## Performance
+## Resolution and quality
 
-- Rendering is capped at about 4.2 megapixels.
-- On phones and machines with four or fewer cores, the pixel ratio and shadow resolution start lower.
-- Resolution drops further if frames run slow for more than two seconds.
-- With `prefers-reduced-motion`, the camera drift and intro orbit are off and the intro swoop is shorter.
+![Ultra, up close at 2× density: boulders, slide, water and pool coping](closeup.jpg)
+
+Everything runs at the highest resolution by default. Performance tuning comes next. The presets:
+
+| | Ultra (desktop default) | High (phone default) | Balanced | Low |
+| --- | --- | --- | --- | --- |
+| Pixel density | Screen density, up to 3× | Up to 2×, 8.3 MP cap | Up to 2×, 4.2 MP cap | 1.25×, 2.1 MP cap |
+| Anti-aliasing | 8× MSAA (4× on 2× screens) + alpha-to-coverage leaves | 4× MSAA + alpha-to-coverage | 4× MSAA | none |
+| Shadows | 4 cascades: 4096 + 3 × 2048 | 3 cascades × 2048 | one 2048 map | one 1024 map |
+| Surface textures | 2048 px (ground, concrete, flagstone), 1024 px others, all normal-mapped | 1024 px | 512 px | 256 px |
+| Court, signage, fronds | Court at ~100 px/m, 4× canvases | 2× canvases | 1× | 1× |
+| Sky reflections | 1024 px cube | 512 px | 256 px | 256 px |
+| Geometry | ~2.5× segments, rounded architectural edges, 980-face boulders | ~1.6× | 1× | 0.7× |
+| Drops resolution when slow | no | no | yes | yes |
+
+Ultra also uses anisotropic filtering at the GPU's maximum and lighter film grain and lens fringing, so
+fine detail survives.
+
+**Budget to tune next:** on a 2560 × 1440 screen, ultra holds roughly 1.1 GB of GPU memory. That is
+about 300 MB of frame buffers (8× MSAA at half float), 250 MB of reflection maps, 235 MB of shadow maps,
+230 MB of generated textures and 110 MB of canvas textures. Each frame also renders the scene into four
+shadow cascades. Those are the levers for the performance pass; `quality=high` and `balanced` show
+where each one lands.
+
+With `prefers-reduced-motion`, the camera drift and intro orbit are off and the intro swoop is shorter.
 
 ## Editing
 
