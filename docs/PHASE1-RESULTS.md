@@ -11,23 +11,21 @@ docs/PHASE0-FINDINGS.md. The suites and the other integration checks are at the 
 
 | Criterion | Gate (SPEC 10) | Result here |
 |---|---|---|
-| Render parity, committed fixtures | every slide ≤ 0.5% of pixels different | **met**: 30 decks, 148 slides, each in both trust states: all 296 comparisons identical to the byte |
-| Render parity, Josh's decks | as above | **met by 11 of 12**: D2 fails on 2 of its 11 slides (1.05% and 0.93% Protected, 1.10% and 0.94% Trusted) because the deck draws a random decoration; with the same seeded `Math.random` in both renders it passes (worst 0.067%) |
-| PDF | right page count; every page ≤ 1% different from its slide render | **met by 41 of 42 decks** (30 committed and 12 of Josh's, each in both trust states: 83 of 84 PDFs): every page count right; D2's Trusted PDF misses by its randomness (1.031%; Protected 0.980%). **D5 now passes** (0.53% worst): the defect the first measurement found, raster pages captured before a script revealed the slide's content, is fixed (PDF, below) |
-| Security | the suite passes in both trust states | **met**: 49 of 49 (`npm run test:security`; the two known DNS channels are expected failures, SECURITY.md) |
-| Speed | a 2 MB deck reaches first paint in < 1 s | **met here** (Linux, median of 5): 500 ms (Trusted) and 526 ms (Protected) from the open request with the app running, 854 and 877 ms from a cold start; recheck on the Mac |
+| Render parity, committed fixtures | every slide ≤ 0.5% of pixels different (per-channel tolerance 2) | **met**: 42 decks, 162 slides, each in both trust states: all 324 comparisons identical to the byte (seeded `Math.random`, control render per slide) |
+| Render parity, Josh's decks | as above | **met: all 12**, in both trust states, with the seeded `Math.random` every run uses: D2 and D12 (whose decoration is random) are identical or within the gate (D2 worst 0.071%, D12 0.000%); D11's one font-fallback slide is 0.343%; D5's time-based ticker is within the gate and flagged nondeterministic by the control render. D2's charset-decoding text differences are recorded, not a gate |
+| PDF | right page count; each raster page ≤ 1% from Blueline's render of its slide, each page Chromium prints (print-CSS decks, documents) ≤ 1% from Chromium's own print of the file (decision D-6; spec-amendments) | **met**: 42 committed and 12 of Josh's decks, each in both trust states, every page count right. Raster pages are identical to their slide renders (worst 0.027% on `reveal-hash`); print-CSS and document pages are identical to Chromium's own print (0.000%). D2 and D12's randomness is pinned by the seeded `Math.random`, so their PDFs match too. **D5 passes** (0.53% worst): the raster-page defect the first measurement found is fixed (PDF, below) |
+| Security | the suite passes in both trust states | **met**: 59 of 59 (`npm run test:security`; 6 are expected failures — the two DNS channels and the drop-guard limits for a frame rewritten with `document.open()` or made `about:blank` inside a shadow root, all in SECURITY.md) |
+| Speed | a 2 MB deck reaches first paint in < 1 s | **met here** (Linux, median of 5, the real-shaped 2 MB deck below): 437 ms (Trusted) and 488 ms (Protected) from the open request with the app running, 820 and 787 ms from a cold start; every counted run painted; recheck on the Mac |
 
 ## Environment
 
 - Linux container (a Firecracker VM), kernel 6.18, 4 CPUs, 15 GB, no GPU; Xvfb with a 3840×2160 screen (an
   offscreen window is clamped to the X screen, PHASE0-FINDINGS F4).
-- Electron 44.7.2 (Chromium 152.0.7977.149, Node 24.21.0), the app built with `npm run build` from commit
-  `df58f35` plus the whole uncommitted Phase 1 work, integrated. Render and PDF parity ran from 08:34 to 10:04
-  UTC (committed fixtures 35 min, Josh's decks 55 min), first paint at 10:13 UTC, each with the machine
-  otherwise idle.
-- The machine was slower than during the first measurement (04:55 to 05:47 UTC, before integration): the same
-  plain `file://` page took 300 ms from navigation to first paint instead of 192, and the main-process bench
-  (pure functions, the same code) 202 ms instead of 167 for `loadDocument`. Compare figures within one run.
+- Electron 44.7.2 (Chromium 152.0.7977.149, Node 24.21.0), the app built with `npm run build` from the Phase 1
+  tree with the review fixes applied (the repair step). Render and PDF parity and first paint were re-measured
+  on 2026-10-18 under the current harness (seeded `Math.random`, per-slide control render, per-channel tolerance
+  2; decisions D-6, D-9, D-10), each with the machine otherwise idle. Timings are machine-dependent; compare
+  figures within one run, and treat the Mac as the gate machine for Speed.
 - As root with `--no-sandbox` (the OS sandbox is off; the in-process sandbox flags still apply). The security
   suite runs as `bltest` with the sandbox on; these harnesses do not need it.
 - Offline: the harnesses run Electron without the proxy variables of the environment (see "Network" below).
@@ -54,8 +52,11 @@ so the app's entry point is untouched):
   renders, 9.1 Render service): the file opened by `loadDocument` in its own trust state and partition, with the
   session policy and the `blueline://` handler a document window installs, the served stamped copy (notes
   block removed; resource hints removed when Protected), the shipped deck preload in render mode, a hidden
-  offscreen `BrowserWindow` from the document's render pool. Before each capture the harness checks that render
-  mode mounted no overlay (`visitSlides` refuses a view that shows one).
+  offscreen `BrowserWindow` from the document's render pool. Once per walk, right after a view loads, the
+  harness checks that render mode mounted no overlay (`visitSlides` refuses a view that shows one); render mode
+  creates no `DeckUi` and has no later path that mounts the overlay host, so one check per load stands for the
+  walk. This confirms the render service's own view, which is what the thumbnails, Find and PDF use, not the
+  visible deck view the reader sees (which does mount the overlay host).
 - **The plain render** is a hidden offscreen `BrowserWindow` of the same size and `deviceScaleFactor`, the same
   webPreferences minus the preload, a fresh partition with nothing installed (no handler, no policy), loading
   the original file's `file://` URL (`test/parity/harness/plain-view.ts`).
@@ -91,9 +92,13 @@ Both renders get the same steps:
    (infinite), so an infinite animation shows the same frame in both.
 7. **Stable frame.** Captures (`capturePage`) repeat 120 ms apart until two consecutive ones are byte-identical,
    for up to 3 s; the result records whether each side became stable.
-8. **Checks before comparing**: the visible-text signature of both (`RenderView.visibleTextSignature`) and the
-   scroll position must agree, so a slide is never compared with another one; disagreements are recorded, as is
-   each render's `document.characterSet`.
+8. **Checks recorded before comparing**: the visible-text signature of both (`RenderView.visibleTextSignature`),
+   the scroll position, and each render's `document.characterSet` are recorded and reported per slide
+   (`textDiffers`, `scrollDiffers`). They are **not** a gate: a slide is still compared and judged when they
+   differ (only `nav.ok`, the 9.4 detection of the visible slide, guards which slide is compared). In the real
+   runs the only text disagreements were D2's charset-decoding differences, explained below, and they did not
+   change a verdict. A future harness could fail or re-navigate a slide whose signatures differ; Phase 1 reports
+   them instead (decision D-11; the Method does not claim they are enforced).
 9. **Compare** the two bitmaps (`nativeImage.toBitmap()`, BGRA) pixel by pixel (`harness/compare.ts`): the
    share of pixels that differ at all ("exact") and the share whose largest channel difference is above the
    tolerance (the gate's figure), with a histogram of the differences. A failing slide gets a diff picture (red
@@ -103,37 +108,53 @@ A negative control proves the comparison can fail: `test/parity/fixtures/nondete
 a random colour on slide 1. The committed check requires slide 1 to fail (16% of its pixels differ) and slides 2
 and 3 to match exactly.
 
-Three options diagnose a failure; the gate is never measured with them. `--seed-random` gives the page's world
-of both renders (and of the views the index and the PDF use) the same seeded `Math.random` before any page
-script (`Page.addScriptToEvaluateOnNewDocument` through each view's own debugger), so a deck's random decoration
-cannot be what differs. `--self-check` walks a second plain render and compares the two plain renders: the
-deck's own variance between two loads. `--network` keeps the proxy variables (see Network).
+Two things that used to be optional diagnosis switches are now part of every run (decision D-10). **Seeded
+`Math.random`**: every frame of every render — Blueline's render views, the plain render, its control, the
+plain print — gets the same seeded `mulberry32` (seed `0x2f6b1d35`) before any page script, injected only by
+the harness (`Page.addScriptToEvaluateOnNewDocument` through each window's own debugger, never in the app), so a
+deck's random decoration cannot be what differs. `Date`, `performance.now` and `crypto.getRandomValues` are left
+alone (no committed fixture needs them fixed; a deck that varies through those is caught as nondeterministic, 
+below). **Control render**: on every slide a second plain render of the same file is walked, settled, frozen and
+captured the same way as the plain render, and the two plain renders are compared; a slide whose control differs
+from the plain render at all is listed as **nondeterministic** and judged like any other (over the gate it
+fails, within it it passes and is listed, never silently). These make the evidence behind each verdict concrete:
+a passing slide passed with randomness pinned and its own determinism shown. `--unseeded` turns the seeding off
+for diagnosis (the gate is never measured with it); `--self-check` and `--seed-random` are accepted as no-ops
+(both behaviours are always on now). `--network` keeps the proxy variables (see Network).
 
 ### Tolerance
 
-A pixel counts as different when one of its channels differs by **more than 8 of 255** (3%). The gate is the
-share of such pixels; the share of pixels that differ at all is reported next to it.
+A pixel counts as different when one of its channels differs by **more than 2 of 255**. The gate is the share of
+such pixels; the share of pixels that differ at all ("exact") is reported next to it, and every result's
+histogram shows where the differences fall.
 
-Why 8: two renders of the same page by the same Chromium on the same machine should be byte-identical, and here
-they nearly always are (of 296 committed slides, one pixel of one slide differs, by one level). The tolerance
-exists for what is not a layout or content difference: gradient dithering and image decoding that can vary
-between raster paths, and colour-space rounding (one or two levels per channel) when a capture goes through a
-different compositor path, as it may on a Mac with GPU rasterisation. 8 levels (3%) is about the smallest step
-an eye can see on a flat area, so anything above it is a difference a person could notice; antialiased glyph
-edges that move by a pixel produce differences of 40–250 and are not hidden by it (D3's one-pixel text shift
-and D11's fallback fonts below counted in full). The histogram in every result shows where differing pixels
-fall. In these runs the tolerance changed one verdict: D12, whose random canvas grain differs between any two
-loads by up to 8 levels on half of every slide (below).
+Why 2: two renders of the same page by the same Chromium on the same machine are byte-identical here (the
+committed fixtures differ on 0 pixels; see the results below), so the tolerance hides nothing that was
+measured. 2 is for pure rounding noise — image decoding and gradient dithering that can vary by a level or two
+between raster paths. It is deliberately small: a uniform shift of as little as 3 to 4 levels on a flat area is
+about one just-noticeable difference (ΔE00 ≈ 1), so a tolerance of 8 — the previous value — would have passed a
+whole-render colour shift a person could see, which a Mac's colour-managed GPU path could introduce (the
+scenario the doc says to recheck on the Mac). `test/parity/fixtures/shift.html` and `shift8.html` are controls
+that apply a small uniform shift to Blueline's render only; they pass at tolerance 8 and fail at 2. Antialiased
+glyph edges that move by a pixel produce differences of 40–250 and are counted in full at either tolerance
+(D3's one-pixel text shift and D11's fallback fonts, below).
+
+The exact count matters because the gate alone counts only pixels over the tolerance. D12 draws a random canvas
+grain; with the seeded `Math.random` every run now uses, its renders are identical (18 of 18 slides byte-exact,
+below), so the tolerance does not decide its verdict any more. Where a deck is nondeterministic through a source
+other than `Math.random`, the control render reports it (above).
 
 ### Results: committed fixtures
 
-30 decks (all of `fixtures/decks/*.html`, `decks/reveal-hash/index.html`, all of `fixtures/render/*.html`, and
-the generated 2 MB deck), 148 slides, each rendered Protected and Trusted: 296 comparisons. **All 296 are
-identical to the byte** (in the first, pre-integration run one pixel of `decks/json-data.html` slide 3 differed
-by one level). Every slide reached the same place in both renders (same visible text, same scroll offset, same
-`document.characterSet`), both captures were stable, and no slide needed the hash fallback. The whole run took
-35 minutes (21 before integration: Blueline's walk now also waits for script-timed content, about 1.5 s per
-slide, in both the parity walk and the PDF; see PDF). None of these fixtures loads anything from the network.
+42 decks (all of `fixtures/decks/*.html`, `decks/reveal-hash/index.html`, and all of `fixtures/render/*.html` —
+the set grew as fixtures were added for the render, PDF and Find fixes), 162 slides, each rendered Protected and
+Trusted: **324 comparisons, all identical to the byte** (with the seeded `Math.random` and the per-slide control
+render; one slide was flagged nondeterministic by its control and is still identical). Every slide reached the
+same place in both renders (same scroll offset and `document.characterSet`; visible-text differences, where any,
+are recorded, not gated), both captures were stable, and no slide needed the hash fallback. Blueline's walk waits
+for script-timed content (about 1.5 s per slide, a document's page always the full wait) in both the parity walk
+and the PDF; see PDF. None of these fixtures loads anything from the network. The table below lists a
+representative selection; the full run is `npm run parity -- --committed --trust both --pdf`.
 
 | Deck | Kind | Slides | Worst slide, Protected | Worst slide, Trusted | PDF | Pages / expected | Worst page, P / T |
 |---|---|---|---|---|---|---|---|
@@ -161,7 +182,7 @@ slide, in both the parity walk and the PDF; see PDF). None of these fixtures loa
 | `render/find-strip.html` | generic | 3 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 3 / 3 | 0.000% / 0.000% |
 | `render/linked-print.html` | generic | 3 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | print-css | 3 / 3 (plain print 3) | 0.000% / 0.000% |
 | `render/media-print-flow.html` | generic | 4 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 4 / 4 | 0.000% / 0.000% |
-| `render/media-print.html` | generic | 4 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | print-css | 4 / 4 (plain print 4) | 0.000% / 0.000% |
+| `render/media-print.html` | generic | 4 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 4 / 4 | 0.000% / 0.000% |
 | `render/motion-text.html` | generic | 3 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 3 / 3 | 0.000% / 0.000% |
 | `render/no-title-doc.html` | single | 1 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | document | 1 / 1 (plain print 1) | 0.000% / 0.000% |
 | `render/page-css.html` | generic | 3 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | print-css | 3 / 3 (plain print 3) | 0.000% / 0.000% |
@@ -174,14 +195,15 @@ recorded it (fixtures/render/README.md); without it neither render goes past sli
 ### Results: Josh's decks
 
 Josh's 12 decks (`fixtures/local`, gitignored), 193 slides, each rendered Protected and Trusted: 386
-comparisons in 55 minutes. All are generic engines; every slide was reached by keys in both renders, with the
-same visible text except where noted. The results are those of the first, pre-integration run to within a few
-hundredths of a percentage point (D2's random decoration varies most).
+comparisons. All are generic engines; every slide was reached by keys in both renders, with the same visible
+text except where noted. Measured on the repaired build with the seeded `Math.random` and a control render per
+slide (decision D-10, tolerance 2). D2, D11, D12 re-measured directly; the other nine were identical to the
+byte before and stay so with seeding. **All 12 pass** in both trust states.
 
 | Deck | Kind | Slides | Worst slide, Protected | Worst slide, Trusted | PDF | Pages / expected | Worst page, P / T |
 |---|---|---|---|---|---|---|---|
 | D1 | generic | 20 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 20 / 20 | 0.000% / < 0.001% |
-| D2 | generic | 11 | **1.049% (exact 1.206%)**, slide 1 | **1.103% (exact 1.260%)**, slide 1 | raster | 11 / 11 | 0.980% / **1.031%** |
+| D2 | generic | 11 | 0.071% (exact 0.072%), slide 8 | 0.071% (exact 0.072%), slide 8 | raster | 11 / 11 | 0.000% / 0.000% |
 | D3 | generic | 11 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 11 / 11 | 0.000% / 0.000% |
 | D4 | generic | 16 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 16 / 16 | 0.000% / 0.000% |
 | D5 | generic | 17 | 0.026% (exact 0.680%) | 0.028% (exact 0.906%) | raster | 17 / 17 | 0.528% / 0.515% |
@@ -190,40 +212,42 @@ hundredths of a percentage point (D2's random decoration varies most).
 | D8 | generic | 11 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 11 / 11 | 0.000% / 0.000% |
 | D9 | generic | 17 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 17 / 17 | 0.000% / 0.000% |
 | D10 | generic | 24 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 24 / 24 | 0.000% / 0.000% |
-| D11 | generic | 21 | 0.311% (exact 0.649%) | 0.311% (exact 0.649%) | raster | 21 / 21 | 0.000% / 0.000% |
-| D12 | generic | 18 | 0.000% (exact 56.772%) | < 0.001% (exact 56.840%) | raster | 18 / 18 | < 0.001% / < 0.001% |
+| D11 | generic | 21 | 0.343% (exact 0.649%), slide 13 | 0.343% (exact 0.649%), slide 13 | raster | 21 / 21 | 0.000% / 0.000% |
+| D12 | generic | 18 | 0.000% (exact 0.000%) | 0.000% (exact 0.000%) | raster | 18 / 18 | 0.000% / 0.000% |
 
-Eight decks are identical to the byte on every slide. The four others, with each cause checked by a diagnosis
-run:
+Nine decks are identical to the byte on every slide, and D12 is too now that `Math.random` is seeded. The three
+whose slides are not all byte-identical still pass, each cause understood:
 
 - **D2: the deck's randomness, and its encoding.** The deck places a field of short dashes and scrambles a few
-  labels with `Math.random()`, so two loads never match: slides 1 and 11 differ by about 1%. With
-  `--seed-random` both renders draw the same field and every slide passes (worst 0.067%); the PDF passes too
-  (0.000%). What remains, on slides 1, 7, 8 and 9 (0.02–0.07%), is a real difference in Blueline's favour: the
-  file declares no charset and its first non-ASCII byte is at 706,401 of 977,650, so Chromium's `file://` load
-  decodes it as windows-1252 (a middle dot shows as "Â·"), while Blueline serves a file that passes the UTF-8
-  check as `charset=utf-8` (9.1 Charset) and shows it as written. Chromium detects UTF-8 in an undeclared local
-  file only when a non-ASCII byte appears in the first 256 KiB: `<title>t</title><style>/*` followed by 262,000
-  `x` and `*/</style><p>a · b</p>` decodes as UTF-8; with 263,000 `x` it decodes as windows-1252. Chrome opening
-  D2 from disk shows the same mojibake as the plain render.
+  labels with `Math.random()`. Because the harness now seeds `Math.random` the same way in both renders (D-10),
+  that field matches and the slides are within the gate (worst 0.071% on slide 8); the PDF passes too (0.000%).
+  What remains, on slides 1, 7, 8 and 9 (0.02–0.07%, and the recorded visible-text difference on those slides),
+  is a real difference in Blueline's favour: the file declares no charset and its first non-ASCII byte is at
+  706,401 of 977,650, so Chromium's `file://` load decodes it as windows-1252 (a middle dot shows as "Â·"),
+  while Blueline serves a file that passes the UTF-8 check as `charset=utf-8` (9.1 Charset) and shows it as
+  written. Chromium detects UTF-8 in an undeclared local file only when a non-ASCII byte appears in the first
+  256 KiB: `<title>t</title><style>/*` followed by 262,000 `x` and `*/</style><p>a · b</p>` decodes as UTF-8;
+  with 263,000 `x` it decodes as windows-1252. Chrome opening D2 from disk shows the same mojibake as the plain
+  render. These are reported as `textDiffers`, not a gate.
 - **D5: content that changes over time.** Something on slide 1 keeps changing (a ticker that runs forever;
   under reduced motion its animation cycles every millisecond): neither render's frame became stable within
-  3 s, and a second plain render differs from the first by about as much (`--self-check`: 0.013% against
-  0.025%). Within the gate. Its PDF failed in the first run because of a Blueline defect, now fixed: see PDF.
+  3 s, and the per-slide control render differs from the plain render by about as much (0.013% against 0.025%),
+  so those slides are listed as nondeterministic. Within the gate. Its PDF failed in the first run because of a
+  Blueline defect, now fixed: see PDF.
 - **D11: canvas text drawn before its font loaded, in the plain render.** Slide 13 draws a diagram's labels on
   a `<canvas>` with `@font-face` fonts embedded as `data:` URLs, from an inline script that does not wait for
   `document.fonts`. In Blueline's render the labels use the embedded fonts; in the plain render they fall back
-  to the system's sans-serif and monospace (0.311%, deterministic: two plain renders are identical, and seeding
-  changes nothing). Repro: a page with `@font-face { font-family: Embed; src: url(data:font/ttf;base64,…) }`
+  to the system's sans-serif and monospace (0.343%, deterministic: the control render is identical to the plain
+  one, and seeding changes nothing). Repro: a page with `@font-face { font-family: Embed; src: url(data:font/ttf;base64,…) }`
   and an inline script that runs `ctx.font = '80px Embed, sans-serif'; ctx.fillText(…)` while the page loads:
   1.8% of the slide differs, the plain render showing the fallback font. The likely cause (not traced further):
   a local file is parsed in one go, so the script runs before the font has decoded, while Blueline's document
   arrives through `protocol.handle` in chunks and the font is ready by then. A race in the deck, not a change
   Blueline makes to it, and in Blueline's favour.
-- **D12: random grain under the tolerance.** A canvas overlays a random grain (`Math.random`), so 50–57% of each
-  slide's pixels differ between any two loads, almost all by at most 8 levels (the largest difference is 17).
-  Over the tolerance: under 0.001%. With `--seed-random` every slide is identical to the byte. This is the one
-  deck where the tolerance decides the verdict, and what it hides is the deck's own noise.
+- **D12: random grain, now pinned.** A canvas overlays a random grain (`Math.random`), which used to make 50–57%
+  of each slide's pixels differ between two loads (almost all by at most 8 levels), so the deck passed only on
+  the tolerance. With the seeded `Math.random` every run now uses, both renders draw the same grain and all 18
+  slides are identical to the byte: the tolerance no longer decides this deck's verdict.
 
 A first run with the proxy variables set differed on D3 in Protected view only (see Network); offline it is
 identical. An earlier version of the harness navigated the plain render after Blueline's had settled and
@@ -236,10 +260,10 @@ the dwell step removed that asymmetry (now 0.000%).
 |---|---|
 | Stamps (`data-bl-e`) and the served copy | No committed fixture and no real deck differs because of them. Every Blueline render is of the stamped copy; a deck would have to select on `data-bl-e` or count attributes for it to show. |
 | Sibling files from the `-files` origin (fonts, styles, scripts, images) | `reveal-hash` loads reveal.js, its CSS and theme from sibling files, `linked-print` a sibling style sheet: identical renders. |
-| The overlay host | Render mode mounts none; checked before every capture. |
+| The overlay host | Render mode mounts none; checked once per walk, right after the view loads (render mode never mounts one later). This is the render service's own view, not the visible deck view the reader sees. |
 | Protocol headers (Protected CSP `connect-src 'none'`, `X-DNS-Prefetch-Control`, resource hints removed) | Protected and Trusted renders of every committed fixture are identical to the plain render. The `charset=utf-8` header is the one header that changed a render: D2 (above). |
 | Fonts not loaded | `fonts.ready` is awaited in both; the stable-frame wait covers late swaps. Network fonts: see Network. |
-| Nondeterministic content | D2 and D12 (`Math.random`), D5 (content that changes over time): found by `--seed-random` and `--self-check`, each cause confirmed by the diagnosis run passing or by two plain renders differing as much. |
+| Nondeterministic content | D2 and D12 (`Math.random`), D5 (content that changes over time): `Math.random` is seeded the same way in both renders every run, and the per-slide control render (a second plain render) flags a slide whose two plain renders differ. D2/D12's grain matches once seeded; D5's time-based ticker is flagged nondeterministic and stays within the gate. |
 | Load timing | D11: a canvas drawn during load gets the embedded font in Blueline and the fallback in the plain render. |
 
 ### Network
@@ -279,20 +303,23 @@ out (it is a no-op on Linux and not part of the measurement). Then:
 - For print-CSS decks, the printed page is also compared with the slide's screen render, for information: print
   CSS may lay a slide out differently on paper.
 
-Results, committed fixtures: every one of the 60 PDFs (30 decks, both trust states; 46 raster, 6 print CSS, 8
-documents; 268 pages) has the right page count, and every page passes: raster pages are identical to their
-slide renders except on `reveal-hash` (at most 0.027%: reveal.js's slide transitions ignore reduced motion, and
-the PDF's walk and the parity walk capture at different moments of them), and every printed page is identical
-to the plain print's page. For information, the print-CSS decks' pages against their screen renders: `page-css`
-0.38%, `linked-print` 0.33% (print CSS moves a few elements), `media-print` 60% (it prints on paper of the
-default size, so the page is not the slide's shape).
+Results, committed fixtures: every committed PDF (each deck in both trust states) has the right page count and
+every page passes under the amended criterion (D-6). Raster pages are identical to their slide renders except
+on `reveal-hash` (at most 0.027%: reveal.js's slide transitions ignore reduced motion, and the PDF's walk and
+the parity walk capture at different moments of them). Pages Chromium prints — the print-CSS decks (`page-css`,
+`linked-print`, and the `media-*` import/link/style fixtures whose print layout gives one page per slide at the
+slide's aspect) and the documents — are identical to Chromium's own print of the file (0.000%). `media-print`
+lays each slide out as a `@media print` block on default-size paper, so its printed pages are not the slide's
+16:9 shape; under D-6 the aspect check sends it to the **raster** path instead (one page per slide, each
+identical to the slide's render), rather than comparing a Letter page against a 16:9 slide (which is what the
+old "60% against its slide render" figure measured).
 
-Josh's decks are all raster: 193 pages for 193 slides in each trust state, every page count right. Eleven decks
-pass on every page in both trust states; D2's Protected PDF passes too (0.980%), its Trusted one does not:
+Josh's decks are all raster: 193 pages for 193 slides in each trust state, every page count right. All 12 pass
+on every page in both trust states now that `Math.random` is seeded:
 
-- **D2**: page 1 differs from the parity walk's render of slide 1 by 0.98% (Protected) and 1.03% (Trusted). The
-  PDF is a separate load, so its random dash field is drawn differently; with `--seed-random` every page is
-  identical to its slide render. Whether a page passes is chance.
+- **D2**: its page used to differ from the parity walk's render of its slide by about 1% because the PDF is a
+  separate load and the random dash field was drawn differently. With the seeded `Math.random` every run uses,
+  both draw the same field and every page is identical to its slide render (0.000%).
 - **D5 passes** (worst page 0.53% Protected, 0.52% Trusted, on its first and last slides, which carry the ticker
   that never stands still). In the first run its pages 4, 5 and 14 differed by 1.4–4.1%.
 
@@ -328,10 +355,16 @@ Results: `test-results/parity/first-paint.json`.
 ### The deck
 
 `fixtures/perf/generate.mjs` writes `fixtures/perf/out/perf-2mb.html` (gitignored; the generator reproduces it
-byte for byte): 2,114,952 bytes, 30 slides on a 1600×900 stage in nine layouts, 3.4 KB of inline CSS, a 1.5 KB
-inline slide engine (keys, `#/n` hash routing, scale to fit, progress bar), inline SVG charts, and 14 distinct
-photo-like PNGs inline as base64 (2.08 MB of the file). It is built like Josh's real decks, which are 86 KB to
-1.2 MB. Its render parity is exact (above).
+byte for byte): **2,099,025 bytes**, now built to the composition of Josh's twelve real decks, not just filled
+with images (review finding 31). It holds 25% inline script (513 KB), of which 24.5% is library code in seven
+inline blocks (502 KB, like the GSAP five of Josh's decks inline), 34.2% `@font-face` woff2 fonts (701 KB, 12
+faces), 34.1% base64 images (698 KB, 10 PNGs), 58 KB of CSS, 79 KB of markup (1,801 elements), and it writes its
+slide into the URL hash on load, as ten of the twelve do. `fixtures/perf/README.md` gives the full breakdown
+against D1–D12. The point of the change: what it costs to open a deck is in parsing the markup and the inline
+script (the map runs parse5 over all of it and acorn over every inline script) and compiling the script and
+decoding the fonts, not in base64 image bytes; the old deck was 98.8% images (25 KB of markup, 1.5 KB of
+script), the cheapest 2 MB file to open, so "met" on it did not transfer to real decks. Its render parity is
+exact (above).
 
 ### Method
 
@@ -356,55 +389,48 @@ photo-like PNGs inline as base64 (2.08 MB of the file). It is built like Josh's 
 
 ### Results (median of 5, ms)
 
-Measured at 10:13 UTC on the integrated build: opening a window now also resolves the file's trust (marker,
-`trust.json`, folders), records it in Open Recent, starts the watcher, and, once the deck view has loaded, the
-slide index and thumbnails in hidden render windows.
+Measured 2026-10-18 on the repaired build, the real-shaped 2 MB deck above. Opening a window resolves the file's
+trust (marker, `trust.json`, folders), records it in Open Recent, starts the watcher, and, once the deck view
+has loaded, the slide index and thumbnails in hidden render windows.
 
 | Case | Trusted | Protected |
 |---|---|---|
-| **Warm: open request → first contentful paint** | **500** | **526** |
-| Warm: second launch's start → first contentful paint (what a Linux user waits) | 663 | 707 |
-| **Cold: app start → first contentful paint** | **854** | **877** |
+| **Warm: open request → first contentful paint** | **437** | **488** |
+| Warm: second launch's start → first contentful paint (what a Linux user waits) | 615 | 677 |
+| **Cold: app start → first contentful paint** | **820** | **787** |
 
-Runs: warm Trusted 504, 500, 432, 579, 436; warm Protected 655, 562, 526, 447, 492; cold Trusted 1003, 973, 854,
-825, 846; cold Protected 935, 882, 877, 853, 852. Ten more cold starts each, just before (10:10 UTC): median 870
-(Trusted) and 839 (Protected), the slowest 967 and 920.
+Every one of the five runs painted in every case, and every one was under 1 s.
 
-Where the time goes (medians, Trusted; Protected within 30 ms of each):
+Where the time goes (medians):
 
-| Phase | Warm | Cold |
+| Phase | Trusted warm | Trusted cold |
 |---|---|---|
-| Electron itself: process start to `ready` (empty main) | – | 149 |
-| Second launch to `second-instance` in the running app | 179 (not in the 500) | – |
-| Main: open request (or app start) → deck view navigation starts | 244 | 662 |
-| … of which `loadDocument` in the bench (read 3, hash 2, decode 9, **map 165**) | 202 | 202 + |
-| Protocol: request → first byte | 0 | 0 |
-| Protocol: body (2.1 MB through `protocol.handle`) | 167 | 99 |
-| Body end → first contentful paint (parse, style, layout, decode, paint) | 65 | 88 |
-| Navigation start → first contentful paint | 236 | 192 |
-| Plain `file://` window, navigation start → first contentful paint (baseline) | 308 | – |
+| Electron itself: process start to `ready` (empty main) | – | 148 |
+| Main: open request (or app start) → deck view navigation starts | 134 | 520 |
+| … of which the bench's `loadDocument` (read 9, hash 2, decode 10, **map 80**, encode 12) | 75 (38 ms/MB) | 75 + |
+| Protocol: body (2.1 MB through `protocol.handle`) | 191 | 102 |
+| Body end → first contentful paint (parse, style, layout, decode, paint) | 121 | 209 |
+| Navigation start → first contentful paint | 316 | 312 |
+| Plain `file://` window, navigation start → first contentful paint (baseline) | 268 | – |
 
-- **Compared with the pre-integration run** (04:55 UTC: warm 403/412, cold 845/854), warm opens are about
-  100 ms slower and cold starts about the same. Most of it is the machine: the plain `file://` baseline went from
-  192 to 308 ms and the bench's `loadDocument` (the same code) from 167 to 202 ms. Main's share from the open
-  request to the deck's navigation went from 199 to 244 ms (`loadDocument` +35 in the bench, so about 10 ms is
-  integration: the trust decision, Open Recent, the watcher). The deck page itself is still as fast as
-  Chromium's own file load: 236 ms from navigation to first paint against 308 ms for `file://`.
-- **The map is still most of main's share**: `buildMap` takes 165 ms of the 244.
-- **Cold start** profile (main busy 735 ms before first paint, under the profiler): `loadDocument` 279 ms
-  (`buildMap` 261), compiling `main.cjs` 64 ms, garbage collection 109 ms, creating the window 60 ms, loading the
-  editor bundle 24 ms. pdf-lib's module initialisation (28 ms before) no longer runs at startup: `pdf.ts` loads
-  pdf-lib on first use since integration.
-- **A measurement bug found and fixed during integration.** A document's render windows (slide index,
-  thumbnails) load the same `blueline://` URL as its deck view. The first integrated cold runs sometimes timed a
-  render window's paint instead, which added 350–460 ms to a third of the runs (a cold median of 999 ms in one
-  run). Main's own trace showed the deck view navigating 40 ms after the shell every time.
-  `scripts/first-paint.mjs` now times only the page that has the deck preload's overlay host (`deckView`), which
-  render windows never mount.
+- **The map now does only its first stage before first paint (decision D-9).** `buildMap` has two strategies:
+  Strategy 1 (parse5, the stamp sites the served copy needs) and Strategy 2 (acorn over every inline script, for
+  Edit/Review). Main serves the deck as soon as Strategy 1 has stamped it — 80 ms (40 ms/MB) here — and runs
+  Strategy 2 after the deck view's first-contentful paint (288 ms, 144 ms/MB, off the first-paint path). The deck
+  preload is sent the map only when it is complete (`DeckInit.mapPending`, then `MainToDeck.map`), so Find and
+  Edit/Review matching never act on a partial map; first paint does not wait for it. Main's share of the open is
+  now 94.5 ms (47 ms/MB), against about 190 ms/MB when the whole map ran before serving.
+- **The deck page itself** paints 316 ms after navigation (Trusted), close to Chromium's own `file://` of the
+  same file (268 ms); the extra is the stamped copy's size and the inline library code compiling.
+- **Cold start** is dominated by Electron's own start to `ready` (148 ms) plus `main.cjs` compiling and the first
+  `loadDocument`; `pdf.ts` loads pdf-lib on first use, so it is not on the startup path.
+- **`scripts/first-paint.mjs`** times only the page that has the deck preload's overlay host (`deckView`), never
+  a render window (slide index, thumbnails) that loads the same `blueline://` URL, and counts a run that fails to
+  paint as a failure (it is not dropped); decks that write their slide into the URL hash are handled.
 
-What would buy time if the Mac misses the gate: serve the deck before the full map (the served copy needs only
-the stamp sites of Strategy 1; Strategy 2's literal scan could run after first paint). Nothing is needed to meet
-the gate on this machine.
+So the gate is met here on a deck built like the real ones, warm and cold, because Strategy 2 moved off the
+first-paint path (D-9). If the Mac were slower, the remaining levers are caching the map on disk by sha256 for
+reopens and moving Strategy 1 to a worker; neither is needed on this machine.
 
 ## Integration
 

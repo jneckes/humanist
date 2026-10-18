@@ -3,6 +3,7 @@
 // rewrites the result file after every deck, so an interrupted run keeps what it measured.
 
 import type { PixelStats } from './compare';
+import type { PageSize, SizeMismatch } from './pdf-pages';
 
 export type TrustChoice = 'protected' | 'trusted';
 
@@ -38,15 +39,17 @@ export interface ParityJob {
   /** Save both renders of every slide, passing or not (to look at what was compared). */
   saveAll?: boolean;
   /**
-   * Diagnosis, not the gate: the same seeded Math.random in the page's world of both renders (and of the
-   * index and PDF views), before any page script, so a deck that draws random content draws the same in both.
+   * The same seeded Math.random in every frame of every render the run makes (Blueline's render views, which
+   * the index, the PDF and the parity walk use; the plain render, its control and the plain print), before any
+   * page script, so a deck that draws random content draws the same in both (decision D-10). On unless false:
+   * `--unseeded` turns it off for a diagnosis run (a deck's own Math.random variance), never for the gate.
    */
   seedRandom?: boolean;
   /**
-   * Diagnosis, not the gate: a second plain render of the same file, walked the same way, compared with the
-   * first plain render: the deck's own variance between two loads (time, randomness, video).
+   * False: compare printed pages as a machine without pdftoppm does (`--no-pdftoppm`; a Mac without poppler):
+   * page counts and sizes only. Default: pdftoppm when the machine has it.
    */
-  selfCheck?: boolean;
+  pdftoppm?: boolean;
   /**
    * How long both renders stay on a slide, at least, before the freeze and the capture (ms). Both renders
    * then show what a script reveals within that time (setTimeout builds, typewriters), whichever arrived first.
@@ -83,11 +86,19 @@ export interface SlideParity {
   frozen: { blueline: number; plain: number };
   scrollY: { blueline: number; plain: number };
   stats: SlideStats | null;
+  /** Reached, and within the gate (compare.ts slideVerdict). */
   pass: boolean;
+  /**
+   * The control: the plain render against a second plain render of the same file, walked, settled, frozen and
+   * captured the same way (the deck's own variance between two loads). Null when it could not be compared.
+   */
+  control: SlideStats | null;
+  /** The control differs at all: listed per deck, the verdict unchanged (compare.ts slideVerdict). */
+  nondeterministic: boolean;
   /** Diff image and both renders, when saved (paths relative to workDir). */
   saved?: { diff: string; blueline: string; plain: string };
-  /** --self-check: the plain render against a second plain render of the same slide (the deck's own variance). */
-  self?: SlideStats | null;
+  /** A nondeterministic slide's control render and its diff against the plain render, when saved. */
+  savedControl?: { diff: string; control: string };
   /** PDF raster page against this slide's renders. */
   pdf?: { page: number; vsBlueline: SlideStats; vsPlain: SlideStats; pass: boolean } | { page: number; error: string; pass: false };
   notes: string[];
@@ -103,11 +114,16 @@ export interface PdfParity {
   missed: number[];
   ms: number;
   pageCountOk: boolean;
+  /** Each page's size in points: Blueline's PDF, and the plain print's (printToPDF pages; null for raster). */
+  sizes: { blueline: PageSize[]; plain: PageSize[] | null };
+  /** printToPDF pages: every page the size of the plain print's page (pdf-pages printedVerdict); null for raster. */
+  sizesOk: boolean | null;
+  sizeMismatches: SizeMismatch[];
   /** Per page: share over tolerance against its slide render (raster) or the plain print (printToPDF). */
   pageStats: { page: number; against: 'slide-render' | 'plain-print'; stats: SlideStats; pass: boolean }[];
   /** For printToPDF pages: against the slide's screen render (information; print CSS may lay out differently). */
   screenStats?: { page: number; stats: SlideStats }[];
-  /** What was compared, in words (e.g. "page count only: pdftoppm missing"). */
+  /** What was compared, in words: exactly the checks the verdict made (e.g. pixels not compared: no pdftoppm). */
   compared: string;
   pass: boolean;
   file: string;
@@ -133,11 +149,21 @@ export interface DeckParity {
   /** Slides Blueline's walk could not show (6.7 navOk false): no comparison possible. */
   missed: number[];
   compared: number;
+  /** Compared slides identical to the byte (no differing pixel at all): the exact count beside the tolerance. */
+  identical: number;
+  /** Slides whose control render differed (SlideParity.nondeterministic), judged like every other slide. */
+  nondeterministic: number[];
+  /** Slides whose visible-text signatures differ, and whose scroll positions differ: recorded, not the verdict. */
+  textDiffers: number[];
+  scrollDiffers: number[];
   failures: number;
   worstOver: number;
   worstExact: number;
   worstSlide: number | null;
-  /** Every slide compared, the overlay absent, every slide reached, none over the gate. */
+  /**
+   * Every slide compared, every slide reached (the walk's 9.4 detection on both sides), none over the gate,
+   * no error. The overlay is checked by visitSlides once per walk, after the load (ParityResult.method).
+   */
   pass: boolean;
   results: SlideParity[];
   pdf?: PdfParity | { error: string; pass: false };
@@ -154,9 +180,21 @@ export interface ParityResult {
   gate: number;
   pdfGate: number;
   dwellMs: number;
+  /** Printed pages were rasterised and compared (pdftoppm found, and not turned off by --no-pdftoppm). */
   pdftoppm: boolean;
+  /** What both renders were given so that only Blueline can make them differ (decision D-10). */
+  determinism: {
+    /** Every frame of every render had the same seeded Math.random before any page script. */
+    seededRandom: boolean;
+    /** In words: the seed, where it is installed, and what is left alone (Date, performance.now, crypto). */
+    randomness: string;
+    /** In words: the control render and how its result is used. */
+    control: string;
+  };
+  /** What the checks verify, in words, for docs/PHASE1-RESULTS.md's Method (finding 39). */
+  method: { overlay: string; sameSlide: string; tolerance: string; pdf: string };
   /** Diagnosis options the run used (none for a gate run). */
-  diagnosis: { seedRandom: boolean; selfCheck: boolean };
+  diagnosis: { unseeded: boolean; noPdftoppm: boolean };
   decks: DeckParity[];
   /** Over every compared slide: differing pixels by their largest channel difference (compare.ts HISTOGRAM_BINS). */
   histogram: number[];

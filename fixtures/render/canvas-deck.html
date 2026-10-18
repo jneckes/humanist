@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Canvas deck</title>
+<!--
+  Three generic slides, each with a bar a script draws on a canvas, growing over 1000 ms from the moment the
+  slide arrives (requestAnimationFrame, linear). Nothing in the DOM changes while it grows, so no
+  MutationObserver sees it: the adaptive settle (decision D-5) must still give these slides the full wait,
+  because the picture keeps changing after the DOM went still. Raster pages show every bar at full height.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; font: 48px/1.2 Arial, sans-serif; color: #222; }
+  .slide { position: absolute; inset: 0; padding: 60px; box-sizing: border-box; display: none; }
+  .slide.active { display: block; }
+  canvas { display: block; margin-top: 20px; }
+</style>
+</head>
+<body>
+<section class="slide active"><h1>Bar one</h1><canvas width="600" height="600"></canvas></section>
+<section class="slide"><h1>Bar two</h1><canvas width="600" height="600"></canvas></section>
+<section class="slide"><h1>Bar three</h1><canvas width="600" height="600"></canvas></section>
+<script>
+  (function () {
+    var slides = [].slice.call(document.querySelectorAll('.slide'));
+    var cur = 0, run = 0;
+    function grow() {
+      var id = ++run, c = slides[cur].querySelector('canvas'), x = c.getContext('2d'), t0 = null;
+      function frame(ts) {
+        if (id !== run) return;
+        if (t0 === null) t0 = ts;
+        var t = Math.min(1, (ts - t0) / 1000), h = Math.round(560 * t);
+        x.clearRect(0, 0, 600, 600);
+        x.fillStyle = '#2d6cdf';
+        x.fillRect(200, 600 - h, 200, h);
+        if (t < 1) requestAnimationFrame(frame);
+      }
+      requestAnimationFrame(frame);
+    }
+    addEventListener('keydown', function (e) {
+      var n = e.key === 'ArrowRight' || e.key === 'PageDown' ? cur + 1 : e.key === 'ArrowLeft' || e.key === 'PageUp' ? cur - 1 : cur;
+      if (n === cur || n < 0 || n >= slides.length) return;
+      slides[cur].classList.remove('active');
+      cur = n;
+      slides[cur].classList.add('active');
+      grow();
+    });
+    grow();
+  })();
+</script>
+</body>
+</html>

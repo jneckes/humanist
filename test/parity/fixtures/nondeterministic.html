@@ -5,8 +5,10 @@
 <title>Parity control</title>
 <!--
   The render-parity harness's negative control (test/parity/parity.spec.ts): slide 1 paints a box in a colour
-  picked by Math.random() at load, so Blueline's render and the plain render of this file differ there (16% of
-  the slide's pixels); slides 2 and 3 are deterministic and must match. A harness that passed slide 1 would be blind.
+  picked by crypto.getRandomValues() at load, so any two loads differ there (16% of the slide's pixels), even with
+  the seeded Math.random every render of the harness gets: Blueline's render and the plain render differ, and so
+  do the plain render and its control, so slide 1 must fail and be listed as nondeterministic. Slides 2 and 3 are
+  deterministic and must match. A harness that passed slide 1 would be blind.
 -->
 <style>
   html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; font: 48px/1.2 Arial, sans-serif; }
@@ -20,9 +22,10 @@
 <section data-slide><h1>Fixed slide</h1><p>Nothing here changes between loads.</p></section>
 <section data-slide><h1>Another fixed slide</h1><p>Three slides: 9.4 detects a generic engine from three siblings.</p></section>
 <script>
-  // Three random channels: two loads land within the gate's tolerance of each other about once in 3,400 runs.
-  function c() { return Math.floor(Math.random() * 256); }
-  document.getElementById('box').style.background = 'rgb(' + c() + ',' + c() + ',' + c() + ')';
+  // Three random channels, not from Math.random (the harness seeds it): two loads land within the gate's
+  // tolerance of 2 of each other about once in 136,000 runs.
+  var rgb = crypto.getRandomValues(new Uint8Array(3));
+  document.getElementById('box').style.background = 'rgb(' + rgb[0] + ',' + rgb[1] + ',' + rgb[2] + ')';
   var slides = document.querySelectorAll('[data-slide]'), cur = 0;
   document.addEventListener('keydown', function (e) {
     var next = e.key === 'ArrowRight' ? cur + 1 : e.key === 'ArrowLeft' ? cur - 1 : cur;

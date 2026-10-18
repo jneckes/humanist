@@ -441,11 +441,11 @@ function render(s: ShellState): void {
   last = s;
   applyLayout(s.layout);
   document.body.classList.toggle('presenting', s.view.presenting);
-  // Main closes the Find bar (layout.findBar 0) when Esc or the close button ended it elsewhere.
-  if (find.open && !(s.layout.findBar > 0)) {
-    find.open = false;
-    el('find-bar').hidden = true;
-  }
+  // Main's layout drops the Find bar (layout.findBar 0) when Find ended elsewhere, and while presenting (6.9
+  // Present: the chrome is hidden). Either way Find closes in main too (closeFind: stopFindInPage, the query
+  // cleared, the layout without the bar; a no-op when main already closed it): a bar that is gone must not leave
+  // the find highlight on the presented slide, or an empty strip after Present (review finding 19).
+  if (find.open && !(s.layout.findBar > 0)) closeFind();
   renderToolbar(s);
   renderTrustBar(s);
   renderBanner(s);

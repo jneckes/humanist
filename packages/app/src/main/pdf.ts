@@ -1,19 +1,26 @@
-// Save as PDF (6.9, Cmd+Shift+E; `blueline pdf`), exactly as 6.9 lists it:
+// Save as PDF (6.9, Cmd+Shift+E; `blueline pdf`), as 6.9 lists it:
 //
 // - Decks with print CSS (an @page rule, or a @media print that lays out each slide as a page):
-//   printToPDF({ preferCSSPageSize: true, printBackground: true }).
+//   printToPDF({ preferCSSPageSize: true, printBackground: true }), when that print is the deck as slide
+//   pages: one page per slide, each the slide's aspect within 1% (decision D-6). Otherwise the deck is
+//   rendered slide by slide, as the next point says.
 // - Other decks: the background render walks every slide at the design size and 2x and composes one PDF page
-//   per slide with pdf-lib; the page has the slide's aspect ratio (design size px × 0.75 pt) and the image is
-//   lossless. Text is not selectable in v1 (a hidden text layer is Later).
+//   per slide with pdf-lib, in slide order; the page has the slide's aspect ratio (design size px × 0.75 pt)
+//   and the image is lossless. Text is not selectable in v1 (a hidden text layer is Later).
 // - Documents: printToPDF({ printBackground: true, pageSize }), Letter or A4 from the locale.
+// - Before any printToPDF, the scripted settle that visitSlides uses for a still image (once per document:
+//   fonts, frames, finite animations, then what scripts reveal; decision D-5), so a chart a script animates or
+//   a section a timer fills is printed as the reader sees it.
 // - Always: notes are never included (the served copy has no notes block, and render views have no overlay:
 //   checked before every render), and the PDF's title comes from <title>.
 //
 // Print CSS is read from every style sheet the served document uses, linked same-folder sheets included
-// (they come from the -files origin, cross-origin to the page, so the render view's debugger reads them).
+// (they come from the -files origin, cross-origin to the page, so the render view's debugger reads them),
+// each with its media list: `<link media>`, `<style media>`, and an `@import url(x) <media>` statement for
+// the sheet it imports (a sheet whose media never include print is not print CSS).
 // "A @media print that lays out each slide as a page" is a print-media rule that forces page breaks, checked
-// by printing: one page per slide. reveal.js's own print sheet (`html:not(.print-pdf)` rules in reveal.css)
-// lays slides out as a text handout, not as slide pages, and does not count.
+// by printing. reveal.js's own print sheet (`html:not(.print-pdf)` rules in reveal.css) lays slides out as a
+// text handout, not as slide pages, and does not count.
 //
 // printToPDF names a document without a <title> after its URL (blueline://<docId>/<file>), so the title is
 // always set again: the old value is blanked in place and a new Info dictionary is appended as an incremental
@@ -25,12 +32,12 @@ import * as path from 'node:path';
 import { promisify } from 'node:util';
 import { deflate as deflateCb } from 'node:zlib';
 import { app } from 'electron';
-import type { PDFDocument } from 'pdf-lib';
+import type { PDFDocument, PDFRef } from 'pdf-lib';
 import type { PdfMode, PdfResult, SlideIndex, SlideIndexKind } from '@blueline/core/ipc-render';
 import { atomicWriteFile } from './atomic-write';
 import { markDerivedFile } from './markers';
 import { RenderError, rendererFor, renderHost, throwIfCancelled, untilQuiet, type RenderHost, type RenderTarget, type RenderView } from './render-service';
-import { INDEX_VIEWPORT, buildSlideIndex, collapse, designViewport, isDeck, visitSlides } from './slide-index';
+import { INDEX_VIEWPORT, buildSlideIndex, collapse, designViewport, isDeck, settleMemoryFor, settleScripted, visitSlides } from './slide-index';
 
 const deflate = promisify(deflateCb);
 
@@ -184,28 +191,158 @@ function scanRules(css: string, from: number, to: number, print: boolean, out: P
   }
 }
 
-/** Reads print CSS out of the document's style sheets (RenderView.styleSheets). */
-export function scanPrintCss(sheets: readonly { text: string; media: string | null }[]): PrintCssScan {
-  const out: PrintCssScan = { pageRule: false, printBreaks: false, printRules: false };
-  for (const s of sheets) {
-    const css = stripCssComments(s.text);
-    const printSheet = s.media !== null && mediaSelectsPrint(s.media);
-    if (printSheet) out.printRules = true;
-    scanRules(css, 0, css.length, printSheet, out, 0);
+/**
+ * True when a media query list can apply to print media: a query of type print or all (a query with no type
+ * is `all`), or `not` with another type (`not screen`). An empty list is `all`.
+ */
+export function mediaAppliesToPrint(list: string): boolean {
+  if (!list.trim()) return true;
+  for (const q of splitTopLevel(list, ',')) {
+    const t = q.trim();
+    if (!t) continue;
+    const m = /^(only\s+|not\s+)?([a-z-]+)\b/i.exec(t);
+    // `(min-width: 0)`, `(orientation: landscape) and (…)`: no media type, so `all`.
+    if (!m) return true;
+    const type = m[2].toLowerCase();
+    const not = (m[1] ?? '').trim().toLowerCase() === 'not';
+    if (not ? type !== 'print' && type !== 'all' : type === 'print' || type === 'all') return true;
+  }
+  return false;
+}
+
+/** The sheet a URL names, with the document's host and its `-files` host taken as one (9.1 Serving). */
+function sheetKey(url: string, base?: string): string | null {
+  try {
+    const u = base ? new URL(url, base) : new URL(url);
+    return `${u.protocol}//${u.host.replace(/-files$/, '')}${u.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The `@import` statements of a sheet: the sheet each one imports (by sheetKey, resolved against the importing
+ * sheet's URL) and its media list (null when the statement has none). CSS.getMediaQueries reports an @import's
+ * list with the importing sheet's id, never the imported one's (review finding 13), so it is read from the
+ * statement. A no-media import is kept too: the sheet it pulls in inherits the importing sheet's media scope,
+ * so a print sheet imported with no media list is still print CSS (finding 13 re-verification).
+ */
+export function importMediaOf(css: string, sheetUrl: string): { key: string; media: string | null }[] {
+  const out: { key: string; media: string | null }[] = [];
+  const re = /@import\s+((?:url\(\s*(?:"[^"]*"|'[^']*'|[^)\s]*)\s*\)|"[^"]*"|'[^']*'))([^;{}]*);/gi;
+  for (let m = re.exec(css); m && out.length < 1000; m = re.exec(css)) {
+    const ref = /^url\(\s*(?:"([^"]*)"|'([^']*)'|([^)\s]*))\s*\)$/i.exec(m[1]);
+    const raw = ref ? (ref[1] ?? ref[2] ?? ref[3] ?? '') : m[1].slice(1, -1);
+    // `layer`, `layer(name)` and `supports(…)` come before the media list.
+    const media = m[2]
+      .replace(/^\s*layer(\([^)]*\))?/i, '')
+      .replace(/^\s*supports\((?:[^()]|\([^()]*\))*\)/i, '')
+      .trim();
+    const key = sheetKey(raw, sheetUrl || undefined);
+    if (key) out.push({ key, media: media || null });
   }
   return out;
 }
 
+/** A sheet's effective print scope: whether it can apply to print, and whether it applies to print only. */
+interface PrintScope {
+  applies: boolean;
+  /** Print only, so an unconditional page-break rule in it is a print break. */
+  selects: boolean;
+}
+
 /**
- * 6.9's mode: documents print as documents; a deck with an @page rule, or with print-media page breaks
- * that print one page per slide (`printedPages`, from a printToPDF of the deck), prints its own CSS; any
- * other deck is rendered slide by slide.
+ * Reads print CSS out of the document's style sheets (RenderView.styleSheets). A sheet's media scope is its own
+ * (`<link media>`, `<style media>`) when it has one, else the scope it inherits through the `@import` chain that
+ * pulled it in, narrowed by any media list on those `@import` statements (review finding 13): a print sheet
+ * imported — at any depth, with or without a media list on the import — is read as print CSS, and a sheet whose
+ * scope never includes print (a `media="screen"` link, or imported only with `screen`) is not read at all.
  */
-export function decidePdfMode(kind: SlideIndexKind, scan: PrintCssScan, printedPages: number | null, slides: number): PdfMode {
+export function scanPrintCss(sheets: readonly { text: string; media: string | null; url?: string }[]): PrintCssScan {
+  const out: PrintCssScan = { pageRule: false, printBreaks: false, printRules: false };
+  const texts = sheets.map((s) => stripCssComments(s.text));
+  // Map each sheet's key (its own URL) to its index, and the imports each sheet makes (to a child index).
+  const indexByKey = new Map<string, number>();
+  sheets.forEach((s, i) => {
+    const k = s.url ? sheetKey(s.url) : null;
+    if (k && !indexByKey.has(k)) indexByKey.set(k, i);
+  });
+  const imports: { child: number; media: string | null }[][] = sheets.map((s, i) => {
+    const list: { child: number; media: string | null }[] = [];
+    for (const im of importMediaOf(texts[i], s.url ?? '')) {
+      const ci = indexByKey.get(im.key);
+      if (ci !== undefined && ci !== i) list.push({ child: ci, media: im.media });
+    }
+    return list;
+  });
+  const isChild = new Set<number>(imports.flatMap((l) => l.map((e) => e.child)));
+  // A sheet not imported by any other is a root: its scope is its own media (none ⇒ every medium, so print).
+  const scope: (PrintScope | undefined)[] = sheets.map((s, i) => {
+    if (isChild.has(i)) return undefined;
+    const m = s.media;
+    return { applies: m === null || mediaAppliesToPrint(m), selects: m !== null && mediaSelectsPrint(m) };
+  });
+  // Propagate each print-applicable sheet's scope down its imports until nothing changes (handles chains).
+  for (let pass = 0; pass < sheets.length * 4; pass++) {
+    let changed = false;
+    for (let i = 0; i < sheets.length; i++) {
+      const ps = scope[i];
+      if (!ps || !ps.applies) continue;
+      for (const e of imports[i]) {
+        const mApplies = e.media === null ? true : mediaAppliesToPrint(e.media);
+        const mSelects = e.media === null ? false : mediaSelectsPrint(e.media);
+        const childApplies = ps.applies && mApplies;
+        const childSelects = childApplies && (ps.selects || mSelects);
+        const cur = scope[e.child];
+        const applies = (cur?.applies ?? false) || childApplies;
+        const selects = (cur?.selects ?? false) || childSelects;
+        if (!cur || cur.applies !== applies || cur.selects !== selects) {
+          scope[e.child] = { applies, selects };
+          changed = true;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+  sheets.forEach((s, i) => {
+    const sc = scope[i];
+    if (!sc || !sc.applies) return;
+    if (sc.selects) out.printRules = true;
+    scanRules(texts[i], 0, texts[i].length, sc.selects, out, 0);
+  });
+  return out;
+}
+
+/** A printed page's aspect may differ from the slide's by this much and still count as the slide's page. */
+export const PAGE_ASPECT_TOLERANCE = 0.01;
+
+/** What Chromium's print of the deck gave: its page sizes (pt), and the slide's design size (px). */
+export interface PrintedCheck {
+  pageSizes: readonly { w: number; h: number }[];
+  design: { w: number; h: number };
+}
+
+/** True when every page has the slide's aspect within 1% (decision D-6). */
+export function pagesHaveSlideAspect(check: PrintedCheck): boolean {
+  const want = check.design.w / check.design.h;
+  if (!Number.isFinite(want) || want <= 0 || check.pageSizes.length === 0) return false;
+  return check.pageSizes.every((p) => p.w > 0 && p.h > 0 && Math.abs(p.w / p.h / want - 1) <= PAGE_ASPECT_TOLERANCE);
+}
+
+/**
+ * 6.9's mode: documents print as documents. A deck prints its own print CSS (an @page rule, or print-media
+ * page breaks) only when Chromium's print of it is the deck as slide pages: one page per slide
+ * (`printedPages`, from a printToPDF of the deck) and every page the slide's aspect within 1% (`check`).
+ * Any other deck is rendered slide by slide (decision D-6, review findings 9 and 35): an @page rule alone
+ * (`@page { margin: 0 }`) lays out no slide as a page, and printed only what the screen showed, slide 1, or
+ * reveal.js's text handout; an @media print layout on the default paper gave Letter pages of a 16:9 slide.
+ */
+export function decidePdfMode(kind: SlideIndexKind, scan: PrintCssScan, printedPages: number | null, slides: number, check?: PrintedCheck | null): PdfMode {
   if (!isDeck(kind)) return 'document';
-  if (scan.pageRule) return 'print-css';
-  if (scan.printBreaks && printedPages !== null && printedPages === slides) return 'print-css';
-  return 'raster';
+  if (!scan.pageRule && !scan.printBreaks) return 'raster';
+  if (printedPages === null || printedPages !== slides) return 'raster';
+  if (!check || check.pageSizes.length !== printedPages || !pagesHaveSlideAspect(check)) return 'raster';
+  return 'print-css';
 }
 
 // ------------------------------------------------------------------------------------------- page size
@@ -428,6 +565,34 @@ export async function pdfPageCount(bytes: Uint8Array): Promise<number> {
   return (await PDFDocument.load(bytes, { updateMetadata: false })).getPageCount();
 }
 
+/** Each page's size in points (its MediaBox, as pdf-lib reads it). */
+export async function pdfPageSizes(bytes: Uint8Array): Promise<{ w: number; h: number }[]> {
+  const { PDFDocument } = await pdfLib();
+  return (await PDFDocument.load(bytes, { updateMetadata: false })).getPages().map((p) => {
+    const { width, height } = p.getSize();
+    return { w: width, h: height };
+  });
+}
+
+/**
+ * Decides a deck's mode from Chromium's print of it (decision D-6), and says why when it is not print-css.
+ * `raw` is printToPDF({ preferCSSPageSize: true, printBackground: true }) of the deck as loaded and settled.
+ */
+export async function printedMode(kind: SlideIndexKind, scan: PrintCssScan, raw: Uint8Array, index: Pick<SlideIndex, 'slides' | 'designSize'>): Promise<{ mode: PdfMode; pages: number; why: string }> {
+  const sizes = await pdfPageSizes(raw);
+  const slides = index.slides.length;
+  const mode = decidePdfMode(kind, scan, sizes.length, slides, { pageSizes: sizes, design: index.designSize });
+  let why = '';
+  if (mode !== 'print-css') {
+    if (sizes.length !== slides) why = `print CSS gave ${sizes.length} pages for ${slides} slides`;
+    else {
+      const p = sizes.find((s) => !pagesHaveSlideAspect({ pageSizes: [s], design: index.designSize })) ?? sizes[0];
+      why = `print CSS gave pages of ${Math.round(p.w)} × ${Math.round(p.h)} pt for a ${index.designSize.w} × ${index.designSize.h} slide`;
+    }
+  }
+  return { mode, pages: sizes.length, why };
+}
+
 // ------------------------------------------------------------------------------------------- raster pages
 
 /** BGRA (nativeImage.toBitmap on little-endian machines) to RGB, composited over white where not opaque. */
@@ -453,11 +618,17 @@ export function bgraToRgb(bgra: Uint8Array, pixels: number): Uint8Array {
 /**
  * Builds the raster PDF page by page: each slide's capture is a lossless Flate-compressed RGB image drawn
  * over the whole page, the page sized to the design size in points. Pages are compressed as they arrive, so
- * a long deck never holds its raw bitmaps.
+ * a long deck never holds its raw bitmaps. Each capture may name its slide (`slot`): the pages are then laid
+ * out in slide order when the PDF is saved, whatever order the walk reached them in (6.9 "one PDF page per
+ * slide"; a slide the keys skip is shown by its hash after the others, review finding 33). A slot given twice
+ * keeps its last capture.
  */
 export class RasterPdf {
   private readonly doc: PDFDocument;
-  pages = 0;
+  /** Registered page images by slot. */
+  private readonly images = new Map<number, PDFRef>();
+  private nextSlot = 0;
+  private laidOut = false;
 
   private constructor(
     doc: PDFDocument,
@@ -465,6 +636,11 @@ export class RasterPdf {
     private readonly design: { w: number; h: number },
   ) {
     this.doc = doc;
+  }
+
+  /** How many pages the PDF has. */
+  get pages(): number {
+    return this.images.size;
   }
 
   static async create(design: { w: number; h: number }, title: string | null): Promise<RasterPdf> {
@@ -476,11 +652,17 @@ export class RasterPdf {
     return new RasterPdf(doc, lib, design);
   }
 
-  /** Adds one page from a capture's BGRA bitmap of `width` × `height` pixels. */
-  async addPage(bgra: Uint8Array, width: number, height: number): Promise<void> {
+  /**
+   * Adds one page from a capture's BGRA bitmap of `width` × `height` pixels, as slide `slot` (default: after
+   * every page added so far).
+   */
+  async addPage(bgra: Uint8Array, width: number, height: number, slot?: number): Promise<void> {
     if (!Number.isInteger(width) || !Number.isInteger(height) || width < 1 || height < 1 || bgra.length < width * height * 4) {
       throw new RenderError('a raster page has no pixels');
     }
+    if (slot !== undefined && (!Number.isInteger(slot) || slot < 0)) throw new RenderError('invalid page slot');
+    const at = slot ?? this.nextSlot;
+    this.nextSlot = Math.max(this.nextSlot, at + 1);
     const rgb = bgraToRgb(bgra, width * height);
     const data = await deflate(rgb, { level: 6 });
     const ctx = this.doc.context;
@@ -495,16 +677,23 @@ export class RasterPdf {
         Filter: 'FlateDecode',
       }),
     );
-    const w = this.design.w * PT_PER_PX;
-    const h = this.design.h * PT_PER_PX;
-    const page = this.doc.addPage([w, h]);
-    const name = page.node.newXObject('Slide', image);
-    const { concatTransformationMatrix, drawObject, popGraphicsState, pushGraphicsState } = this.lib;
-    page.pushOperators(pushGraphicsState(), concatTransformationMatrix(w, 0, 0, h, 0, 0), drawObject(name), popGraphicsState());
-    this.pages++;
+    const replaced = this.images.get(at);
+    if (replaced) ctx.delete(replaced);
+    this.images.set(at, image);
   }
 
+  /** The PDF, one page per slot in slide order. */
   async save(): Promise<Uint8Array> {
+    if (this.laidOut) throw new RenderError('the raster PDF was saved already');
+    this.laidOut = true;
+    const w = this.design.w * PT_PER_PX;
+    const h = this.design.h * PT_PER_PX;
+    const { concatTransformationMatrix, drawObject, popGraphicsState, pushGraphicsState } = this.lib;
+    for (const slot of [...this.images.keys()].sort((a, b) => a - b)) {
+      const page = this.doc.addPage([w, h]);
+      const name = page.node.newXObject('Slide', this.images.get(slot)!);
+      page.pushOperators(pushGraphicsState(), concatTransformationMatrix(w, 0, 0, h, 0, 0), drawObject(name), popGraphicsState());
+    }
     return this.doc.save({ useObjectStreams: false });
   }
 }
@@ -598,8 +787,13 @@ async function printedPdf(doc: RenderTarget, index: SlideIndex, opts: PdfOptions
       await view.load(doc);
       await view.waitStable();
       await assertNoOverlay(view);
-      const title = pdfTitleOf(await view.documentTitle(), doc.title);
       if (!isDeck(index.kind)) {
+        // What the document's scripts draw or fill in after load (a chart animated by requestAnimationFrame,
+        // a section a timer fills) is printed as the reader sees it: the scripted settle, once (decision D-5),
+        // as adaptive as the index walk's of the same version (slide-index SettleMemory).
+        await settleScripted(view, signal, host.log, { memory: settleMemoryFor(doc.fileKey, doc.version), slot: null });
+        await assertNoOverlay(view);
+        const title = pdfTitleOf(await view.documentTitle(), doc.title);
         const pageSize = documentPageSize(opts.locale);
         const raw = await view.printToPDF({ printBackground: true, pageSize });
         throwIfCancelled(signal);
@@ -607,14 +801,17 @@ async function printedPdf(doc: RenderTarget, index: SlideIndex, opts: PdfOptions
       }
       const scan = await printCssOf(view, host.log);
       if (!scan.pageRule && !scan.printBreaks) return null;
+      await settleScripted(view, signal, host.log);
+      await assertNoOverlay(view);
+      const title = pdfTitleOf(await view.documentTitle(), doc.title);
       const raw = await view.printToPDF({ preferCSSPageSize: true, printBackground: true });
       throwIfCancelled(signal);
-      const pages = await pdfPageCount(raw);
-      if (decidePdfMode(index.kind, scan, pages, index.slides.length) !== 'print-css') {
-        host.log(`pdf: ${doc.fileName}: print CSS gave ${pages} pages for ${index.slides.length} slides; rendering the slides instead`);
+      const decided = await printedMode(index.kind, scan, raw, index);
+      if (decided.mode !== 'print-css') {
+        host.log(`pdf: ${doc.fileName}: ${decided.why}; rendering the slides instead`);
         return null;
       }
-      return { bytes: await setPdfTitle(raw, title), pages, mode: 'print-css', title, missed: [] };
+      return { bytes: await setPdfTitle(raw, title), pages: decided.pages, mode: 'print-css', title, missed: [] };
     },
     signal,
   );
@@ -632,7 +829,7 @@ async function rasterPdf(doc: RenderTarget, index: SlideIndex, opts: PdfOptions,
         view,
         doc,
         index,
-        async () => {
+        async (slide) => {
           if (!pdf) {
             title = pdfTitleOf(await view.documentTitle(), doc.title);
             pdf = await RasterPdf.create(index.designSize, title);
@@ -641,7 +838,8 @@ async function rasterPdf(doc: RenderTarget, index: SlideIndex, opts: PdfOptions,
           if (cap.empty) throw new RenderError('a slide captured empty');
           const size = cap.image.getSize();
           const bmp = cap.image.toBitmap();
-          await pdf.addPage(new Uint8Array(bmp.buffer, bmp.byteOffset, bmp.byteLength), size.width, size.height);
+          // In slide order, whatever order the walk reached the slides in (review finding 33).
+          await pdf.addPage(new Uint8Array(bmp.buffer, bmp.byteOffset, bmp.byteLength), size.width, size.height, slide);
         },
         { signal, log: host.log },
       );
@@ -665,10 +863,37 @@ export async function makePdf(doc: RenderTarget, opts: PdfOptions = {}): Promise
 
 export interface SaveAsPdfOptions extends PdfOptions {
   /**
-   * 9.9 Derived files keep the marker: copies the document's internet marker onto the PDF. Default:
-   * markers.markDerivedFile (the trust-native item's), a no-op on Linux.
+   * 9.9 Derived files keep the marker: copies the document's internet marker onto the PDF (`to` is the PDF's
+   * temp file, before it is renamed into place). Default: markers.markDerivedFile (the trust-native item's), a
+   * no-op on Linux; a Windows volume without streams keeps no marker (allowStreamlessVolume, finding 29).
    */
   copyMarker?: (from: string, to: string) => Promise<void>;
+}
+
+/**
+ * Writes the PDF's bytes to `out` atomically, marked before it is in place (9.9 Derived files keep the
+ * marker): `mark` runs on the temp file, so a mark that fails leaves `out` as it was, a PDF the user chose to
+ * replace included (review finding 30), and nothing unmarked is ever at `out`.
+ */
+export async function writePdfFile(out: string, bytes: Uint8Array, mark: (temp: string) => Promise<void>, fileName: string): Promise<void> {
+  let markFailed: unknown = null;
+  try {
+    await atomicWriteFile(out, bytes, {
+      newFileMode: 0o644,
+      prepareTemp: async (temp) => {
+        try {
+          await mark(temp);
+        } catch (e) {
+          markFailed = e;
+          throw e;
+        }
+      },
+    });
+  } catch (e) {
+    // A derived file that would lose the document's marker is not saved (9.9; when unsure, refuse).
+    if (markFailed !== null) throw new RenderError(`The PDF could not keep ${fileName}'s internet marker, so it was not saved (${e instanceof Error ? e.message : String(e)})`);
+    throw e;
+  }
 }
 
 /**
@@ -684,14 +909,9 @@ export async function saveAsPdf(doc: RenderTarget, out: string, opts: SaveAsPdfO
   // to the document put there).
   const late = await refusePdfOut(out, { realpath: doc.realpath });
   if (late) throw new RenderError(late);
-  await atomicWriteFile(out, made.bytes, { newFileMode: 0o644 });
-  try {
-    const mark = opts.copyMarker ?? ((from: string, to: string) => markDerivedFile(to, { realpath: from, marker: doc.marker, protectedView: doc.isProtected() }));
-    await mark(doc.realpath, out);
-  } catch (e) {
-    // A derived file that lost the document's marker must not stay (9.9; when unsure, refuse).
-    await fs.promises.unlink(out).catch(() => undefined);
-    throw new RenderError(`The PDF could not keep ${doc.fileName}'s internet marker, so it was not saved (${e instanceof Error ? e.message : String(e)})`);
-  }
+  const copyMarker =
+    opts.copyMarker ??
+    ((from: string, to: string) => markDerivedFile(to, { realpath: from, marker: doc.marker, protectedView: doc.isProtected() }, { allowStreamlessVolume: true }));
+  await writePdfFile(out, made.bytes, (temp) => copyMarker(doc.realpath, temp), doc.fileName);
   return { out, pages: made.pages, mode: made.mode, title: made.title, missed: made.missed };
 }

@@ -399,6 +399,10 @@ describe('About Protected view (6.10, 9.9, SECURITY.md)', () => {
     expect(PROTECTED_VIEW_HELP.remain[1]).toMatch(/TURN/);
     expect(PROTECTED_VIEW_HELP.remainOutro).toMatch(/does not change these two/);
     expect(text).toMatch(/250 characters/);
+    // 6.10 Remembered: what resets Allow network and Enable editing, and the limit (review findings 5, 28).
+    expect(text).toMatch(/remembered for this file until another file takes its place/);
+    expect(text).toMatch(/writes new content into the same file/);
+    expect(text).toMatch(/On Windows/);
   });
 });
 

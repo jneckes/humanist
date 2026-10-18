@@ -22,7 +22,7 @@ import { NO_DOCUMENT, type MenuState } from './menu';
 import type { RecentFiles } from './recent';
 import { SessionStore, sessionFileFor, type SaveEvent } from './session-store';
 import type { TrustStore } from './trust-store';
-import { DocWindow, type AppPaths } from './window';
+import { DocWindow, type AppPaths, type ReopenRequest, type RestoreOptions } from './window';
 import { FileKeyMap, fileKeys, type FileKeys } from './window-key';
 
 export interface ControllerDeps {
@@ -57,6 +57,20 @@ export interface ControllerDeps {
 export interface OpenOptions {
   /** `--protected` or File › Open in Protected View (6.10). */
   protected: boolean;
+  /** Added by batch A (D-1): a window opened again after its file's trust changed restores this. */
+  restore?: RestoreOptions;
+}
+
+/**
+ * Review finding 6: what to tell the user when they asked for Protected view (6.10) on a file whose window is
+ * already open without it (6.1: one window per file, so that window is focused), or null when the window
+ * already is Protected view with network and editing off.
+ */
+export function protectedRequestNotice(fileName: string, w: { trust: 'protected' | 'trusted'; networkAllowed: boolean; editingAllowed: boolean }): string | null {
+  if (w.trust === 'trusted') return `${fileName} is already open in Trusted view. Close it to open it in Protected view.`;
+  if (!w.networkAllowed && !w.editingAllowed) return null;
+  const on = w.networkAllowed && w.editingAllowed ? 'network and editing on' : w.networkAllowed ? 'network on' : 'editing on';
+  return `${fileName} is already open in Protected view with ${on}. Close it to open it with both off.`;
 }
 
 export class AppController {
@@ -141,7 +155,9 @@ export class AppController {
   open(p: string, o: OpenOptions): Promise<DocWindow | null> {
     const abs = path.resolve(p);
     const inflight = this.opening.get(abs);
-    if (inflight) return inflight;
+    // The same file is opening already: one window (6.1), and a request for Protected view is not dropped
+    // without a word (finding 6).
+    if (inflight) return o.protected ? inflight.then((w) => this.protectedRequested(w)) : inflight;
     const job = this.doOpen(abs, o).finally(() => this.opening.delete(abs));
     this.opening.set(abs, job);
     return job;
@@ -175,7 +191,7 @@ export class AppController {
     }
     if (realpath) {
       const known = await this.existing(await this.keysOf(realpath));
-      if (known !== undefined) return known;
+      if (known !== undefined) return o.protected ? this.protectedRequested(known) : known;
     }
     let doc: BlDocument;
     try {
@@ -193,9 +209,9 @@ export class AppController {
     // No await between the last check and creating.set: two paths to the same file make one window.
     while (this.windows.get(keys) !== undefined || this.creating.get(keys) !== undefined) {
       const known = await this.existing(keys);
-      if (known !== undefined) return known;
+      if (known !== undefined) return o.protected ? this.protectedRequested(known) : known;
     }
-    const job: Promise<DocWindow | null> = this.createWindow(doc, keys).finally(() => this.creating.delete(job));
+    const job: Promise<DocWindow | null> = this.createWindow(doc, keys, o).finally(() => this.creating.delete(job));
     this.creating.set(keys, job);
     return job;
   }
@@ -234,7 +250,59 @@ export class AppController {
     }
   }
 
-  private async createWindow(doc: BlDocument, keys: FileKeys): Promise<DocWindow | null> {
+  /**
+   * Protected view was asked for (6.10) and the file's window is already open (6.1 One window per file): it is
+   * focused, and when it is not Protected view with network and editing off, it says so (finding 6).
+   */
+  private protectedRequested(w: DocWindow | null): DocWindow | null {
+    if (!w || w.closing) return w;
+    const text = protectedRequestNotice(w.doc.fileName, { trust: w.doc.trust(), networkAllowed: w.doc.networkAllowed(), editingAllowed: w.doc.editingAllowed() });
+    if (text) {
+      w.focus();
+      w.toast(text, 'warn');
+      this.deps.log(`open in Protected view: ${w.doc.fileName} is already open (${w.doc.trust()})`);
+    }
+    return w;
+  }
+
+  /**
+   * D-1 (review finding 0): an open window's file changed on disk and 6.10 now decides differently. The window
+   * closes and the file opens again, where it was and with its view state, with a fresh decision (a new docId
+   * and the partition its trust needs: a persist: partition cannot be downgraded in place). While no window
+   * shows the file, a hidden placeholder keeps the app running (window-all-closed quits on Linux and Windows).
+   */
+  async reopen(w: DocWindow, r: ReopenRequest): Promise<DocWindow | null> {
+    const realpath = w.doc.realpath;
+    const keep = this.deps.platform === 'darwin' ? null : this.placeholder();
+    try {
+      if (!w.closing) w.win.close();
+      await w.closed;
+      return await this.open(realpath, { protected: r.requestedProtected, restore: { bounds: r.bounds, state: r.state, mode: r.mode, notice: r.notice, rebuildProducts: true } });
+    } catch (e) {
+      this.deps.log(`reopen failed: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    } finally {
+      if (keep && !keep.isDestroyed()) keep.destroy();
+    }
+  }
+
+  /** A window that is never shown and loads nothing: it only keeps window-all-closed from firing. */
+  private placeholder(): BrowserWindow | null {
+    try {
+      return new BrowserWindow({
+        show: false,
+        width: 1,
+        height: 1,
+        skipTaskbar: true,
+        focusable: false,
+        webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webSecurity: true, devTools: false },
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private async createWindow(doc: BlDocument, keys: FileKeys, o: OpenOptions): Promise<DocWindow | null> {
     let win: DocWindow | null = null;
     let store: SessionStore;
     try {
@@ -278,6 +346,11 @@ export class AppController {
         onViewChange: () => this.menuChanged(),
         onModeChange: (w, mode) => this.deps.noteMode?.(w.doc.realpath, mode),
         openSettings: this.deps.openSettings,
+        // D-1: every external change is decided on again as an open would decide it.
+        decideTrust: this.decideTrust(),
+        reopen: (w, r) => void this.reopen(w, r),
+        protectedRequested: o.protected,
+        restore: o.restore,
       });
     } catch (e) {
       this.registry.remove(doc);
@@ -334,9 +407,13 @@ export class AppController {
     ]);
   }
 
-  /** Settings › Trust changed: every open document's partition policy is applied again (9.9; trust-hooks update()). */
-  trustSettingsChanged(): void {
-    for (const w of this.all()) void w.reapplyPolicy();
+  /**
+   * Settings › Trust changed: every open document's partition policy is applied again (9.9; trust-hooks
+   * update()), and its render products made again where the policy shapes them (finding 15). `change` names
+   * the setting when the caller knows it.
+   */
+  trustSettingsChanged(change?: 'folders' | 'strict' | 'allowlist'): void {
+    for (const w of this.all()) void w.reapplyPolicy(change);
   }
 
   /** File › Open… and File › Open in Protected View… */
@@ -419,6 +496,28 @@ export class AppController {
         if (w && !w.isDestroyed()) w.aboutProtectedView();
         else void dialog.showMessageBox({ type: 'info', message: PROTECTED_VIEW_HELP.title, detail: protectedViewHelpText(), buttons: ['OK'] }).catch(() => undefined);
         return;
+      case 'undo':
+      case 'redo': {
+        // 6.2 / 9.2 step 5: inside a text field, native undo for that field; otherwise app undo (Phase 2).
+        // Edit › Undo is a custom item, so on macOS Cmd+Z reaches a field only through it (finding 21). Blueline's
+        // own pages (the shell's Find bar, Settings, the welcome or Open window, Diagnostics) get native undo only
+        // while an editable element has focus; outside a text field it is app undo, the same as a deck view
+        // (finding 21 re-verification: the shell with no field focused must not swallow Cmd+Z). A deck view gets
+        // native undo only in a deck text field.
+        const focusedWc = allWebContents.getFocusedWebContents();
+        if (focusedWc && !focusedWc.isDestroyed() && !this.isDeckView(focusedWc)) {
+          void this.undoOnBluelinePage(focusedWc, action, w);
+          return;
+        }
+        if (!w || w.isDestroyed()) return;
+        if (focusedWc && focusedWc === w.deck.webContents && w.deckTextFieldFocused()) {
+          if (action === 'undo') focusedWc.undo();
+          else focusedWc.redo();
+          return;
+        }
+        w.toast(PHASE_STUBS[action]!, 'info');
+        return;
+      }
     }
     if (!w || w.isDestroyed()) return;
     switch (action) {
@@ -468,23 +567,50 @@ export class AppController {
       case 'reading-width':
         w.toggleReadingWidth();
         return;
-      case 'undo':
-      case 'redo': {
-        // 6.2 / 9.2 step 5: inside a text field, native undo for that field; otherwise app undo (Phase 2).
-        const focusedWc = allWebContents.getFocusedWebContents();
-        if (focusedWc && focusedWc === w.deck.webContents && w.deckTextFieldFocused()) {
-          if (action === 'undo') focusedWc.undo();
-          else focusedWc.redo();
-          return;
-        }
-        w.toast(PHASE_STUBS[action]!, 'info');
-        return;
-      }
       default: {
         const stub = PHASE_STUBS[action];
         if (stub) w.toast(stub, 'info');
       }
     }
+  }
+
+  /**
+   * A deck page (a document window's deck view, or any blueline:// page: the Diagnostics deck, a render view),
+   * where Undo outside a deck text field is app undo, never the page's own editing undo.
+   */
+  private isDeckView(wc: Electron.WebContents): boolean {
+    if (this.all().some((x) => x.deck.webContents === wc)) return true;
+    try {
+      return /^blueline(-media)?:/i.test(wc.getURL());
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Undo/redo on one of Blueline's own pages (not a deck view): native undo only while an editable element has
+   * focus; outside a text field it is app undo (finding 21 re-verification; SPEC 6.2). The document window's
+   * shell shows the Phase 2 stub there; a form window (Settings, welcome/Open, Diagnostics) has no app undo.
+   */
+  private async undoOnBluelinePage(wc: Electron.WebContents, action: 'undo' | 'redo', w: DocWindow | null): Promise<void> {
+    let editable = false;
+    try {
+      editable =
+        (await wc.executeJavaScript(
+          '(function(){var a=document.activeElement;return !!a&&(a.isContentEditable||a.tagName==="INPUT"||a.tagName==="TEXTAREA")})()',
+          false,
+        )) === true;
+    } catch {
+      editable = false;
+    }
+    if (wc.isDestroyed()) return;
+    if (editable) {
+      if (action === 'undo') wc.undo();
+      else wc.redo();
+      return;
+    }
+    // Outside a text field, Cmd+Z is app undo. Only the document window's shell has one in Phase 1 (the stub).
+    if (w && !w.isDestroyed() && wc === w.win.webContents) w.toast(PHASE_STUBS[action]!, 'info');
   }
 
   /**

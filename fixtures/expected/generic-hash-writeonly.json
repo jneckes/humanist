@@ -1,0 +1,349 @@
+{
+  "deckSha": "62ade3630e669682a8e303143d18f4db005c5a43b11e590c6db17e1f19f72e89",
+  "coverage": {
+    "exact": 12,
+    "ambiguous": 0,
+    "none": 6,
+    "total": 18,
+    "slides": {
+      "count": 6,
+      "reached": 6
+    },
+    "wording": {
+      "exact": 12,
+      "total": 12
+    }
+  },
+  "runs": [
+    {
+      "slide": 0,
+      "text": "Garden plan",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 987,
+      "end": 998,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "The first bed is marigold.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1006,
+      "end": 1032,
+      "probe": "pass"
+    },
+    {
+      "slide": 0,
+      "text": "1 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 1,
+      "text": "Soil",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1076,
+      "end": 1080,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "Mix compost with juniper bark.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1088,
+      "end": 1118,
+      "probe": "pass"
+    },
+    {
+      "slide": 1,
+      "text": "2 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 2,
+      "text": "Seeds",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1162,
+      "end": 1167,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "Sow lavender in March.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1175,
+      "end": 1197,
+      "probe": "pass"
+    },
+    {
+      "slide": 2,
+      "text": "3 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 3,
+      "text": "Water",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1241,
+      "end": 1246,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "Saffron needs little water.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1254,
+      "end": 1281,
+      "probe": "pass"
+    },
+    {
+      "slide": 3,
+      "text": "4 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 4,
+      "text": "Pests",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1325,
+      "end": 1330,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "Pull every thistle by hand.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1338,
+      "end": 1365,
+      "probe": "pass"
+    },
+    {
+      "slide": 4,
+      "text": "5 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    },
+    {
+      "slide": 5,
+      "text": "Harvest",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1409,
+      "end": 1416,
+      "probe": "pass"
+    },
+    {
+      "slide": 5,
+      "text": "Cut clover in the autumn.",
+      "strategy": "html-text",
+      "confidence": "exact",
+      "start": 1424,
+      "end": 1449,
+      "probe": "pass"
+    },
+    {
+      "slide": 5,
+      "text": "6 / 6",
+      "strategy": null,
+      "confidence": "none",
+      "start": null,
+      "end": null,
+      "reason": "computed"
+    }
+  ],
+  "report": {
+    "deck": "generic-hash-writeonly.html",
+    "utf8": true,
+    "trust": "trusted",
+    "viewport": {
+      "w": 1600,
+      "h": 900,
+      "dpr": 2
+    },
+    "slides": {
+      "kind": "generic",
+      "navKind": "hash",
+      "count": 6,
+      "reached": 6,
+      "designSize": {
+        "w": 1600,
+        "h": 900
+      },
+      "keys": "input",
+      "forwardKey": "ArrowRight",
+      "notes": []
+    },
+    "perSlide": [
+      {
+        "slide": 0,
+        "title": "Garden plan",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      },
+      {
+        "slide": 1,
+        "title": "Soil",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      },
+      {
+        "slide": 2,
+        "title": "Seeds",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      },
+      {
+        "slide": 3,
+        "title": "Water",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      },
+      {
+        "slide": 4,
+        "title": "Pests",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      },
+      {
+        "slide": 5,
+        "title": "Harvest",
+        "reached": true,
+        "exact": 2,
+        "ambiguous": 0,
+        "none": 1,
+        "total": 3
+      }
+    ],
+    "totals": {
+      "exact": 12,
+      "ambiguous": 0,
+      "none": 6,
+      "total": 18
+    },
+    "coverage": {
+      "exact": 12,
+      "ambiguous": 0,
+      "none": 6,
+      "total": 18,
+      "share": 0.6666666666666666,
+      "probeFailed": 0,
+      "verified": true,
+      "complete": true,
+      "wording": {
+        "exact": 12,
+        "total": 12,
+        "share": 1
+      }
+    },
+    "uncounted": {
+      "crossOriginFrames": 0
+    },
+    "nonExact": [
+      {
+        "slide": 0,
+        "text": "1 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 1,
+        "text": "2 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 2,
+        "text": "3 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 3,
+        "text": "4 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 4,
+        "text": "5 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      },
+      {
+        "slide": 5,
+        "text": "6 / 6",
+        "confidence": "none",
+        "reason": "computed",
+        "candidates": 0
+      }
+    ],
+    "inline": {
+      "blocks": 13,
+      "withInline": 0,
+      "allExact": 0,
+      "allPassed": 0,
+      "shareWithInline": 0,
+      "shareAllExact": 0
+    },
+    "probe": {
+      "ran": true,
+      "why": null,
+      "runs": 12,
+      "originalUnchanged": true,
+      "copyRemoved": true,
+      "nodes": 12,
+      "passed": 12,
+      "failed": 0,
+      "failures": []
+    },
+    "consoleErrors": 0,
+    "warnings": []
+  }
+}

@@ -6,12 +6,21 @@
 //   docs/PHASE1-RESULTS.md states), the largest difference, and the box around the pixels over tolerance.
 // - diffImage: the diff picture written next to a failing slide: red where a pixel is over tolerance, amber
 //   where it differs within tolerance, the first render in light grey everywhere else.
+// - slideVerdict and deckTallies: how a slide is judged, and what a deck's result lists beside the verdict
+//   (identical slides, nondeterministic ones, slides whose text or scroll position differ).
 //
 // Bitmaps are nativeImage.toBitmap() output (BGRA on Linux and macOS x64/arm64, 4 bytes a pixel) or the RGB
 // samples of a PDF image XObject (3 bytes a pixel). Both sides of one comparison share a layout.
 
-/** The gate's per-pixel rule: a pixel differs when some channel differs by more than this (0..255). */
-export const DEFAULT_TOLERANCE = 8;
+/**
+ * The gate's per-pixel rule: a pixel differs when some channel differs by more than this (0..255). 2 is
+ * rounding noise (a colour-space conversion or a blend rounded the other way), nothing a person could see: on a
+ * flat area a step of 3 to 4 levels is about one just-noticeable difference (CIEDE2000 ≈ 1). Two renders of the
+ * same page by the same Chromium are byte-identical here, so the tolerance hides nothing that was measured; a
+ * change that moves every pixel of Blueline's render by 3 levels or more fails (test/parity/fixtures/shift6.html,
+ * shift8.html: a tolerance of 8 passed both). The share of pixels that differ at all is reported beside it.
+ */
+export const DEFAULT_TOLERANCE = 2;
 /** SPEC 10 Phase 1: at most 0.5% of pixels different on every slide. */
 export const RENDER_GATE = 0.005;
 /** SPEC 10 Phase 1: each PDF page within 1% of its slide render. */
@@ -152,6 +161,54 @@ export function pct(share: number): string {
 export function addHistograms(into: number[], h: readonly number[]): number[] {
   for (let i = 0; i < h.length; i++) into[i] = (into[i] ?? 0) + h[i];
   return into;
+}
+
+/**
+ * One slide's verdict (SPEC 10 Phase 1: "at most 0.5% of pixels different"). It passes when the plain render
+ * reached the slide and the share of pixels over tolerance is within the gate. It is nondeterministic when
+ * the control render (a second plain render of the same file, walked and settled the same way) differs from
+ * the plain render at all: the deck draws differently on two loads with the same seeded Math.random (a clock,
+ * crypto.getRandomValues, a race). The verdict does not change for it: a nondeterministic slide over the gate
+ * fails, and one within it passes and is listed as nondeterministic beside the verdict, never silently.
+ */
+export function slideVerdict(
+  r: { navOk: boolean; stats: Pick<PixelStats, 'overShare'> | null; control: Pick<PixelStats, 'exact'> | null },
+  gate: number,
+): { pass: boolean; nondeterministic: boolean } {
+  return { pass: r.navOk && r.stats !== null && r.stats.overShare <= gate, nondeterministic: r.control !== null && r.control.exact > 0 };
+}
+
+/** What a deck's result lists beside its verdict, each list in slide order (0-based slides). */
+export interface DeckTallies {
+  /** Slides compared (both captures the same size). */
+  compared: number;
+  /** Compared slides with no differing pixel at all: the exact count reported next to the tolerance. */
+  identical: number;
+  /** Slides whose control render differed from the plain render (slideVerdict). */
+  nondeterministic: number[];
+  /** Slides whose visible-text signatures differ between the two renders (recorded, not part of the verdict). */
+  textDiffers: number[];
+  /** Slides whose scroll positions differ between the two renders (recorded, not part of the verdict). */
+  scrollDiffers: number[];
+}
+
+export function deckTallies(
+  results: readonly {
+    slide: number;
+    stats: Pick<PixelStats, 'exact'> | null;
+    nondeterministic: boolean;
+    sameText: boolean;
+    scrollY: { blueline: number; plain: number };
+  }[],
+): DeckTallies {
+  const rs = [...results].sort((a, b) => a.slide - b.slide);
+  return {
+    compared: rs.filter((r) => r.stats).length,
+    identical: rs.filter((r) => r.stats && r.stats.exact === 0).length,
+    nondeterministic: rs.filter((r) => r.nondeterministic).map((r) => r.slide),
+    textDiffers: rs.filter((r) => !r.sameText).map((r) => r.slide),
+    scrollDiffers: rs.filter((r) => r.scrollY.blueline !== r.scrollY.plain).map((r) => r.slide),
+  };
 }
 
 /** Median of a list of numbers (NaN when empty). */

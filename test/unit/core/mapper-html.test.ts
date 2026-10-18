@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { parse, serialize, Parser, type DefaultTreeAdapterMap, type DefaultTreeAdapterTypes } from 'parse5';
+import { describe, expect, it, vi } from 'vitest';
+import { parse, serialize, Parser, Tokenizer, type DefaultTreeAdapterMap, type DefaultTreeAdapterTypes } from 'parse5';
 import { mapHtmlText, type HtmlMapResult } from '@blueline/core/mapper-html';
 import { htmlRunTable, decodeHtmlText } from '@blueline/core/html-tables';
 import { buildServedCopy } from '@blueline/core/served';
@@ -529,5 +529,86 @@ describe('mapHtmlText: the notes block range', () => {
     expect(tail.value).toBe('tail\n');
     expect(tail.aligned).toBe(false);
     expect(r.runs.find((x) => x.tagName === 'p')!.aligned).toBe(true);
+  });
+});
+
+describe('mapHtmlText: bulk text (review finding 31)', () => {
+  // A deck's base64 images, @font-face fonts and inline library code are taken a run at a time in four
+  // tokenizer states (mapper-html addBulkTextPaths). The result must be parse5's own, character by character.
+  const both = (src: string) => {
+    const lines = new LineIndex(src);
+    const bulk = mapHtmlText(src, { lines, utf8: true });
+    const plain = mapHtmlText(src, { lines, utf8: true, bulkText: false });
+    return { bulk, plain };
+  };
+  const b64 = (n: number, seed = 7) => {
+    const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    let x = seed;
+    let s = '';
+    for (let i = 0; i < n; i++) {
+      x = (x * 1103515245 + 12345) & 0x7fffffff;
+      s += A[x % 64];
+    }
+    return s;
+  };
+
+  it('gives exactly the character-by-character result on edge cases of the four states', () => {
+    const cases = [
+      // Attribute values: entities, the other quote, CR, LF, CRLF, tab, NUL, controls, C1, noncharacters, surrogates.
+      `<p title="a &amp; b &lt; c 'q' \r\n x\ty\0z \u0001 \u007f \u0085 ﷐ ￿ 😀 \ud800 end">t</p>`,
+      `<p title='single "double" &quot; \r tail' data-x='${b64(300)}'>t</p>`,
+      `<img alt="" src="data:image/png;base64,${b64(70_000)}"><p class="after">text</p>`,
+      // Script data: comments, '<' in strings, escapes, whitespace runs, NUL, a CRLF, non-ASCII.
+      `<script>var a = "<!-- x -->", b = '</scr' + 'ipt>'; if (a<b) { c = "é ü ✓ 😀\u0000"; }\r\n  /* ${b64(2000)} */</script><p>t</p>`,
+      `<script>${'var x' + b64(90_000) + '=1;\n'.repeat(3)}</script><p>after</p>`,
+      // RAWTEXT (style): fonts as data URLs, '<' inside, comments, tabs.
+      `<style>@font-face { font-family: "F"; src: url(data:font/woff2;base64,${b64(80_000)}) format("woff2"); }\n\t.a<b { color: red }</style><p>t</p>`,
+      // Unterminated values and text at the end of the input.
+      `<p>t</p><img src="data:image/png;base64,${b64(500)}`,
+      `<p>t</p><script>var s = "${b64(500)}`,
+      `<p>t</p><style>.x{background:url(${b64(500)})`,
+      // Unquoted values and the data state are not taken in bulk, but sit next to ones that are.
+      `<div data-a=${b64(40)} data-b="${b64(40)}">${b64(200)} &amp; more</div>`,
+    ];
+    for (const src of cases) {
+      const { bulk, plain } = both(src);
+      expect(bulk, src.slice(0, 60)).toEqual(plain);
+    }
+  });
+
+  it('gives the same map for a whole page across the parser buffer boundaries', () => {
+    const img = (k: number) => `<img alt="Figure ${k}" src="data:image/png;base64,${b64(23_000 + k * 777, k)}">`;
+    const src = `<!DOCTYPE html><html><head><style>${b64(10_000)} .a { color: red }</style></head><body>${Array.from({ length: 12 }, (_, k) => `<section><h2>Slide ${k}</h2>${img(k)}<p>text ${k}</p></section>`).join('\n')}<script>var lib = ${JSON.stringify(b64(150_000))};</script></body></html>`;
+    const { bulk, plain } = both(src);
+    expect(bulk).toEqual(plain);
+    expect(bulk.runs.map((r) => r.value)).toContain('text 11');
+  });
+
+  it('takes a long attribute value or script in a few state calls, not one per character', () => {
+    // The fast path wraps the prototype's state handlers; each run start is one call.
+    const proto = Tokenizer.prototype as unknown as Record<string, (cp: number) => void>;
+    const spies = ['_stateAttributeValueDoubleQuoted', '_stateScriptData'].map((name) => vi.spyOn(proto, name));
+    try {
+      const src = `<img src="data:image/png;base64,${b64(200_000)}"><script>var s="${b64(200_000)}";</script><p>t</p>`;
+      map(src);
+      const [attr, script] = spies.map((s) => s.mock.calls.length);
+      expect(attr).toBeLessThan(100);
+      expect(script).toBeLessThan(100);
+    } finally {
+      for (const s of spies) s.mockRestore();
+    }
+  });
+
+  it('pins the parse5 tokenizer internals the bulk paths use', () => {
+    const parser = new Parser<DefaultTreeAdapterMap>({ sourceCodeLocationInfo: true });
+    const tk = parser.tokenizer as unknown as Record<string, unknown> & { preprocessor: Record<string, unknown> };
+    for (const name of ['_stateAttributeValueDoubleQuoted', '_stateAttributeValueSingleQuoted', '_stateScriptData', '_stateRawtext', '_callState']) {
+      expect(typeof tk[name], name).toBe('function');
+    }
+    expect(typeof tk.consumedAfterSnapshot).toBe('number');
+    expect(typeof tk.preprocessor.pos).toBe('number');
+    expect(typeof tk.preprocessor.advance).toBe('function');
+    parser.tokenizer.write('<p title="ab">', false);
+    expect(typeof tk.preprocessor.html).toBe('string');
   });
 });

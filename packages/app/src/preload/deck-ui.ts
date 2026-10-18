@@ -179,7 +179,8 @@ export class DeckUi {
   }
 
   applyMap(p: MapUpdate): void {
-    // Kept for the edit controller (Phase 2: hover outlines and the matcher).
+    // Kept for the edit controller (Phase 2: hover outlines and the matcher). It is always a complete map: while
+    // main finishes one (DeckInit.mapPending, D-9) the deck holds null, and anything that matches must wait.
     this.map = p && typeof p === 'object' && typeof (p as ClientMap).version === 'string' ? (p as ClientMap) : null;
   }
 

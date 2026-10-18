@@ -1,6 +1,7 @@
 /* The welcome window (6.0 First run). One column: the three ways to start, the tour once the sample deck is
-   open, the user's name and the crash-report question. The same tokens as the document shell (shell.css) and
-   Settings, so it follows the system's light or dark appearance. */
+   open, the user's name and the crash-report question. The Open window (?mode=open) is the same page with only
+   the three ways to start. The same tokens as the document shell (shell.css) and Settings, so it follows the
+   system's light or dark appearance. */
 
 :root {
   --bg: #f5f6f8;
@@ -35,6 +36,11 @@
 
 * {
   box-sizing: border-box;
+}
+
+/* `hidden` wins over the display rules below (.footer is flex): the first run's parts, the tour. */
+[hidden] {
+  display: none !important;
 }
 
 html,

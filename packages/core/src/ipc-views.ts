@@ -90,12 +90,14 @@ export interface WheelPan {
  * How the preload shows a slide or heading. reveal: Reveal.slide(h, v) in the page's world (integers only);
  * hash: `location.hash`; scroll: the n-th 9.4 scroll block into view; heading: the n-th of `h1, h2, h3`
  * (SlideIndexEntry.heading) into view; top: the top of the page (a document's text before its first heading).
- * Index decks are moved by main's own keys (NavReplay).
+ * Index decks are moved by main's own keys (NavReplay). `replace` on a hash puts the URL hash back with
+ * history.replaceState (no hashchange): after a hash goto the deck did not follow (it writes its hash but never
+ * reads it, review finding 17), the URL names the slide the deck shows again before main falls back to keys.
  */
 export type GotoRequest =
   | { kind: 'top' }
   | { kind: 'reveal'; h: number; v: number }
-  | { kind: 'hash'; hash: string }
+  | { kind: 'hash'; hash: string; replace?: boolean }
   | { kind: 'scroll'; index: number }
   | { kind: 'heading'; index: number };
 

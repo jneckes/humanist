@@ -166,6 +166,22 @@ export class ProbeCopy implements ServedDoc {
       throw new ProbeRefused(`the probe copy ${name} could not be created (${e instanceof Error ? e.message : String(e)})`);
     }
     const copy = new ProbeCopy(docId, name, original.folderReal, p, original);
+    // 9.9 Derived files keep the marker: the copy is marked right after it is created, while it is still
+    // empty, so a run killed at any later point leaves a marked copy, never the deck's bytes without the
+    // marker (review finding 30). A marker belongs to the inode, so the bytes written next keep it.
+    if (original.realpath !== undefined) {
+      try {
+        await (opts.mark ?? ((c: string, src: DerivedSource) => markDerivedFile(c, src)))(p, {
+          realpath: original.realpath,
+          marker: original.marker ?? null,
+          protectedView: original.trust() === 'protected',
+        });
+      } catch (e) {
+        await fh.close().catch(() => undefined);
+        copy.removeSync();
+        throw new ProbeRefused(`the probe copy ${name} could not be given the deck's internet marker (${e instanceof Error ? e.message : String(e)})`);
+      }
+    }
     try {
       await fh.writeFile(original.bytes);
       await fh.sync();
@@ -175,18 +191,6 @@ export class ProbeCopy implements ServedDoc {
       throw new ProbeRefused(`the probe copy ${name} could not be written (${e instanceof Error ? e.message : String(e)})`);
     }
     await fh.close();
-    if (original.realpath !== undefined) {
-      try {
-        await (opts.mark ?? ((c: string, src: DerivedSource) => markDerivedFile(c, src)))(p, {
-          realpath: original.realpath,
-          marker: original.marker ?? null,
-          protectedView: original.trust() === 'protected',
-        });
-      } catch (e) {
-        copy.removeSync();
-        throw new ProbeRefused(`the probe copy ${name} could not be given the deck's internet marker (${e instanceof Error ? e.message : String(e)})`);
-      }
-    }
     return copy;
   }
 

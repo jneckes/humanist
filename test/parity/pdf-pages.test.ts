@@ -12,7 +12,7 @@ vi.mock('electron', () => ({
 import { PDFDocument, rgb } from 'pdf-lib';
 import { RasterPdf, bgraToRgb } from '../../packages/app/src/main/pdf';
 import { comparePixels } from './harness/compare';
-import { decodePageImage, findPdftoppm, parsePpm, pdfPages, rasterisePage } from './harness/pdf-pages';
+import { PAGE_SIZE_TOLERANCE_PT, decodePageImage, findPdftoppm, pageSizeMismatches, parsePpm, pdfPages, printedVerdict, rasterisePage } from './harness/pdf-pages';
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-parity-pdf-'));
 afterAll(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -64,6 +64,54 @@ describe('raster pages', () => {
     expect(() => decodePageImage({ width: 1, height: 1, colorSpace: 'DeviceGray', bitsPerComponent: 8, filter: null, data: new Uint8Array(1) })).toThrow(/unsupported/);
     expect(() => decodePageImage({ width: 1, height: 1, colorSpace: 'DeviceRGB', bitsPerComponent: 8, filter: 'DCTDecode', data: new Uint8Array(3) })).toThrow(/filter/);
     expect(() => decodePageImage({ width: 2, height: 2, colorSpace: 'DeviceRGB', bitsPerComponent: 8, filter: null, data: new Uint8Array(3) })).toThrow(/too few/);
+  });
+});
+
+// Review finding 37: the verdict on pages Chromium printed (print CSS, documents) compares every page's size with
+// the plain print's, with pdftoppm or without it; without it, the page count alone passed two PDFs whose pages
+// differed by 25% (test/parity/fixtures/page-size-diverge.html), while the result said sizes were compared.
+describe('printed pages: page sizes', () => {
+  /** A PDF of `n` vector pages of `w` × `h` pt, as Chromium prints them (no image). */
+  async function printed(n: number, w: number, h: number): Promise<Uint8Array> {
+    const doc = await PDFDocument.create();
+    for (let i = 0; i < n; i++) doc.addPage([w, h]).drawRectangle({ x: 10, y: 10, width: w / 2, height: h / 2, color: rgb(0.2, 0.3, 0.4) });
+    return doc.save();
+  }
+
+  it('two PDFs of the same page count and different page sizes fail without pdftoppm, and say what was compared', async () => {
+    const bl = await pdfPages(await printed(3, 960, 540));
+    const plain = await pdfPages(await printed(3, 1200, 675.12));
+    const v = printedVerdict({ mode: 'print-css', pages: bl.pageCount, expectedPages: 3, plainPages: plain.pageCount, sizes: { blueline: bl.sizes, plain: plain.sizes }, pageStats: null });
+    expect(v.pageCountOk).toBe(true);
+    expect(v.sizesOk).toBe(false);
+    expect(v.pass).toBe(false);
+    expect(v.sizeMismatches).toEqual([0, 1, 2].map((page) => ({ page, blueline: { w: 960, h: 540 }, plain: { w: 1200, h: 675.12 } })));
+    expect(v.compared).toMatch(/size/);
+    expect(v.compared).toMatch(/pixels not compared: pdftoppm/);
+    // With pdftoppm and every page's pixels within the gate (rasterising scales both to Blueline's size), still a fail.
+    const withPixels = printedVerdict({ mode: 'print-css', pages: 3, expectedPages: 3, plainPages: 3, sizes: { blueline: bl.sizes, plain: plain.sizes }, pageStats: [0, 1, 2].map((page) => ({ page, pass: true })) });
+    expect(withPixels.pass).toBe(false);
+    expect(withPixels.compared).toMatch(/rasterised by pdftoppm/);
+  });
+
+  it('pages of the same size pass on count and size without pdftoppm; the pixels decide with it', async () => {
+    const bl = await pdfPages(await printed(2, 612, 792));
+    const plain = await pdfPages(await printed(2, 612, 792));
+    const sizes = { blueline: bl.sizes, plain: plain.sizes };
+    expect(printedVerdict({ mode: 'document', pages: 2, expectedPages: 2, plainPages: 2, sizes, pageStats: null })).toMatchObject({ pageCountOk: true, sizesOk: true, sizeMismatches: [], pass: true });
+    expect(printedVerdict({ mode: 'document', pages: 2, expectedPages: 2, plainPages: 2, sizes, pageStats: [{ page: 0, pass: true }, { page: 1, pass: false }] }).pass).toBe(false);
+    // A page the comparison never reached is not a pass.
+    expect(printedVerdict({ mode: 'document', pages: 2, expectedPages: 2, plainPages: 2, sizes, pageStats: [{ page: 0, pass: true }] }).pass).toBe(false);
+    // Page count: a document's expected count is the plain print's.
+    expect(printedVerdict({ mode: 'document', pages: 2, expectedPages: 3, plainPages: 3, sizes, pageStats: null })).toMatchObject({ pageCountOk: false, pass: false });
+  });
+
+  it('sizes agree within half a point (Chromium prints 900 px as 675.12 pt)', () => {
+    expect(PAGE_SIZE_TOLERANCE_PT).toBe(0.5);
+    expect(pageSizeMismatches([{ w: 1200, h: 675 }], [{ w: 1200, h: 675.12 }])).toEqual([]);
+    expect(pageSizeMismatches([{ w: 1200, h: 675 }], [{ w: 1200.6, h: 675 }])).toHaveLength(1);
+    // A4 against Letter.
+    expect(pageSizeMismatches([{ w: 595.28, h: 841.89 }], [{ w: 612, h: 792 }])).toEqual([{ page: 0, blueline: { w: 595.28, h: 841.89 }, plain: { w: 612, h: 792 } }]);
   });
 });
 

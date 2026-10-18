@@ -18,7 +18,7 @@ import {
 import { FilesDeckToMain, type DeckBusy, type ViewStateReply } from '@blueline/core/ipc-files';
 import { ViewsDeckToMain, type DesignReport, type PageStep, type WheelPan } from '@blueline/core/ipc-views';
 import { validateDropRefused } from './drop';
-import { validateDeckBusy, validateViewStateReply } from './view-state';
+import { validateDeckBusy, validateViewStateApplied, validateViewStateReply } from './view-state';
 import { validateDesignReport, validatePageStep, validateWheelPan } from './views';
 import {
   DeckIpc,
@@ -50,6 +50,8 @@ export interface DeckViewHandlers {
   viewState?(from: DeckSender, p: ViewStateReply): void;
   /** Added by views (6.6): what holds a reload back (an edit, a card with unsaved input). */
   busy?(from: DeckSender, p: DeckBusy): void;
+  /** Added by batch A (6.6; review finding 20): the reloaded page finished applying its view state. No payload. */
+  viewStateApplied?(from: DeckSender): void;
   /** Added by views (6.1): a file drag was refused on the deck view (no payload: 9.1, never a path). */
   dropRefused?(from: DeckSender): void;
   /** Added by views (6.9): the design size the page measured. */
@@ -94,6 +96,7 @@ export function deckRouter(): DeckIpc {
   // Phase 1 (views wires the files-lifecycle and views channels). The deck view only: render views have no UI.
   d.on(FilesDeckToMain.viewState, validateViewStateReply, route('viewState'), { kinds: ['deck'] });
   d.on(FilesDeckToMain.busy, validateDeckBusy, route('busy'), { kinds: ['deck'] });
+  d.on(FilesDeckToMain.viewStateApplied, validateViewStateApplied, (from) => route('viewStateApplied')(from, undefined), { kinds: ['deck'] });
   d.on(FilesDeckToMain.dropRefused, validateDropRefused, (from) => route('dropRefused')(from, undefined), { kinds: ['deck', 'diagnostics'] });
   d.on(ViewsDeckToMain.design, validateDesignReport, route('design'), { kinds: ['deck'] });
   d.on(ViewsDeckToMain.pageStep, validatePageStep, route('pageStep'), { kinds: ['deck'] });

@@ -22,11 +22,14 @@ import {
   nativeTheme,
   screen,
   session,
+  webContents as allWebContents,
   type Input,
   type MenuItemConstructorOptions,
+  type Rectangle,
   type Session,
   type WebContents,
 } from 'electron';
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   MainToDeck,
@@ -58,12 +61,13 @@ import {
   type ZoomMode,
 } from '@blueline/core/ipc-views';
 import { DEFAULT_DESIGN } from '@blueline/core/slides';
-import { toClientMap } from '@blueline/core/mapper';
+import { completeMap, isMapComplete, toClientMap } from '@blueline/core/mapper';
+import type { DeckMap } from '@blueline/core/types';
 import type { Person } from '@blueline/core/types';
 import { revealLabel, type AppAction } from './actions';
 import { attachDeckView, shellRouter } from './channels';
 import { matchAppChord, SwallowedKeys } from './chords';
-import type { BlDocument, DocumentRegistry } from './documents';
+import type { BlDocument, DocumentRegistry, OpenDecision } from './documents';
 import { DROP_REFUSED_TEXT, RefusedDropNotice } from './drop';
 import { findOnSlide, findResponse, highlightMatch, hitFor, validateFindArgs, validateFindShowArgs } from './find';
 import { validateNoArgs, validateSetMode, type ArgsValidator, type ShellSender } from './ipc-guard';
@@ -80,12 +84,13 @@ import {
   acceleratorKeyFor,
   disposeRenderer,
   noteDocumentWrite,
+  renderHost,
   renderTargetFor,
   type RenderTarget,
 } from './render-service';
 import { learnDeckNav, type SaveEvent, type SessionStore } from './session-store';
 import { buildSlideIndex, cachedSlideIndex } from './slide-index';
-import { cancelThumbnails, renderThumbnails } from './thumbnails';
+import { cancelThumbnails, parseThumbFileName, renderThumbnails, thumbsDir } from './thumbnails';
 import {
   installDeckSessionPolicy,
   installDeckWebContentsPolicy,
@@ -97,7 +102,7 @@ import {
   type DeckWebContentsHandle,
   type DeckWebContentsOptions,
 } from './trust-hooks';
-import { ReloadCoordinator, ViewStateRequests } from './view-state';
+import { ReloadCoordinator, ViewStateRequests, reopenForTrust, trustDifferences, type WindowTrust } from './view-state';
 import {
   acceptDesignReport,
   computeViewLayout,
@@ -112,11 +117,22 @@ import {
   validateShellCommand,
   validateShowEntry,
   viewKindOf,
+  type BrokenGotos,
   type ViewLayout,
 } from './views';
 import { watchDeck, type DeckWatcher } from './watcher';
 
 /** How long a motion reload waits for a card the mode change closed to send its text. */
+/**
+ * D-9 (review finding 31): the map's Strategy 2 (literals, scripts, keys; core mapper.ts) runs after the deck
+ * view's first contentful paint, not while main streams the body. An isolated world of the deck page (not the
+ * page's, not the preload's; 1029 is the render agent's, 1031 pdf-command's) waits for the paint entry; main
+ * waits at most MAP_AFTER_PAINT_MAX_MS whatever the page does. Anything that reads the map first completes it then.
+ */
+const MAP_AFTER_PAINT_WORLD = 1061;
+const MAP_AFTER_PAINT_MAX_MS = 3000;
+const AFTER_FIRST_PAINT =
+  "new Promise(function (r) { try { var o = new PerformanceObserver(function (l) { if (l.getEntriesByName('first-contentful-paint').length) { o.disconnect(); r(true); } }); o.observe({ type: 'paint', buffered: true }); } catch (e) { r(false); } setTimeout(function () { r(false); }, 3000); })";
 const MOTION_RELOAD_DELAY_MS = 250;
 /** A reloaded page that never completes its handshake is given up after this long (the reload still happened). */
 const RELOAD_HANDSHAKE_MS = 15_000;
@@ -126,6 +142,11 @@ const REPLAY_WAIT_MS = 1000;
 const REPLAY_PATIENCE = 4;
 /** After a goto, how long the slide watcher may take to report the new slide. */
 const GOTO_WAIT_MS = 1500;
+/**
+ * D-1: after an external change the file's internet marker is read again once more this long after the first
+ * decision: some browsers set the quarantine attribute or Zone.Identifier just after the rename.
+ */
+const LATE_MARKER_MS = 500;
 /**
  * A page step (PageUp or PageDown the deck did not use) is taken only this soon after main saw that key reach the
  * deck view from the user, and a wheel pan only this soon after a wheel: the deck view's messages are written by
@@ -180,6 +201,41 @@ export interface DocWindowDeps {
   onModeChange?(w: DocWindow, mode: AppMode): void;
   /** Added by views: Settings › Trust from the trust bar's overflow. */
   openSettings?(pane: 'general' | 'trust'): void;
+  /**
+   * Added by batch A (review finding 0, lead decision D-1): 6.10's decision for this file as it is on disk now,
+   * the same one an open makes (controller decideTrust: folders.ts resolveOpenTrust with the folder lists, the
+   * strict option and trust.json). Run on every external change; without it a change reloads in place.
+   */
+  decideTrust?(realpath: string, requestedProtected: boolean): Promise<OpenDecision>;
+  /** Added by batch A (D-1): close this window and open its file again at the same place (the controller). */
+  reopen?(w: DocWindow, r: ReopenRequest): void;
+  /** Added by batch A (D-1): the open asked for Protected view (`--protected`, File › Open in Protected View). */
+  protectedRequested?: boolean;
+  /** Added by batch A (D-1): what a window opened by reopen restores. */
+  restore?: RestoreOptions;
+}
+
+/** D-1: a window asks the controller to open its file again, with a fresh decision, where it was. */
+export interface ReopenRequest {
+  requestedProtected: boolean;
+  bounds: Rectangle;
+  state: DeckViewState | null;
+  mode: AppMode;
+  /** Shown in the new window. */
+  notice: string;
+}
+
+/** D-1: what a reopened window restores: its place, its view state, its mode, and a notice. */
+export interface RestoreOptions {
+  bounds?: Rectangle;
+  state?: DeckViewState | null;
+  mode?: AppMode;
+  notice?: string;
+  /**
+   * The render products of this version were (or may have been) made under another trust policy: drop them and
+   * build them again (review finding 15).
+   */
+  rebuildProducts?: boolean;
 }
 
 let shellProtocolInstalled = false;
@@ -437,6 +493,8 @@ export class DocWindow {
   private inits = 0;
   /** Waiters for the next handshake (a reload resolves when the new page has its init). */
   private initWaiters: (() => void)[] = [];
+  /** Maps whose completion after first paint is scheduled (D-9), so a reload before it schedules it once. */
+  private readonly mapCompleting = new WeakSet<DeckMap>();
 
   // ----- views (6.9)
   private zoomMode: ZoomMode = 'fit';
@@ -463,6 +521,19 @@ export class DocWindow {
   /** The user's last PageUp/PageDown into the deck view, and last wheel (see PAGE_STEP_WINDOW_MS). */
   private lastPageKey: { dir: 1 | -1; at: number } | null = null;
   private lastWheelAt = 0;
+  /** Gotos this document's deck was seen not to follow; it is moved by its keys instead (review finding 17). */
+  private readonly brokenGotos: BrokenGotos = {};
+  /** The deck view had the keyboard when its last load started: it gets it back when the load ends (finding 18). */
+  private focusDeckAfterLoad = true;
+  /** The webContents that had the keyboard when the deck's last load started, when it was not the deck. */
+  private focusBeforeLoad: WebContents | null = null;
+  /**
+   * 6.6 after a reload (review finding 20): the page has not yet said it applied the view state, and main's key
+   * replay of an index deck's slide has not ended. Until both are done, a reload saves the restored state again.
+   */
+  private restoreWaits = { page: false, keys: false };
+  /** The deck's kind was known when the restore was sent (a reload in place), not a window opened again. */
+  private restoreKindKnown = true;
 
   // ----- render products (6.7, 6.9)
   private indexJob: IndexJob | null = null;
@@ -480,6 +551,26 @@ export class DocWindow {
   /** Reloads of the deck view run one at a time (a file change, Allow network, reduced motion). */
   private reloadChain: Promise<void> = Promise.resolve();
   private readonly refusedDrops = new RefusedDropNotice();
+  /** D-1: trust decisions after external changes run one at a time. */
+  private trustChain: Promise<void> = Promise.resolve();
+  /** D-1: the newest external change not yet decided on (its bytes are not served before the decision). */
+  private undecided: { bytes: Uint8Array; version: string } | null = null;
+  /**
+   * D-1: the decision for the file on disk differs from this window's: the next reload (under 6.6's deferral
+   * rules) reopens the file instead. `bytes`: an external change that was never shown here.
+   */
+  private trustChange: { decision: OpenDecision | null; why: string; bytes: { bytes: Uint8Array; version: string } | null } | null = null;
+  private lateTrustTimer: ReturnType<typeof setTimeout> | null = null;
+  /** D-1: the window is closing to open its file again. */
+  private reopening = false;
+  /** The shell page finished loading once; toasts before that wait in earlyToasts. */
+  private shellLoaded = false;
+  private earlyToasts: { text: string; kind: 'info' | 'warn' | 'error' }[] = [];
+  /** D-1: what this window restores (it was opened by a reopen). Cleared once applied. */
+  private restoreAtOpen: RestoreOptions | null;
+  /** Review finding 15: the next products of this version are built again (they were made under another policy). */
+  private rebuildProductsNext = false;
+  private rebuildStarted = false;
   /** What the render products' callbacks reach (renderTarget, startProducts); cleared when the window closes. */
   private readonly productsLive: { win: DocWindow | null } = { win: null };
 
@@ -491,6 +582,12 @@ export class DocWindow {
     });
     this.readingWidth = deps.session.session.settings?.readingWidth === true;
     this.productsLive.win = this;
+    // D-1: a window opened again after its file's trust changed keeps the mode it had where it still applies.
+    this.restoreAtOpen = deps.restore ?? null;
+    this.rebuildProductsNext = deps.restore?.rebuildProducts === true;
+    const restoreMode = deps.restore?.mode;
+    if (restoreMode === 'review' || (restoreMode === 'edit' && deps.capabilities.edit && doc.editable())) this.mode = restoreMode;
+    const at = deps.restore?.bounds;
     this.policyState = {
       live: {
         doc,
@@ -519,8 +616,7 @@ export class DocWindow {
     declareShellChannels();
 
     this.win = new BrowserWindow({
-      width: 1440,
-      height: 960,
+      ...(at ? { x: at.x, y: at.y, width: at.width, height: at.height } : { width: 1440, height: 960 }),
       minWidth: 640,
       minHeight: 420,
       show: false,
@@ -570,6 +666,10 @@ export class DocWindow {
         webSecurity: true,
         partition: doc.partition,
         preload: deps.paths.preloadDeck,
+        // The preload runs in every frame too (sandboxed, so still no Node), where it only refuses file drags:
+        // a drag over an <iframe> goes to that frame, never to the top window's guard (9.1; review finding 2;
+        // preload/drop-guard.ts). Main's IPC guard still accepts messages from the main frame only.
+        nodeIntegrationInSubFrames: true,
         additionalArguments: ['--bl-mode=deck', ...(deps.test ? ['--bl-test=1'] : [])],
         devTools: deps.devTools,
         navigateOnDragDrop: false,
@@ -598,6 +698,7 @@ export class DocWindow {
       },
       note: (_f, op) => this.onNoteOp(op),
       viewState: (_f, p) => this.viewRequests.onReply(p),
+      viewStateApplied: () => this.onViewStateApplied(),
       busy: (_f, p) => this.onBusy(p),
       dropRefused: () => {
         if (this.refusedDrops.take()) this.toast(DROP_REFUSED_TEXT, 'info');
@@ -607,6 +708,11 @@ export class DocWindow {
       wheel: (_f, p) => this.onWheel(p.dx, p.dy),
     });
     this.webPolicy = installDeckWebContentsPolicy(deckWc, this.policies.view);
+    // File drops are refused by the deck preload in every frame it reaches (drop-guard.ts; D-4). Chromium drag
+    // interception (CDP Input.setInterceptDrags) is deliberately not used: it only holds drags the page itself
+    // starts (RenderWidgetHostImpl::StartDragging), never a drag from the desktop (DragTargetDragEnter), and a
+    // held drag that is never continued leaves Blink ignoring every key and click on the deck until a reload
+    // (test/e2e/views-drag-inpage.spec.ts).
     deckWc.on('before-input-event', (event, input) => this.onDeckInput(event, input));
     deckWc.on('input-event', (_e, ev) => {
       if (ev.type === 'mouseWheel') this.lastWheelAt = Date.now();
@@ -621,8 +727,20 @@ export class DocWindow {
       if (isMainFrame && code !== -3) this.toast(`${doc.fileName} could not be shown (${desc}).`, 'error');
     });
     deckWc.on('did-navigate', () => this.applyZoom(true));
+    // Review finding 18: a load gives the deck the keyboard only if it had it when the load started (the first
+    // load: it did), and never while the Find bar is open: an auto-reload must not take typing from the shell.
+    // Chromium itself moves the keyboard to a view that loads a new document, so the webContents that had it
+    // (the shell's Find bar) gets it back when the load ends.
+    deckWc.on('did-start-navigation', (details) => {
+      if (!details.isMainFrame || details.isSameDocument || this.inits === 0) return;
+      const f = allWebContents.getFocusedWebContents();
+      this.focusDeckAfterLoad = f === deckWc;
+      this.focusBeforeLoad = f && f !== deckWc ? f : null;
+    });
     deckWc.on('did-finish-load', () => {
-      if (this.win.isFocused()) deckWc.focus();
+      if (this.focusDeckAfterLoad && !this.findOpen) {
+        if (this.win.isFocused()) deckWc.focus();
+      } else this.keyboardBack();
       this.onDeckLoaded();
     });
     if (deps.test) {
@@ -633,8 +751,12 @@ export class DocWindow {
     this.reload = new ReloadCoordinator(
       {
         capture: () => this.viewRequests.capture(),
-        reload: (_version, state) => this.chainReload(() => this.reloadDeck(state?.hash ?? '')),
-        apply: (state) => this.applyViewState(state),
+        // D-1: a trust change reopens the file instead (under the same deferral rules: the old content keeps
+        // running under the old trust until then, and the new content never runs under it).
+        reload: (_version, state) => (this.trustChange ? this.reopenFile(state) : this.chainReload(() => this.reloadDeck(state?.hash ?? ''))),
+        apply: (state) => {
+          if (!this.reopening) this.applyViewState(state);
+        },
         onDeferred: (on) => {
           this.reloadDeferred = on;
           this.pushState();
@@ -701,7 +823,8 @@ export class DocWindow {
     }
     // Closed while the proxy was set up: the deck view is gone (its webContents reads as undefined then).
     if (this.closing || !this.liveDeck()) return;
-    void this.loadDeck();
+    // D-1: a window opened again loads with the hash it had (a hash deck shows its slide from it).
+    void this.loadDeck(this.restoreAtOpen?.state?.hash ?? '');
   }
 
   /**
@@ -751,7 +874,7 @@ export class DocWindow {
     const wc = this.liveDeck();
     if (!wc) return;
     try {
-      await wc.loadURL(deckUrl(this.doc.docId, this.doc.fileName) + hash);
+      await wc.loadURL(deckUrl(this.doc.docId, this.doc.fileName) + (hash.startsWith('#') ? hash : ''));
     } catch (e) {
       // did-fail-load reports it; an aborted load (a reload replacing it) is not an error.
       this.deps.log(`deck load: ${errText(e)}`);
@@ -774,23 +897,62 @@ export class DocWindow {
 
   private sendInit(): void {
     const doc = this.doc;
+    const pending = doc.utf8 && !isMapComplete(doc.map);
     const init: DeckInit = {
       mode: 'deck',
       appMode: this.mode,
       trust: doc.trust(),
       capabilities: { ...this.deps.capabilities },
       editingAllowed: doc.editable(),
-      // MapUpdate: null for a deck that is not UTF-8 (every node is `none`, 9.2 rule 1).
-      map: doc.utf8 ? toClientMap(doc.map) : null,
+      // MapUpdate: null for a deck that is not UTF-8 (every node is `none`, 9.2 rule 1), and null with mapPending
+      // while the map's second half is still to run (D-9): the complete map follows on MainToDeck.map.
+      map: doc.utf8 && !pending ? toClientMap(doc.map) : null,
+      mapPending: pending,
       notes: this.notes.notes.slice(),
       userName: this.deps.person().name,
     };
     this.sendDeck(MainToDeck.init, init);
+    if (pending) this.completeMapAfterPaint(doc.map);
     this.inits++;
     // A new page has its own pan state (100%, Fill width).
     this.panNow = '';
     this.applyPan();
     for (const w of this.initWaiters.splice(0)) w();
+    // D-1: a window opened again after a trust change restores the view state the old window had (6.6).
+    const restore = this.restoreAtOpen;
+    if (this.inits === 1 && restore?.state) {
+      const st = restore.state;
+      restore.state = null;
+      this.reload.applyState(st);
+    }
+  }
+
+  /**
+   * D-9: completes the map once the deck view has its first contentful paint (MAP_AFTER_PAINT_MAX_MS at the
+   * latest) and sends the complete client map. The deck never receives a partial map: its init said mapPending.
+   * A map that something else read meanwhile is complete already; a replaced map (a new version) is left alone,
+   * since its own init or MainToDeck.map carries it.
+   */
+  private completeMapAfterPaint(map: DeckMap): void {
+    if (this.mapCompleting.has(map)) return;
+    this.mapCompleting.add(map);
+    const wc = this.liveDeck();
+    const painted = wc
+      ? wc.executeJavaScriptInIsolatedWorld(MAP_AFTER_PAINT_WORLD, [{ code: AFTER_FIRST_PAINT }]).catch(() => false)
+      : Promise.resolve(false);
+    void Promise.race([painted, new Promise((r) => setTimeout(r, MAP_AFTER_PAINT_MAX_MS))]).then(() => {
+      setTimeout(() => {
+        if (this.closing || this.doc.map !== map) return;
+        try {
+          completeMap(map);
+        } catch (e) {
+          // A Strategy 2 failure (none known) is thrown at every read, as the eager build threw it.
+          this.deps.log(`deck map: ${errText(e)}`);
+          return;
+        }
+        this.sendDeck(MainToDeck.map, toClientMap(map));
+      }, 0);
+    });
   }
 
   get handshakes(): number {
@@ -821,12 +983,45 @@ export class DocWindow {
     }
     this.pushState();
     for (const w of this.slideWaiters.splice(0)) w(p);
-    // 6.6: after a reload of an index deck, main's keys bring it back to its slide.
+    // 6.6: after a reload of an index deck, main's keys bring it back to its slide. The restore counts as done
+    // only when that replay has ended (review finding 20).
+    // (A page's first reports can say another kind while its own script has not run yet: only 'index' counts.)
     if (this.restoreSlide !== null && p.navKind === 'index' && p.count > this.restoreSlide) {
       const target = this.restoreSlide;
       this.restoreSlide = null;
-      if (p.current !== target) void this.replayKeys(target, ++this.navToken);
+      if (p.current !== target) {
+        const token = ++this.navToken;
+        void this.replayKeys(target, token).finally(() => this.keysRestored(token));
+      } else this.keysRestored(this.navToken);
     }
+  }
+
+  /** FilesDeckToMain.viewStateApplied: the page restored the view state (review finding 20). */
+  private onViewStateApplied(): void {
+    if (!this.restoreWaits.page) return;
+    this.restoreWaits.page = false;
+    // A window opened again did not know its deck's kind when it sent the state: the page has settled now, and
+    // a deck that is not an index deck restored its slide itself (D-1).
+    if (!this.restoreKindKnown && this.restoreSlide !== null && this.slides?.navKind !== 'index') {
+      this.restoreSlide = null;
+      this.restoreWaits.keys = false;
+    }
+    this.restoreFinished();
+  }
+
+  private keysRestored(token: number): void {
+    // Only the current replay's completion ends a restore. When two external writes land close together, the
+    // first reload's replay is superseded by the second's (its token is stale); its completion must not clear
+    // the second restore's keys wait, or ReloadCoordinator.restoreDone() would fire while the second replay is
+    // still pressing keys and a third write could capture the half-restored slide (review finding 20).
+    if (token !== this.navToken) return;
+    if (!this.restoreWaits.keys) return;
+    this.restoreWaits.keys = false;
+    this.restoreFinished();
+  }
+
+  private restoreFinished(): void {
+    if (!this.restoreWaits.page && !this.restoreWaits.keys) this.reload.restoreDone();
   }
 
   private onNoteOp(op: Parameters<NotesStore['apply']>[0]): void {
@@ -982,6 +1177,8 @@ export class DocWindow {
     this.pushState();
     // The served copy and its headers change (no connect-src 'none', resource hints kept): reload it.
     if (!this.closing) await this.reloadInPlace('allow network');
+    // The thumbnails and the slide index were rendered without the network: render them again (finding 15).
+    if (!this.closing) await this.rebuildProducts('allow network');
   }
 
   /** 6.10 Enable editing, remembered for this file and marker. Network keeps its current policy. */
@@ -1004,13 +1201,56 @@ export class DocWindow {
     void this.deps.rememberTrust(this.doc.realpath, this.doc.marker, change).catch((e) => this.deps.log(`trust.json not saved: ${errText(e)}`));
   }
 
-  /** Settings › Trust changed (the strict option, the allowlist, folders): re-apply the partition's policy now. */
-  async reapplyPolicy(): Promise<void> {
+  /**
+   * Settings › Trust changed (the strict option, the allowlist, folders): re-apply the partition's policy now.
+   * The strict option and the allowlist shape what a Protected render without the network can load, so its
+   * render products are made again (review finding 15); folders apply at the next open (6.10), and a Trusted
+   * window or one with Allow network on is not affected by either. `change` names the setting when the caller
+   * knows it (else the products are made again whenever they could differ).
+   */
+  async reapplyPolicy(change?: 'folders' | 'strict' | 'allowlist'): Promise<void> {
     try {
       await this.sessionPolicy?.update();
     } catch (e) {
       this.deps.log(`policy update failed: ${errText(e)}`);
     }
+    if (change !== 'folders' && this.doc.servedProtected() && !this.closing) await this.rebuildProducts('trust settings');
+  }
+
+  /**
+   * Review finding 15: the render products are cached by version only (6.9: sha256, slide, width), and a render
+   * depends on the network policy. When the policy changes under the same bytes (Allow network, Settings ›
+   * Trust, a window opened again with another trust), the current version's thumbnails are deleted and the
+   * index and thumbnails are built again under the policy now (buildSlideIndex force: past both caches).
+   */
+  private async rebuildProducts(why: string): Promise<void> {
+    if (this.closing) return;
+    const version = this.doc.version;
+    const fileKey = this.doc.fileKey;
+    // Until the files are gone, nothing builds from the caches (startProducts waits for this run).
+    this.rebuildProductsNext = true;
+    this.rebuildStarted = true;
+    cancelThumbnails(fileKey);
+    this.indexJob?.controller.abort();
+    this.indexJob = null;
+    this.thumbs.clear();
+    try {
+      const dir = thumbsDir(renderHost().userData, fileKey);
+      const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
+      await Promise.all(names.filter((n) => parseThumbFileName(n)?.version === version).map((n) => fs.promises.rm(path.join(dir, n), { force: true })));
+    } catch (e) {
+      this.deps.log(`thumbnails not cleared: ${errText(e)}`);
+    }
+    if (this.closing) return;
+    if (this.doc.version !== version) {
+      // A newer version came meanwhile: its products are built as usual.
+      this.rebuildProductsNext = false;
+      this.rebuildStarted = false;
+      this.startProducts(false);
+      return;
+    }
+    this.deps.log(`render products made again (${why})`);
+    this.startProducts(true);
   }
 
   dismissTrustBar(): void {
@@ -1095,9 +1335,18 @@ export class DocWindow {
     design: { w: number; h: number };
     container: { x: number; y: number; width: number; height: number } | null;
     deck: { x: number; y: number; width: number; height: number } | null;
+    /** Gotos this deck did not follow (it is moved by its keys; review finding 17). */
+    brokenGotos: BrokenGotos;
+    /** A reload's view state is still being restored (review finding 20). */
+    restoring: boolean;
+    /** D-1: a trust change waits to reopen the file (6.6 deferral), or the window is reopening it. */
+    trustChange: 'none' | 'waiting' | 'reopening';
   } {
     const v = this.viewNow;
     return {
+      brokenGotos: { ...this.brokenGotos },
+      restoring: this.reload.restoring,
+      trustChange: this.reopening ? 'reopening' : this.trustChange ? 'waiting' : 'none',
       kind: this.viewKind(),
       zoomMode: this.zoomMode,
       zoom: v?.zoom ?? 1,
@@ -1281,7 +1530,7 @@ export class DocWindow {
    */
   async showEntry(entry: number, o: { focus?: boolean } = {}): Promise<boolean> {
     const index = this.index && this.index.version === this.doc.version ? this.index : null;
-    const plan = navPlanFor(entry, index, this.slides);
+    const plan = navPlanFor(entry, index, this.slides, this.brokenGotos);
     if (!plan) return false;
     const token = ++this.navToken;
     if (o.focus) this.focusDeck();
@@ -1289,7 +1538,14 @@ export class DocWindow {
     return await this.gotoAndWait(plan.goto, entry, token);
   }
 
+  /**
+   * Sends a goto and waits for the slide. A hash or reveal goto the deck did not follow within GOTO_WAIT_MS
+   * (review finding 17: decks that write their hash on every move but read it only at load, five of Josh's
+   * twelve) puts the URL hash back and moves the deck with its own keys instead, as the index walk does
+   * (replayKeys, Session.deckNav); the document then uses keys at once for that kind (brokenGotos).
+   */
   private async gotoAndWait(req: GotoRequest, entry: number, token: number): Promise<boolean> {
+    const priorHash = this.urlHash();
     this.sendDeck(MainToDeckViews.goto, req);
     // Documents: the heading is in view as soon as the preload scrolled; the slide model may not change.
     if (req.kind === 'heading' || req.kind === 'top' || this.viewKind() === 'document') return true;
@@ -1299,7 +1555,45 @@ export class DocWindow {
       const s = await this.nextSlides(end - Date.now());
       if (s && s.current === entry) return true;
     }
-    return this.slides?.current === entry;
+    if (this.slides?.current === entry) return true;
+    if (token !== this.navToken || this.closing || (req.kind !== 'hash' && req.kind !== 'reveal')) return false;
+    this.brokenGotos[req.kind] = true;
+    this.deps.log(`navigation: ${this.doc.fileName} did not follow a ${req.kind} goto; using its keys`);
+    if (req.kind === 'hash' && priorHash !== null) this.sendDeck(MainToDeckViews.goto, { kind: 'hash', hash: priorHash, replace: true } satisfies GotoRequest);
+    return await this.replayKeys(entry, token);
+  }
+
+  /** The deck view's URL hash now ('' for none), or null when it cannot be read. */
+  private urlHash(): string | null {
+    try {
+      const u = this.liveDeck()?.getURL();
+      if (!u) return null;
+      const i = u.indexOf('#');
+      return i < 0 ? '' : u.slice(i);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * After a load the deck should not have taken the keyboard (finding 18): it goes back to the shell while the
+   * Find bar is open, else to the webContents that had it when the load started.
+   */
+  private keyboardBack(): void {
+    const back = this.findOpen && !this.win.isDestroyed() ? this.win.webContents : this.focusBeforeLoad;
+    this.focusBeforeLoad = null;
+    if (!back || back.isDestroyed() || !this.deckHasFocus()) return;
+    try {
+      back.focus();
+    } catch {
+      // gone meanwhile
+    }
+  }
+
+  /** The deck view has the keyboard (the OS window's focused webContents). */
+  private deckHasFocus(): boolean {
+    const wc = this.liveDeck();
+    return !!wc && allWebContents.getFocusedWebContents() === wc;
   }
 
   /** Resolves with the next SlideState report, or null after `ms`. */
@@ -1342,7 +1636,11 @@ export class DocWindow {
     const nav = this.deps.session.session.deckNav;
     const forward = nav?.forward ?? 'ArrowRight';
     const back = nav?.back ?? 'ArrowLeft';
-    this.liveDeck()?.focus();
+    // The keys land in the deck view only while it has focus; the webContents that had the keyboard before
+    // (the shell's Find bar, review finding 18) gets it back afterwards, so Enter goes on to the next result.
+    const before = allWebContents.getFocusedWebContents();
+    const deckWc = this.liveDeck();
+    deckWc?.focus();
     this.replaying++;
     this.sendDeck(MainToDeckViews.navReplay, { active: true });
     try {
@@ -1364,6 +1662,13 @@ export class DocWindow {
       // A newer replay (a second click) may still be pressing keys: the router stays in Read until the last ends.
       this.replaying--;
       if (this.replaying === 0) this.sendDeck(MainToDeckViews.navReplay, { active: false });
+      if (before && before !== deckWc && !before.isDestroyed() && this.replaying === 0 && !this.closing) {
+        try {
+          before.focus();
+        } catch {
+          // gone meanwhile
+        }
+      }
     }
   }
 
@@ -1461,6 +1766,10 @@ export class DocWindow {
         // Closed: Protected, no network (fail closed, as deckPolicies).
         trust: () => live.win?.doc.trust() ?? 'protected',
         networkAllowed: () => live.win?.doc.networkAllowed() ?? false,
+        // The policy the render products are keyed on (review finding 15), so a later open under a different
+        // trust state does not serve products made under this one.
+        strict: () => this.deps.trustSettings?.strict() ?? false,
+        allowlist: () => this.deps.trustSettings?.allowlist() ?? DEFAULT_ALLOWLIST,
       },
       { deckNav: this.deps.session.session.deckNav ?? null },
     );
@@ -1481,6 +1790,19 @@ export class DocWindow {
   private startProducts(force: boolean): void {
     if (this.closing) return;
     const version = this.doc.version;
+    if (this.rebuildProductsNext) {
+      // Products made under another policy must not be read from the caches (finding 15): the first build is
+      // forced, after rebuildProducts deleted this version's thumbnails.
+      if (!force) {
+        if (!this.rebuildStarted) {
+          this.rebuildStarted = true;
+          void this.rebuildProducts('trust changed');
+        }
+        return;
+      }
+      this.rebuildProductsNext = false;
+      this.rebuildStarted = false;
+    }
     if (!force && this.indexJob?.version === version) return;
     this.indexJob?.controller.abort();
     const controller = new AbortController();
@@ -1541,7 +1863,15 @@ export class DocWindow {
 
   /** The shell (re)loaded: it gets the state, and the index and thumbnails it would have missed. */
   private onShellLoaded(): void {
+    this.shellLoaded = true;
     this.pushState();
+    for (const t of this.earlyToasts.splice(0)) this.toast(t.text, t.kind);
+    // D-1: a window opened again says why, once.
+    const notice = this.restoreAtOpen?.notice;
+    if (notice && this.restoreAtOpen) {
+      this.restoreAtOpen.notice = undefined;
+      this.toast(notice, 'warn');
+    }
     const index = this.index;
     if (index && index.version === this.doc.version) {
       const ready: ShellIndexReady = { version: index.version, kind: index.kind, count: index.slides.length, titles: index.slides.map((s) => s.title), designSize: { ...index.designSize } };
@@ -1628,13 +1958,125 @@ export class DocWindow {
   // ------------------------------------------------------------------------------------------- reload (6.6, 9.2)
 
   /**
-   * The watcher saw an external change (9.2 Watcher step 3): the document takes the new bytes (map, version,
-   * served copies; knownHash), the deck gets the new map (Write protocol step 6), and the view reloads in place
-   * through the ReloadCoordinator, at once or when the edit or card is done (6.6).
+   * The watcher saw an external change (9.2 Watcher step 3). First 6.10 is decided again for the file as it is
+   * now (review finding 0, lead decision D-1: a new download saved over an open file brings a new marker, and
+   * must not run under the old window's trust): the new bytes are not served before that decision. When it
+   * matches this window's, the change is taken in place (takeExternalChange) and the marker is read once more
+   * LATE_MARKER_MS later; when it differs, the window opens the file again with a fresh docId and partition
+   * (reopenFile). Blueline's own writes never get here (knownHash).
    */
   private onExternalChange(bytes: Uint8Array, version: string): void {
-    if (this.closing) return;
+    if (this.closing || this.reopening) return;
     noteDocumentWrite(this.doc.fileKey);
+    if (!this.decidesTrust()) {
+      this.takeExternalChange(bytes, version);
+      return;
+    }
+    // The newest change wins; it is decided on (and shown) after the decisions already running.
+    this.undecided = { bytes, version };
+    this.queueTrustCheck(false);
+  }
+
+  /** D-1 needs both the decision and the controller's reopen (the app passes both; unit harnesses may not). */
+  private decidesTrust(): boolean {
+    return !!this.deps.decideTrust && !!this.deps.reopen;
+  }
+
+  /** This window's trust now (view-state.ts WindowTrust). */
+  private windowTrust(): WindowTrust {
+    const d = this.doc;
+    return {
+      trust: d.trust(),
+      reason: d.trustReason,
+      marker: d.marker,
+      markerUncertain: d.markerUncertain,
+      networkAllowed: d.networkAllowed(),
+      editingAllowed: d.editingAllowed(),
+    };
+  }
+
+  /**
+   * Decides 6.10 for the file on disk, after the decisions already queued (D-1). `late`: the second look, a
+   * moment after a change was taken in place (a browser that sets the marker just after its rename).
+   */
+  private queueTrustCheck(late: boolean): void {
+    const run = async (): Promise<void> => {
+      if (this.closing || this.reopening) return;
+      const change = late ? null : this.undecided;
+      if (!late) this.undecided = null;
+      let d: OpenDecision | null = null;
+      try {
+        d = await this.deps.decideTrust!(this.doc.realpath, this.deps.protectedRequested === true);
+      } catch (e) {
+        // Could not decide: open again, so the open decides (when unsure, refuse).
+        this.deps.log(`trust not decided again for ${this.doc.fileName}: ${errText(e)}`);
+      }
+      if (this.closing || this.reopening) return;
+      // A window opened Protected on request keeps its session-only Allow network / Enable editing across an
+      // in-place reload: they are not a trust input (review finding 0 re-verification).
+      const requested = this.deps.protectedRequested === true;
+      const diff = d ? trustDifferences(this.windowTrust(), d, { requested }) : ['undecided'];
+      if (d === null || reopenForTrust(this.windowTrust(), d, { requested })) {
+        // A change that was never shown here stays unshown; the reopened window reads the file itself.
+        const bytes = change ?? this.trustChange?.bytes ?? null;
+        this.trustChange = { decision: d, why: diff.join(', '), bytes };
+        this.deps.log(`trust changed on disk: ${this.doc.fileName} (${diff.join(', ')}); it opens again`);
+        this.reload.requestReload(change?.version ?? this.doc.version, { force: true });
+        return;
+      }
+      if (diff.length > 0) this.deps.log(`trust: ${this.doc.fileName} still Trusted (${diff.join(', ')}): reloads in place`);
+      // The same decision as this window's: a reopen still waiting (6.6 deferral) is no longer needed.
+      const waiting = this.trustChange;
+      this.trustChange = null;
+      const take = change ?? waiting?.bytes ?? null;
+      if (take) {
+        this.takeExternalChange(take.bytes, take.version);
+        this.scheduleLateTrustCheck();
+      }
+    };
+    this.trustChain = this.trustChain.then(run, run).catch((e: unknown) => this.deps.log(`trust check: ${errText(e)}`));
+  }
+
+  private scheduleLateTrustCheck(): void {
+    if (this.lateTrustTimer) clearTimeout(this.lateTrustTimer);
+    this.lateTrustTimer = setTimeout(() => {
+      this.lateTrustTimer = null;
+      this.queueTrustCheck(true);
+    }, LATE_MARKER_MS);
+  }
+
+  /**
+   * D-1: the ReloadCoordinator's turn came (no edit, no card with unsaved input) for a trust change: the
+   * controller closes this window and opens its file again, where it was, with the view state just saved.
+   * The trust bar of the new window states the new reason; a notice says why it opened again.
+   */
+  private async reopenFile(state: DeckViewState | null): Promise<void> {
+    const tc = this.trustChange;
+    if (!tc || this.closing || this.reopening || !this.deps.reopen) return;
+    this.trustChange = null;
+    this.reopening = true;
+    if (this.lateTrustTimer) clearTimeout(this.lateTrustTimer);
+    const d = tc.decision;
+    const view = d === null ? 'view' : d.trust.trust === 'protected' ? 'Protected view' : 'Trusted view';
+    const why = d?.trust.reason ? `: ${d.trust.reason}` : '';
+    const notice = `${this.doc.fileName} changed on disk and its trust changed, so it opened again in ${view}${why}.`;
+    this.deps.log(`reopening ${this.doc.fileName} for its trust (${tc.why})`);
+    this.deps.reopen(this, {
+      requestedProtected: this.deps.protectedRequested === true,
+      bounds: this.win.isDestroyed() ? { x: 0, y: 0, width: 1440, height: 960 } : this.win.getNormalBounds(),
+      state,
+      mode: this.mode,
+      notice,
+    });
+  }
+
+  /**
+   * An external change this window shows in place (9.2 Watcher step 3): the document takes the new bytes (map,
+   * version, served copies; knownHash), the deck gets the new map (Write protocol step 6), and the view reloads
+   * in place through the ReloadCoordinator, at once or when the edit or card is done (6.6).
+   */
+  private takeExternalChange(bytes: Uint8Array, version: string): void {
+    if (this.closing) return;
     try {
       this.doc.replaceContent(bytes);
     } catch (e) {
@@ -1652,7 +2094,10 @@ export class DocWindow {
     this.pushState();
   }
 
-  /** 9.2 Watcher: the file went away (gone) or came back; the window keeps the last version, read-only. */
+  /**
+   * 9.2 Watcher: the file went away (gone) or came back; the window keeps the last version, read-only. A file
+   * that is back is decided on again (D-1): it may be another file, a new download, even with the same bytes.
+   */
   private onFileGone(gone: boolean): void {
     if (this.closing || this.doc.gone === gone) return;
     this.doc.setGone(gone);
@@ -1661,6 +2106,7 @@ export class DocWindow {
     const update: AppModeUpdate = { appMode: this.mode, editingAllowed: this.doc.editable() };
     this.sendDeck(MainToDeck.appMode, update);
     this.relayout(true);
+    if (!gone && this.decidesTrust() && !this.reopening) this.queueTrustCheck(true);
   }
 
   private onBusy(b: DeckBusy): void {
@@ -1678,6 +2124,9 @@ export class DocWindow {
   private async reloadDeck(hash: string): Promise<void> {
     const wc = this.liveDeck();
     if (!wc || this.closing) return;
+    // A reload begins a new restore generation: invalidate any key replay still running from the document being
+    // replaced, so its completion cannot clear this reload's keys wait (review finding 20).
+    this.navToken++;
     const handshake = new Promise<void>((resolve) => {
       const timer = setTimeout(() => {
         const i = this.initWaiters.indexOf(done);
@@ -1704,10 +2153,17 @@ export class DocWindow {
     await handshake;
   }
 
-  /** Sends the saved view state to the reloaded page; an index deck's slide comes back by main's keys. */
+  /**
+   * Sends the saved view state to the reloaded page; an index deck's slide comes back by main's keys (also in a
+   * window opened again, whose deck kind is not known yet: onSlides decides). Until the page confirms and the
+   * replay ends, the restore is running (ReloadCoordinator.applyState; review finding 20).
+   */
   private applyViewState(state: DeckViewState): void {
     this.sendDeck(MainToDeckFiles.applyViewState, state);
-    if (state.slide !== null && this.slides?.navKind === 'index') this.restoreSlide = state.slide;
+    const nav = this.slides?.navKind;
+    this.restoreKindKnown = nav !== undefined;
+    this.restoreSlide = state.slide !== null && (nav === 'index' || nav === undefined) ? state.slide : null;
+    this.restoreWaits = { page: true, keys: this.restoreSlide !== null };
   }
 
   /**
@@ -1718,11 +2174,12 @@ export class DocWindow {
   private reloadInPlace(why: string): Promise<void> {
     return this.chainReload(async () => {
       if (this.closing) return;
-      const state = await this.viewRequests.capture();
+      // The state being restored, if a restore is still running (review finding 20), else the page's.
+      const state = await this.reload.saveState();
       if (this.closing) return;
       this.deps.log(`deck reload (${why})`);
       await this.reloadDeck(state?.hash ?? '');
-      if (state && !this.closing) this.applyViewState(state);
+      if (state && !this.closing) this.reload.applyState(state);
     });
   }
 
@@ -1730,6 +2187,12 @@ export class DocWindow {
 
   toast(text: string, kind: 'info' | 'warn' | 'error' = 'info'): void {
     if (this.win.isDestroyed()) return;
+    // A toast for a window whose shell has not loaded yet (an open that focuses a window being created, D-1's
+    // notice) is shown once it has.
+    if (!this.shellLoaded) {
+      this.earlyToasts.push({ text, kind });
+      return;
+    }
     this.win.webContents.send(MainToShell.toast, { text, kind });
   }
 
@@ -1843,6 +2306,10 @@ export class DocWindow {
     // live in the deck's partition and hold its protocol, so they close before the partition is retired).
     this.watcher?.close();
     this.watcher = null;
+    if (this.lateTrustTimer) clearTimeout(this.lateTrustTimer);
+    this.lateTrustTimer = null;
+    this.undecided = null;
+    this.trustChange = null;
     this.reload.dispose();
     this.viewRequests.dispose();
     this.navToken++;

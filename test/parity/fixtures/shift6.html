@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Parity shift +6</title>
+<!--
+  A negative control of the render-parity harness (test/parity/parity.spec.ts): every colour on every slide is
+  6 levels higher on every channel when the page is not loaded from file://, that is in Blueline's served render
+  only, and as written in the plain file:// render. It stands in for a change on Blueline's side that moves every
+  pixel a little (a colour-managed path on one side, a different blend): the gate's per-channel tolerance of 2
+  (rounding noise) must count every pixel of every slide, so each slide fails. A tolerance of 8 passed it.
+-->
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; font: 48px/1.2 Arial, sans-serif; }
+  [data-slide] { position: absolute; inset: 0; padding: 80px; visibility: hidden; }
+  [data-slide].on { visibility: visible; }
+  #s1 { background: var(--bg1); color: var(--fg1); }
+  #s2 { background: var(--bg2); color: var(--fg2); }
+  #s3 { background: var(--bg3); color: var(--fg3); }
+  .panel { width: 640px; height: 300px; margin-top: 40px; background: var(--panel); }
+</style>
+</head>
+<body>
+<section data-slide class="on" id="s1"><h1>Grey slide</h1><p>Mid grey background, dark text.</p><div class="panel"></div></section>
+<section data-slide id="s2"><h1>Red slide</h1><p>Saturated background, light text.</p><div class="panel"></div></section>
+<section data-slide id="s3"><h1>Light slide</h1><p>Near white background, dark text.</p><div class="panel"></div></section>
+<script>
+  var SHIFT = 6;
+  var served = location.protocol !== 'file:';
+  function rgb(r, g, b) {
+    if (served) { r += SHIFT; g += SHIFT; b += SHIFT; }
+    return 'rgb(' + r + ',' + g + ',' + b + ')';
+  }
+  var st = document.documentElement.style;
+  st.setProperty('--bg1', rgb(128, 128, 128)); st.setProperty('--fg1', rgb(20, 24, 30));
+  st.setProperty('--bg2', rgb(190, 50, 60));   st.setProperty('--fg2', rgb(240, 236, 230));
+  st.setProperty('--bg3', rgb(236, 238, 240)); st.setProperty('--fg3', rgb(30, 34, 40));
+  st.setProperty('--panel', rgb(70, 110, 160));
+  var slides = document.querySelectorAll('[data-slide]'), cur = 0;
+  document.addEventListener('keydown', function (e) {
+    var next = e.key === 'ArrowRight' ? cur + 1 : e.key === 'ArrowLeft' ? cur - 1 : cur;
+    if (next < 0 || next >= slides.length || next === cur) return;
+    slides[cur].classList.remove('on');
+    slides[next].classList.add('on');
+    cur = next;
+  });
+</script>
+</body>
+</html>

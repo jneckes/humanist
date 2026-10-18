@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Timer deck</title>
+<!--
+  A generic deck that writes each slide's paragraph 600 ms after the slide becomes current (a script-timed
+  reveal, the same with reduced motion; decision D-5). The slide index (Find's text) must hold every slide's
+  paragraph, as the thumbnails and PDF pages show it (review finding 11).
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #f5f5f0; overflow: hidden; font: 44px/1.3 Arial, sans-serif; color: #222; }
+  .slide { position: absolute; inset: 0; padding: 80px; box-sizing: border-box; display: none; }
+  .slide.active { display: block; }
+  h1 { font-size: 80px; margin: 0 0 24px; }
+</style>
+</head>
+<body>
+<section class="slide active"><h1>One</h1><p class="later"></p></section>
+<section class="slide"><h1>Two</h1><p class="later"></p></section>
+<section class="slide"><h1>Three</h1><p class="later"></p></section>
+<script>
+  (function () {
+    var slides = [].slice.call(document.querySelectorAll('.slide'));
+    var cur = 0, timer = 0;
+    function reveal() {
+      clearTimeout(timer);
+      var i = cur;
+      timer = setTimeout(function () { slides[i].querySelector('.later').textContent = 'Zebra crossing revealed on slide ' + (i + 1); }, 600);
+    }
+    addEventListener('keydown', function (e) {
+      var n = e.key === 'ArrowRight' || e.key === 'PageDown' ? cur + 1 : e.key === 'ArrowLeft' || e.key === 'PageUp' ? cur - 1 : cur;
+      if (n === cur || n < 0 || n >= slides.length) return;
+      slides[cur].classList.remove('active');
+      slides[cur].querySelector('.later').textContent = '';
+      cur = n;
+      slides[cur].classList.add('active');
+      reveal();
+    });
+    reveal();
+  })();
+</script>
+</body>
+</html>

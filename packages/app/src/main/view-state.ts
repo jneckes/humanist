@@ -11,6 +11,12 @@
 //   page has loaded it sends it back. Present and Find live in the window and the shell, not in the page, so a
 //   reload leaves them as they are (the views item re-runs Find on the new version). Re-anchoring and
 //   animating changed pins after the restore is Phase 3.
+// - A restore takes time (the page waits for its layout; main replays an index deck's keys, about 120 ms a
+//   slide). A reload that starts before the page confirmed the restore (FilesDeckToMain.viewStateApplied) and
+//   before main's replay ended saves the state being restored again, never the half-restored page's (review
+//   finding 20: two saves a second apart lost an index deck's slide).
+// - Trust on reload (review finding 0, lead decision D-1): window.ts decides 6.10 again on every external
+//   change; trustDifferences and reopenForTrust say whether the reload may happen in place.
 
 import {
   VIEW_STATE_LIMITS,
@@ -19,6 +25,8 @@ import {
   type DeckViewState,
   type ViewStateReply,
 } from '@blueline/core/ipc-files';
+import type { TrustState } from '@blueline/core/ipc';
+import type { OpenDecision } from './documents';
 import { NOTE_ID, utf8Length, type Validated, type Validator } from './ipc-guard';
 
 // ------------------------------------------------------------------------------------------- validation
@@ -122,6 +130,9 @@ export const validateDeckBusy: Validator<DeckBusy> = (p) =>
     return { edit, card: card as DeckBusy['card'] };
   });
 
+/** FilesDeckToMain.viewStateApplied carries nothing. */
+export const validateViewStateApplied: Validator<null> = (p) => (p === undefined || p === null ? { ok: true, value: null } : { ok: false, why: 'unexpected payload' });
+
 // ------------------------------------------------------------------------------------------- capture requests
 
 /** How long a reload waits for the page to report its view state; a page that does not answer reloads without it. */
@@ -178,6 +189,65 @@ export class ViewStateRequests {
   }
 }
 
+// ------------------------------------------------------------------------------------------- trust on reload
+
+/**
+ * A window's trust as it stands (review finding 0, lead decision D-1): what its document opened with, and the
+ * switches on in it now.
+ */
+export interface WindowTrust {
+  trust: TrustState;
+  reason: string | null;
+  marker: string | null;
+  markerUncertain: boolean;
+  networkAllowed: boolean;
+  editingAllowed: boolean;
+}
+
+/**
+ * What differs between a window's trust and 6.10's decision for the file as it is on disk now (the same
+ * decision an open makes: folders.ts resolveOpenTrust). [] when nothing does. The whole decision counts: the
+ * state, the reason, the marker (a new download brings a new one, 6.10 Remembered), whether it could be read,
+ * and in Protected view the remembered Allow network and Enable editing. Trusted view has both by definition.
+ */
+export function trustDifferences(
+  now: WindowTrust,
+  d: Pick<OpenDecision, 'trust' | 'allowNetwork' | 'editing' | 'markerUncertain'>,
+  opts: { requested?: boolean } = {},
+): string[] {
+  const out: string[] = [];
+  if (now.trust !== d.trust.trust) out.push('trust');
+  if (now.reason !== d.trust.reason) out.push('reason');
+  if (now.marker !== d.trust.marker) out.push('marker');
+  if (now.markerUncertain !== d.markerUncertain) out.push('markerUncertain');
+  // A window opened Protected on request never remembers Allow network or Enable editing (6.10; D-3), so those
+  // switches are the user's within-session choice, not a trust input: an unmarked change that does not alter
+  // the state, reason or marker must not reopen the window and drop them (review finding 0 re-verification).
+  if (!opts.requested && now.trust === 'protected' && d.trust.trust === 'protected') {
+    if (now.networkAllowed !== d.allowNetwork) out.push('allowNetwork');
+    if (now.editingAllowed !== d.editing) out.push('editing');
+  }
+  return out;
+}
+
+/**
+ * Whether an external change must reopen the document instead of reloading it in place (D-1): any difference,
+ * except between two Trusted states. A Trusted file keeps its docId and its persist: partition on every open
+ * (documents.ts trustedDocumentId), and Trusted view has network and editing on, so a reopen would give the
+ * same window again; only the marker it records would change, and a Trusted window never remembers anything
+ * against it (the trust bar is Protected only). Every other difference needs a new docId or partition, or
+ * drops a switch, which a reload in place cannot do (a persist: partition cannot be downgraded in place).
+ */
+export function reopenForTrust(
+  now: WindowTrust,
+  d: Pick<OpenDecision, 'trust' | 'allowNetwork' | 'editing' | 'markerUncertain'>,
+  opts: { requested?: boolean } = {},
+): boolean {
+  const diff = trustDifferences(now, d, opts);
+  if (diff.length === 0) return false;
+  return !(now.trust === 'trusted' && d.trust.trust === 'trusted');
+}
+
 // ------------------------------------------------------------------------------------------- the coordinator
 
 export interface ReloadCoordinatorDeps {
@@ -194,7 +264,14 @@ export interface ReloadCoordinatorDeps {
   /** 6.6: show RELOAD_DEFERRED_TEXT while true (the status bar). */
   onDeferred(deferred: boolean): void;
   log?(msg: string): void;
+  now?(): number;
 }
+
+/**
+ * A restore the page never confirms (a hung page, a renderer that went away without a report) stops holding
+ * the saved state back after this long; until then a reload reuses it (review finding 20).
+ */
+export const RESTORE_MAX_MS = 30_000;
 
 /** What holds a deferred reload back: an active edit (until it commits or cancels), a card (until it closes). */
 export type ReloadBlocker = 'edit' | 'card';
@@ -211,6 +288,14 @@ export class ReloadCoordinator {
   private disposed = false;
   /** The version the deck view shows (or is loading). */
   private shown: string;
+  /** The pending request reloads even when it names the version shown (a trust change, D-1). */
+  private forced = false;
+  /**
+   * The state sent to the reloaded page and not yet restored there (the page has not confirmed it, or main's
+   * key replay of an index deck's slide is still running): a reload that starts meanwhile saves this state
+   * again instead of the half-restored page's (review finding 20).
+   */
+  private restore: { state: DeckViewState; until: number } | null = null;
   /** Reloads done (tests and logs). */
   reloads = 0;
 
@@ -221,12 +306,52 @@ export class ReloadCoordinator {
     this.shown = opts.version;
   }
 
-  /** The watcher saw an external change (9.2 step 3): show `version`, at once or when the user is done (6.6). */
-  requestReload(version: string): void {
+  /**
+   * The watcher saw an external change (9.2 step 3): show `version`, at once or when the user is done (6.6).
+   * `force`: reload even if `version` is the one shown (the trust decision changed, D-1: the window reopens).
+   */
+  requestReload(version: string, o: { force?: boolean } = {}): void {
     if (this.disposed) return;
     // A newer request replaces an older one still waiting: one reload shows the latest version.
     this.pending = version;
+    if (o.force) this.forced = true;
     this.evaluate();
+  }
+
+  /**
+   * The view state to save before a reload (6.6): the page's own, or, while the page is still restoring the
+   * last one, that one again, so a reload never saves an intermediate slide (review finding 20).
+   */
+  async saveState(): Promise<DeckViewState | null> {
+    if (this.restore && this.now() < this.restore.until) return this.restore.state;
+    this.restore = null;
+    try {
+      return await this.deps.capture();
+    } catch (e) {
+      this.deps.log?.(`view state not saved: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+  }
+
+  /** Sends `state` to the reloaded page (deps.apply); it counts as restoring until restoreDone(). */
+  applyState(state: DeckViewState): void {
+    if (this.disposed) return;
+    this.restore = { state, until: this.now() + RESTORE_MAX_MS };
+    this.deps.apply(state);
+  }
+
+  /** The page confirmed the restore, and main's own key replay (an index deck) is done. */
+  restoreDone(): void {
+    this.restore = null;
+  }
+
+  /** A restore is still running (tests and logs). */
+  get restoring(): boolean {
+    return this.restore !== null && this.now() < this.restore.until;
+  }
+
+  private now(): number {
+    return this.deps.now ? this.deps.now() : Date.now();
   }
 
   /** The deck preload's FilesDeckToMain.busy (validated). */
@@ -236,7 +361,10 @@ export class ReloadCoordinator {
     this.evaluate();
   }
 
-  /** The page went away (a crash, or a load main started for another reason): it holds no edit and no card now. */
+  /**
+   * The page went away (a crash, or a load main started for another reason): it holds no edit and no card now,
+   * and restores nothing any more (the state it was restoring stays the one to save until the next capture).
+   */
   resetBusy(): void {
     this.setBusy({ edit: false, card: 'none' });
   }
@@ -280,7 +408,7 @@ export class ReloadCoordinator {
       this.setDeferred(false);
       return;
     }
-    if (this.pending === this.shown) {
+    if (this.pending === this.shown && !this.forced) {
       // Already showing it (a duplicate notice, or the file went back to what is shown).
       this.pending = null;
       this.blockers.clear();
@@ -302,13 +430,9 @@ export class ReloadCoordinator {
   private async reloadNow(version: string): Promise<void> {
     this.running = true;
     this.pending = null;
+    this.forced = false;
     try {
-      let state: DeckViewState | null = null;
-      try {
-        state = await this.deps.capture();
-      } catch (e) {
-        this.deps.log?.(`view state not saved: ${e instanceof Error ? e.message : String(e)}`);
-      }
+      const state = await this.saveState();
       if (this.disposed) return;
       await this.deps.reload(version, state);
       this.shown = version;
@@ -316,7 +440,7 @@ export class ReloadCoordinator {
       // The new page has no edit and no card of its own yet; the restored card reports itself (busy) again.
       this.busy = { edit: false, card: 'none' };
       if (this.disposed) return;
-      if (state) this.deps.apply(state);
+      if (state) this.applyState(state);
     } catch (e) {
       this.deps.log?.(`reload failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {

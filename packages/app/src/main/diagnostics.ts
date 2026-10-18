@@ -983,6 +983,9 @@ class DiagWindow {
         webSecurity: true,
         partition: doc.partition,
         preload: path.join(env.dist, 'preload-deck.cjs'),
+        // The deck preload runs in every frame and installs only the file-drop guard in a subframe (drop-guard.ts,
+        // review finding 2), as on the document windows' deck views (window.ts).
+        nodeIntegrationInSubFrames: true,
         additionalArguments: ['--bl-mode=diagnostics'],
         devTools: !app.isPackaged,
         navigateOnDragDrop: false,

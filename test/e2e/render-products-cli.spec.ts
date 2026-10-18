@@ -1,7 +1,9 @@
 // `blueline pdf deck.html [-o out.pdf]`, the app side (6.1; 6.9 Save as PDF "without opening a window"): the
 // app started with --bl-cmd=pdf, --bl-args=<base64url JSON PdfArgs> and --bl-out, exactly as `map` is started.
 // When the CLI side (packages/cli, files-lifecycle item) knows `pdf`, the last test also runs it end to end.
-// The app runs as root with --no-sandbox here, as the map E2E tests run the `blueline` command.
+// The app runs as root with --no-sandbox here, as the map E2E tests run the `blueline` command. The command
+// reads the user's Trust settings from the app's userData (command-trust.ts), so every run gets an empty
+// XDG_CONFIG_HOME of its own: the runner's own Blueline settings never change what is tested.
 
 import { expect, test } from '@playwright/test';
 import { spawn, spawnSync } from 'node:child_process';
@@ -30,6 +32,11 @@ function tmp(): string {
   return d;
 }
 
+/** The environment of a run: no test switch, and an empty settings folder (XDG_CONFIG_HOME: the app's userData on Linux). */
+function runEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, BLUELINE_TEST: '', XDG_CONFIG_HOME: tmp() };
+}
+
 function encode(v: unknown): string {
   return Buffer.from(JSON.stringify(v), 'utf8').toString('base64url');
 }
@@ -48,7 +55,7 @@ function runPdf(pdfArgs: unknown, raw?: string): Result {
   const d = tmp();
   const out = path.join(d, 'result.json');
   const args = appArgs(['--bl-cmd=pdf', `--bl-args=${raw ?? encode(pdfArgs)}`, `--bl-out=${out}`]);
-  const r = spawnSync(ELECTRON, args, { encoding: 'utf8', env: { ...process.env, BLUELINE_TEST: '' }, timeout: 150_000 });
+  const r = spawnSync(ELECTRON, args, { encoding: 'utf8', env: runEnv(), timeout: 150_000 });
   return { code: r.status, json: fs.existsSync(out) ? JSON.parse(fs.readFileSync(out, 'utf8')) : null, stderr: r.stderr };
 }
 
@@ -82,7 +89,7 @@ test('-o, --protected, and a print-CSS deck', () => {
   const r = runPdf({ file: deck, out, protected: true });
   expect(r.code, r.stderr.slice(-2000)).toBe(0);
   expect(r.json?.json).toMatchObject({ out, pages: 3, mode: 'print-css', title: 'Print CSS deck' });
-  expect(r.stderr).toContain('page-css.html: protected');
+  expect(r.stderr).toContain('page-css.html: protected (Opened at your request; rule requested)');
   expect(fs.existsSync(out)).toBe(true);
 });
 
@@ -114,7 +121,7 @@ test('a signal stops the run: 128 + n, the result says so, and no PDF is left', 
   fs.cpSync(path.join(FIXTURES, 'decks/reveal-hash'), d, { recursive: true });
   const deck = path.join(d, 'index.html');
   const out = path.join(tmp(), 'result.json');
-  const child = spawn(ELECTRON, appArgs(['--bl-cmd=pdf', `--bl-args=${encode({ file: deck, out: null })}`, `--bl-out=${out}`]), { stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, BLUELINE_TEST: '' } });
+  const child = spawn(ELECTRON, appArgs(['--bl-cmd=pdf', `--bl-args=${encode({ file: deck, out: null })}`, `--bl-out=${out}`]), { stdio: ['ignore', 'ignore', 'pipe'], env: runEnv() });
   let err = '';
   child.stderr?.on('data', (b: Buffer) => (err += b.toString('utf8')));
   // Wait until the walk is under way.
@@ -140,11 +147,11 @@ test('blueline pdf end to end through the command', () => {
   test.skip(!cliKnowsPdf(), 'the CLI side of `blueline pdf` (packages/cli) is not built yet; the app side is tested above');
   const deck = deckIn('render/title-escape.html');
   const out = path.join(path.dirname(deck), 'out.pdf');
-  const r = spawnSync(process.execPath, [CLI, 'pdf', deck, '-o', out], { encoding: 'utf8', timeout: 150_000 });
+  const r = spawnSync(process.execPath, [CLI, 'pdf', deck, '-o', out], { encoding: 'utf8', env: runEnv(), timeout: 150_000 });
   expect(r.status, `${r.stdout}\n${r.stderr}`.slice(-2000)).toBe(0);
   expect(fs.existsSync(out)).toBe(true);
   expect(`${r.stdout}${r.stderr}`).toContain('3 pages');
-  const def = spawnSync(process.execPath, [CLI, 'pdf', deck], { encoding: 'utf8', timeout: 150_000 });
+  const def = spawnSync(process.execPath, [CLI, 'pdf', deck], { encoding: 'utf8', env: runEnv(), timeout: 150_000 });
   expect(def.status, def.stderr.slice(-2000)).toBe(0);
   expect(fs.existsSync(path.join(path.dirname(deck), 'title-escape.pdf'))).toBe(true);
 });

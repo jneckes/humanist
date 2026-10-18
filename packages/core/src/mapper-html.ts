@@ -30,7 +30,7 @@
 // Ark element, text under parser-invented elements). A run whose raw range lies inside another run's range
 // (foster-parented text merged before a <table>) is kept but unaligned (review finding 6).
 
-import { html as P5, Parser, type DefaultTreeAdapterMap, type DefaultTreeAdapterTypes, type Token } from 'parse5';
+import { html as P5, Parser, Token, type DefaultTreeAdapterMap, type DefaultTreeAdapterTypes, type Tokenizer } from 'parse5';
 import { htmlTextTable } from './html-tables';
 import { fragmentTextValues, jsShadowValues, scanJson, type FoundShadow } from './mapper-literals';
 import { findNotesBlockIn } from './notes-block';
@@ -122,6 +122,11 @@ export interface HtmlMapOptions {
   lines: LineIndex;
   /** False for a deck that failed UTF-8: no stamps and no runs (9.1 Charset); strips and hints still apply. */
   utf8: boolean;
+  /**
+   * Test hook: false tokenizes every character one at a time, as parse5 itself does (addBulkTextPaths); the
+   * equivalence tests compare both. Default true.
+   */
+  bulkText?: boolean;
 }
 
 export interface HtmlMapResult {
@@ -197,12 +202,13 @@ interface ParseResult {
  * every push onto the list of active formatting elements (Noah's Ark). Both use parse5 internals
  * (`Parser`, `onStartTag`, `activeFormattingElements`); test/unit/core/mapper-html.test.ts pins them.
  */
-function instrumentedParse(text: string): ParseResult {
+function instrumentedParse(text: string, bulkText = true): ParseResult {
   const errors: { code: string; offset: number }[] = [];
   const parser = new Parser<DefaultTreeAdapterMap>({
     sourceCodeLocationInfo: true,
     onParseError: (e) => errors.push({ code: e.code, offset: e.startOffset }),
   });
+  if (bulkText) addBulkTextPaths(parser.tokenizer);
   const tags: StartTagRecord[] = [];
   const onStartTag = parser.onStartTag;
   const divergences: number[] = [];
@@ -265,6 +271,81 @@ function instrumentedParse(text: string): ParseResult {
   };
   parser.tokenizer.write(text, true);
   return { doc: parser.document, tags, errors, noahRisky, divergences };
+}
+
+/** The parse5 tokenizer internals addBulkTextPaths uses (parse5 8; test/unit/core/mapper-html.test.ts pins them). */
+interface TokenizerInternals {
+  preprocessor: { html: string; pos: number };
+  consumedAfterSnapshot: number;
+  currentAttr: { value: string };
+  currentCharacterToken: { type: Token.TokenType; chars: string } | null;
+  _stateAttributeValueDoubleQuoted(cp: number): void;
+  _stateAttributeValueSingleQuoted(cp: number): void;
+  _stateScriptData(cp: number): void;
+  _stateRawtext(cp: number): void;
+}
+
+/**
+ * A character the tokenizer's preprocessor passes through untouched, with no parse error and no line
+ * bookkeeping: printable ASCII, and the BMP from U+00A0 up to the noncharacters (U+FDD0), surrogates excluded
+ * (parse5 preprocessor.advance: its "common valid range" minus CR and LF).
+ */
+function isPlainCode(c: number): boolean {
+  return (c >= 0x20 && c <= 0x7e) || (c >= 0xa0 && c < 0xd800) || (c >= 0xe000 && c < 0xfdd0);
+}
+
+/**
+ * Bulk text in four tokenizer states (review finding 31: parse5 takes one character per loop turn and grows
+ * the attribute value or character token by one-character concatenations, which is most of a 2 MB deck's
+ * Strategy 1 when it is base64 images, @font-face fonts and inline library code). In a double- or
+ * single-quoted attribute value, and in script data and RAWTEXT (style) after a plain character that went
+ * into a CHARACTER token, the run of following characters that the state would handle the same way (plain,
+ * not the closing quote or `&`; in text, not `<` and not whitespace, which starts a new token) is appended
+ * at once and the preprocessor moves past it. Each of those characters would have taken the state's default
+ * branch and changed nothing but the value or token text, so the tree, every location, every token boundary
+ * and every parse error are exactly parse5's own; the tests parse with and without these paths and compare.
+ */
+function addBulkTextPaths(tokenizer: Tokenizer): void {
+  const tk = tokenizer as unknown as TokenizerInternals;
+  // Another parse5 without these internals parses one character at a time, as before (the tests pin them).
+  const states = [tk._stateAttributeValueDoubleQuoted, tk._stateAttributeValueSingleQuoted, tk._stateScriptData, tk._stateRawtext];
+  if (states.some((f) => typeof f !== 'function') || typeof tk.preprocessor?.html !== 'string' || typeof tk.consumedAfterSnapshot !== 'number') return;
+  /** End (exclusive) of the run of characters from `from` for which `ok` holds. */
+  const runEnd = (html: string, from: number, ok: (c: number) => boolean): number => {
+    let end = from;
+    while (end < html.length && ok(html.charCodeAt(end))) end++;
+    return end;
+  };
+  const skipTo = (end: number): void => {
+    tk.consumedAfterSnapshot += end - 1 - tk.preprocessor.pos;
+    tk.preprocessor.pos = end - 1; // the next advance() reads html[end]
+  };
+  const attrValue = (quote: number, orig: (cp: number) => void) =>
+    function (this: TokenizerInternals, cp: number): void {
+      orig.call(this, cp);
+      if (cp === quote || cp === 0x26 || !isPlainCode(cp)) return;
+      const pre = this.preprocessor;
+      const end = runEnd(pre.html, pre.pos + 1, (c) => c !== quote && c !== 0x26 && isPlainCode(c));
+      if (end === pre.pos + 1) return;
+      this.currentAttr.value += pre.html.slice(pre.pos + 1, end);
+      skipTo(end);
+    };
+  const plainText = (c: number): boolean => c !== 0x3c && c !== 0x20 && isPlainCode(c);
+  const text = (orig: (cp: number) => void) =>
+    function (this: TokenizerInternals, cp: number): void {
+      orig.call(this, cp);
+      const tok = this.currentCharacterToken;
+      if (!plainText(cp) || !tok || tok.type !== Token.TokenType.CHARACTER) return;
+      const pre = this.preprocessor;
+      const end = runEnd(pre.html, pre.pos + 1, plainText);
+      if (end === pre.pos + 1) return;
+      tok.chars += pre.html.slice(pre.pos + 1, end);
+      skipTo(end);
+    };
+  tk._stateAttributeValueDoubleQuoted = attrValue(0x22, tk._stateAttributeValueDoubleQuoted);
+  tk._stateAttributeValueSingleQuoted = attrValue(0x27, tk._stateAttributeValueSingleQuoted);
+  tk._stateScriptData = text(tk._stateScriptData);
+  tk._stateRawtext = text(tk._stateRawtext);
 }
 
 /**
@@ -479,14 +560,14 @@ export function mapHtmlText(src: string, opts: HtmlMapOptions): HtmlMapResult {
   let nb = opts.notesBlock;
   let parsed: ParseResult | null = null;
   if (nb === undefined) {
-    parsed = instrumentedParse(base ? src.slice(1) : src);
+    parsed = instrumentedParse(base ? src.slice(1) : src, opts.bulkText);
     nb = findNotesBlockIn(parsed.doc, base);
     if (nb) parsed = null; // section 8: map the file with the block removed
   }
   const text = nb ? src.slice(0, nb.start) + src.slice(nb.end) : src;
   const nbStart = nb ? nb.start : Infinity;
   const nbLen = nb ? nb.end - nb.start : 0;
-  if (parsed === null) parsed = instrumentedParse(base ? text.slice(1) : text);
+  if (parsed === null) parsed = instrumentedParse(base ? text.slice(1) : text, opts.bulkText);
   /** Parse offset → text offset. */
   const t = (o: number) => o + base;
   /** Text offset → src offset. */

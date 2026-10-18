@@ -1,6 +1,6 @@
 // The exit gate's pixel comparison (SPEC 10 Phase 1 Render parity and PDF; harness/compare.ts).
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_TOLERANCE, HISTOGRAM_BINS, PDF_GATE, RENDER_GATE, addHistograms, comparePixels, diffImage, median, pct, sameBitmap } from './harness/compare';
+import { DEFAULT_TOLERANCE, HISTOGRAM_BINS, PDF_GATE, RENDER_GATE, addHistograms, comparePixels, deckTallies, diffImage, median, pct, sameBitmap, slideVerdict } from './harness/compare';
 
 function bgra(width: number, height: number, fill: [number, number, number, number]): Uint8Array {
   const b = new Uint8Array(width * height * 4);
@@ -30,6 +30,30 @@ describe('comparePixels', () => {
     // Δ 8 falls in the 5–8 bin, Δ 9 in 9–16.
     expect(s.histogram[2]).toBe(1);
     expect(s.histogram[3]).toBe(1);
+  });
+
+  it('the default tolerance is 2 levels: rounding noise passes, a step of 3 is over', () => {
+    expect(DEFAULT_TOLERANCE).toBe(2);
+    const a = bgra(3, 1, [100, 100, 100, 255]);
+    const b = a.slice();
+    b[0] = 101; // Δ 1
+    b[4 + 1] = 102; // Δ 2
+    b[8 + 2] = 97; // Δ 3
+    const s = comparePixels(a, b, 3, 1, { channels: 4 });
+    expect(s).toMatchObject({ exact: 3, over: 1, maxDelta: 3, box: { x: 2, y: 0, w: 1, h: 1 } });
+  });
+
+  // Review finding 38: a change on Blueline's side that moves every pixel by a few levels (a colour-managed
+  // path on one side) passed at the old tolerance of 8 with 0% over it (test/parity/fixtures/shift6.html, shift8.html).
+  it.each([3, 6, 8])('a uniform shift of %i levels on every channel puts every pixel over the default tolerance', (shift) => {
+    const w = 64;
+    const h = 36;
+    const a = new Uint8Array(w * h * 4);
+    for (let p = 0; p < w * h; p++) a.set([(p * 7) % 200, (p * 3) % 200, (p * 5) % 200, 255], p * 4);
+    const b = a.map((v, k) => (k % 4 === 3 ? v : v + shift));
+    const s = comparePixels(a, b, w, h, { channels: 4 });
+    expect(s.over).toBe(w * h);
+    expect(s.overShare > RENDER_GATE).toBe(true);
   });
 
   it('takes the largest channel difference of a pixel, alpha included for 4 channels', () => {
@@ -86,6 +110,41 @@ describe('comparePixels', () => {
     expect(s.overShare <= RENDER_GATE).toBe(true);
     b[n * 4 + 1] = 0;
     expect(comparePixels(a, b, w, h, { channels: 4 }).overShare > RENDER_GATE).toBe(true);
+  });
+});
+
+describe('slideVerdict and deckTallies', () => {
+  const stats = (exact: number, overShare: number) => ({ exact, overShare });
+
+  it('a slide passes when it was reached and is within the gate', () => {
+    expect(slideVerdict({ navOk: true, stats: stats(10, RENDER_GATE), control: stats(0, 0) }, RENDER_GATE)).toEqual({ pass: true, nondeterministic: false });
+    expect(slideVerdict({ navOk: true, stats: stats(10, RENDER_GATE + 1e-6), control: stats(0, 0) }, RENDER_GATE).pass).toBe(false);
+    expect(slideVerdict({ navOk: false, stats: stats(0, 0), control: stats(0, 0) }, RENDER_GATE).pass).toBe(false);
+    expect(slideVerdict({ navOk: true, stats: null, control: null }, RENDER_GATE).pass).toBe(false);
+  });
+
+  // Review finding 38 (decision D-10): a slide whose control render differs is listed, never silently passed,
+  // and its verdict is the gate's: over the gate it fails, the control does not excuse it.
+  it('a slide whose control differs at all is nondeterministic, and judged like any other', () => {
+    expect(slideVerdict({ navOk: true, stats: stats(500, 0.16), control: stats(1, 0) }, RENDER_GATE)).toEqual({ pass: false, nondeterministic: true });
+    expect(slideVerdict({ navOk: true, stats: stats(5, 0), control: stats(5, 0.16) }, RENDER_GATE)).toEqual({ pass: true, nondeterministic: true });
+    // No control to compare: not called nondeterministic (the slide's notes say why).
+    expect(slideVerdict({ navOk: true, stats: stats(0, 0), control: null }, RENDER_GATE)).toEqual({ pass: true, nondeterministic: false });
+  });
+
+  // Review finding 39: what a deck's result lists beside its verdict (the full gate records text and scroll
+  // differences and does not judge on them).
+  it('lists identical, nondeterministic, text and scroll differences in slide order', () => {
+    const r = (slide: number, exact: number | null, more: Partial<{ nondeterministic: boolean; sameText: boolean; scrollY: { blueline: number; plain: number } }> = {}) => ({
+      slide,
+      stats: exact === null ? null : { exact },
+      nondeterministic: false,
+      sameText: true,
+      scrollY: { blueline: 0, plain: 0 },
+      ...more,
+    });
+    const t = deckTallies([r(3, 0), r(0, 0), r(2, 120, { nondeterministic: true, sameText: false }), r(1, null, { sameText: false }), r(4, 7, { scrollY: { blueline: 900, plain: 0 } })]);
+    expect(t).toEqual({ compared: 4, identical: 2, nondeterministic: [2], textDiffers: [1, 2], scrollDiffers: [4] });
   });
 });
 

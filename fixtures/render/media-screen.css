@@ -1,0 +1,8 @@
+/* A print layout and an @page rule in a sheet linked with media="screen": they apply to no print, so the deck
+   that links it has no print CSS (review finding 13; the negative control of the media-*.html decks). */
+@page { size: 720px 932px; margin: 0; }
+@media print {
+  html, body { height: auto; overflow: visible; background: #fff; }
+  .slide { display: block !important; position: relative !important; break-after: page; }
+  .slide:last-child { break-after: auto; }
+}

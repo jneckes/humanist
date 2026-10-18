@@ -44,3 +44,8 @@ they first came into view; review finding 35). `js-templates.json` (`14`, also `
 `json-data.json` (`Checkout redesign — results`, also the `<title>`): one node each went from `exact` to
 `ambiguous` (`shadow`), from the matcher's shadow values (review findings 0 and 3; their `.expect.json`
 entries say why).
+
+`generic-hash-writeonly.json` was added in Phase 1's review round 1 with its deck (a generic engine that writes
+its slide into the hash but never reads it, review finding 17): 12 of 18 nodes `exact`, the six pagers `none`
+(`computed`), every exact node passing the probe. No other baseline changed in that round: every one of the 18
+earlier decks maps byte for byte as its file says.

@@ -141,6 +141,7 @@ describe('renderThumbnails from the cache', () => {
       marker: null,
       isProtected: () => false,
       networkOpen: () => true,
+      renderPolicyTag: () => 'test-policy',
       reducedMotion: true,
     };
     const got: [number, string, boolean][] = [];

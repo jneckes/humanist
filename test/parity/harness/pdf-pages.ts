@@ -7,7 +7,8 @@
 // - printToPDF pages (print CSS, documents) are vector pages. Electron's PDF viewer cannot be captured
 //   reliably, so they are rasterised with poppler's `pdftoppm` when the machine has it (a system tool, not an
 //   npm dependency; this container has it, a Mac needs `brew install poppler`), as PPM at an exact pixel size.
-//   Without it, only page counts and page sizes are compared, and the report says so.
+//   Page counts and every page's size (MediaBox, within PAGE_SIZE_TOLERANCE_PT) are compared with or without
+//   it (printedVerdict); without it the pixels are not, and the result says so.
 
 import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -25,10 +26,16 @@ export interface PageImage {
   data: Uint8Array;
 }
 
+/** A page's size in points. */
+export interface PageSize {
+  w: number;
+  h: number;
+}
+
 export interface PdfPages {
   pageCount: number;
   /** Each page's MediaBox size in points. */
-  sizes: { w: number; h: number }[];
+  sizes: PageSize[];
   /** Each page's only image XObject, or null (a vector page, or more than one image). */
   images: (PageImage | null)[];
   title: string | null;
@@ -65,6 +72,82 @@ export async function pdfPages(bytes: Uint8Array): Promise<PdfPages> {
     images.push(found.length === 1 ? found[0] : null);
   }
   return { pageCount: pages.length, sizes: pages.map((p) => p.getSize()).map((s) => ({ w: s.width, h: s.height })), images, title: doc.getTitle() ?? null };
+}
+
+// ------------------------------------------------------------------------------------------- printed pages
+
+/**
+ * Two pages are the same size when width and height each agree within this many points. Chromium rounds a
+ * CSS page size to its own units (900 px prints as 675.12 pt, not 675), so equality would be too strict; a
+ * real difference (A4 against Letter, a page rule that resolved differently) is many points.
+ */
+export const PAGE_SIZE_TOLERANCE_PT = 0.5;
+
+export interface SizeMismatch {
+  /** 0-based page. */
+  page: number;
+  blueline: PageSize;
+  plain: PageSize;
+}
+
+/** The pages (of those both PDFs have) whose sizes differ by more than `tolPt` in width or height. */
+export function pageSizeMismatches(blueline: readonly PageSize[], plain: readonly PageSize[], tolPt: number = PAGE_SIZE_TOLERANCE_PT): SizeMismatch[] {
+  const out: SizeMismatch[] = [];
+  for (let k = 0; k < Math.min(blueline.length, plain.length); k++) {
+    const a = blueline[k];
+    const b = plain[k];
+    if (Math.abs(a.w - b.w) > tolPt || Math.abs(a.h - b.h) > tolPt) out.push({ page: k, blueline: { w: a.w, h: a.h }, plain: { w: b.w, h: b.h } });
+  }
+  return out;
+}
+
+export interface PrintedVerdict {
+  pageCountOk: boolean;
+  /** Every page of Blueline's PDF has the size of the plain print's page (PAGE_SIZE_TOLERANCE_PT). */
+  sizesOk: boolean;
+  sizeMismatches: SizeMismatch[];
+  /** What was compared, in words: exactly the checks the verdict made. */
+  compared: string;
+  pass: boolean;
+}
+
+/**
+ * The verdict on a PDF Chromium printed (print-CSS decks, documents; SPEC 10 Phase 1 PDF, as measured: every
+ * page Chromium prints matches Chromium's own print of the file): the page count (the slide count and the plain
+ * print's for print CSS, the plain print's for documents), every page's size against the plain print's page,
+ * and, when pdftoppm rasterised the pages (`pageStats` not null), every page's pixels. A size mismatch fails
+ * with or without pdftoppm: rasterising scales both pages to Blueline's size, so a page of another size would
+ * otherwise show only as distorted pixels, and without pdftoppm not at all.
+ */
+export function printedVerdict(x: {
+  mode: 'print-css' | 'document';
+  pages: number;
+  expectedPages: number;
+  plainPages: number;
+  sizes: { blueline: readonly PageSize[]; plain: readonly PageSize[] };
+  pageStats: readonly { page: number; pass: boolean }[] | null;
+}): PrintedVerdict {
+  const pageCountOk = x.pages === x.expectedPages && x.pages === x.plainPages;
+  const sizeMismatches = pageSizeMismatches(x.sizes.blueline, x.sizes.plain);
+  const sizesOk = sizeMismatches.length === 0 && x.sizes.blueline.length === x.pages && x.sizes.plain.length === x.plainPages;
+  const count = `page count against ${x.mode === 'document' ? "the plain print's" : "the slide count and the plain print's"}`;
+  const sizes = `every page's size against the plain print's page (within ${PAGE_SIZE_TOLERANCE_PT} pt)`;
+  if (x.pageStats === null) {
+    return {
+      pageCountOk,
+      sizesOk,
+      sizeMismatches,
+      compared: `${count}; ${sizes}; pixels not compared: pdftoppm is not available, so printed pages were not rasterised`,
+      pass: pageCountOk && sizesOk,
+    };
+  }
+  return {
+    pageCountOk,
+    sizesOk,
+    sizeMismatches,
+    compared: `${count}; ${sizes}; every page rasterised by pdftoppm at 2x and compared with the plain print's page`,
+    pass: pageCountOk && sizesOk && x.pageStats.length === x.pages && x.pageStats.every((p) => p.pass),
+  };
 }
 
 /** The RGB samples of a raster page's image (8-bit DeviceRGB, Flate or uncompressed), or an error. */

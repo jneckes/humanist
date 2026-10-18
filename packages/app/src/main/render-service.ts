@@ -32,6 +32,7 @@
 // - Phase 4: agent renders replay `state.click` after slide.nav (6.7 step 2), measure Fit against the cached
 //   pass-snapshot render served in place of the file (step 4), and return {fit, navOk} (step 5).
 
+import { createHash } from 'node:crypto';
 import { BrowserWindow, type NativeImage, type Rectangle, type WebContents } from 'electron';
 import {
   MainToDeck,
@@ -53,7 +54,7 @@ import {
   type WalkNode,
   type WalkTree,
 } from '@blueline/core/ipc';
-import { TEXTS_MAX_CHARS, TEXTS_MAX_NODES } from '@blueline/core/dom-walk';
+import { TEXTS_MAX_CHARS, TEXTS_MAX_NODES, type CollectJoins } from '@blueline/core/dom-walk';
 import type { DomTextNode } from '@blueline/core/types';
 import { attachDeckView } from './channels';
 import { validateDetectResult } from './ipc-guard';
@@ -246,6 +247,8 @@ function walkNodeOf(v: unknown, what: string): WalkNode {
   const tree = treeOf(r.tree, `${what}.tree`);
   if (tree) out.tree = tree;
   if (r.slide !== undefined) out.slide = slideOrNull(r.slide, `${what}.slide`);
+  // review finding 12: whether the node's white-space preserves line breaks (the index text splits runs there).
+  if (r.pre !== undefined) out.pre = bool(r.pre, `${what}.pre`);
   return out;
 }
 function keyList(v: unknown, what: string): number[] {
@@ -316,7 +319,7 @@ export const resultCheck = {
    * `collect` (section 10 step 4), checked here rather than by ipc-guard's validateCollectResult so the walk's
    * optional fields reach the map: each node's texts (D-b), tree and slide, and the cross-origin frames.
    */
-  collect(v: unknown): CollectResult {
+  collect(v: unknown): CollectResult & CollectJoins {
     const r = rec(v, 'collect');
     if (!Array.isArray(r.nodes) || r.nodes.length > WALK_NODES_MAX) throw new BadResult('collect.nodes: not a list');
     if (!Array.isArray(r.blocks) || r.blocks.length > WALK_NODES_MAX) throw new BadResult('collect.blocks: not a list');
@@ -325,8 +328,11 @@ export const resultCheck = {
       const br = rec(b, `collect.blocks[${i}]`);
       return { key: int(br.key, `collect.blocks[${i}].key`), hasInline: bool(br.hasInline, `collect.blocks[${i}].hasInline`), nodeKeys: keyList(br.nodeKeys, `collect.blocks[${i}].nodeKeys`) };
     });
-    const out: CollectResult = { nodes, blocks };
+    const out: CollectResult & CollectJoins = { nodes, blocks };
     if (r.crossOriginFrames !== undefined) out.crossOriginFrames = keyList(r.crossOriginFrames, 'collect.crossOriginFrames');
+    // The slide index's block joins (dom-walk CollectJoins): kept only whole and well formed, else dropped
+    // (each node then starts a string of its own; never an error).
+    if (Array.isArray(r.joins) && r.joins.length === nodes.length && r.joins.every((j) => j === 0 || j === 1 || j === 2)) out.joins = (r.joins as (0 | 1 | 2)[]).slice();
     return out;
   },
   keydowns(v: unknown): KeydownsResult {
@@ -412,6 +418,19 @@ export interface RenderTarget extends LoadTarget {
   viewport?: Viewport | null;
   /** Session.deckNav: the keys the visible view saw move this deck (6.7 Index replay). */
   deckNav?: { forward?: string; back?: string } | null;
+  /**
+   * A tag of the trust policy this render runs under (whether the network is open, the strict option and the
+   * allowlist), for the product cache (review finding 15): products made under one policy are not served under
+   * another, even across launches, because the file's bytes (the sha256 cache key) do not change with it.
+   */
+  renderPolicyTag(): string;
+}
+
+/** The policy tag the product cache keys on (review finding 15): network open, the strict option, the allowlist. */
+export function renderPolicyTag(net: boolean, strict: boolean, allowlist: readonly string[]): string {
+  const h = createHash('sha256');
+  h.update(JSON.stringify([net, strict, [...allowlist].sort()]));
+  return `${net ? 'n1' : 'n0'}${strict ? 's1' : 's0'}${h.digest('hex').slice(0, 12)}`;
 }
 
 /** The parts of a BlDocument a RenderTarget reads (documents.ts; kept structural so tests can pass fakes). */
@@ -425,6 +444,10 @@ export interface RenderableDocument extends LoadTarget {
   marker: string | null;
   trust(): 'protected' | 'trusted';
   networkAllowed(): boolean;
+  /** The strict option (6.10 Settings › Trust) in force for this document; default off when not given. */
+  strict?(): boolean;
+  /** The allowlist in force for this document; default empty when not given. */
+  allowlist?(): readonly string[];
 }
 
 /** A RenderTarget for a document, with background renders' reduced motion (decision 1, Josh 2026-10-17). */
@@ -432,6 +455,7 @@ export function renderTargetFor(
   doc: RenderableDocument,
   opts: { viewport?: Viewport | null; deckNav?: { forward?: string; back?: string } | null; reducedMotion?: boolean } = {},
 ): RenderTarget {
+  const networkOpen = () => doc.trust() === 'trusted' || doc.networkAllowed();
   return {
     docId: doc.docId,
     fileName: doc.fileName,
@@ -443,7 +467,8 @@ export function renderTargetFor(
     title: doc.title,
     marker: doc.marker,
     isProtected: () => doc.trust() === 'protected',
-    networkOpen: () => doc.trust() === 'trusted' || doc.networkAllowed(),
+    networkOpen,
+    renderPolicyTag: () => renderPolicyTag(networkOpen(), doc.strict?.() ?? false, doc.allowlist?.() ?? []),
     reducedMotion: opts.reducedMotion ?? true,
     viewport: opts.viewport ?? null,
     deckNav: opts.deckNav ?? null,
@@ -805,7 +830,7 @@ export class RenderView {
     return this.checked({ type: 'settle' }, resultCheck.settle, 20_000);
   }
 
-  collect(): Promise<CollectResult> {
+  collect(): Promise<CollectResult & CollectJoins> {
     return this.checked({ type: 'collect' }, resultCheck.collect, COLLECT_TIMEOUT_MS);
   }
 
@@ -1020,24 +1045,78 @@ export class RenderView {
    * `minMs` on the slide, then until the DOM has had no mutation for `quietMs` (a MutationObserver in main's
    * own isolated world: the page sees nothing), and never longer than `maxMs`: a deck that writes a clock or
    * a ticker forever is captured at the cap. Resolves with how long it waited and whether the DOM went quiet.
+   *
+   * `late` (for the adaptive settle, slide-index.ts SettleMemory) says a wait with no minimum could have
+   * stopped too early here: the DOM changed again after being still for `lateGapMs` (a timer's reveal), or
+   * the picture still changed while the DOM was still (a chart a script draws on a canvas, which no
+   * MutationObserver sees: two small frames, at that pause and at the end, differ; `watchFrames`, default on).
+   * `stamp` is the page time of the last mutation seen (mutationStamp).
    */
-  async waitScripted(opts: { minMs: number; quietMs: number; maxMs: number }, signal: AbortSignal | null = null): Promise<{ waitedMs: number; quiet: boolean }> {
+  async waitScripted(
+    opts: { minMs: number; quietMs: number; maxMs: number; lateGapMs?: number; watchFrames?: boolean },
+    signal: AbortSignal | null = null,
+  ): Promise<{ waitedMs: number; quiet: boolean; late: boolean; stamp: number | null }> {
     const start = Date.now();
     const installed = await this.inProbeWorld<unknown>(
       '(function(){var w=window;if(!w.__blMut){var m={last:performance.now()};w.__blMut=m;try{new MutationObserver(function(){m.last=performance.now()}).observe(document,{subtree:true,childList:true,attributes:true,characterData:true})}catch(e){}}return true})()',
       2000,
       false,
     );
+    // `late` (the adaptive settle, slide-index.ts SettleMemory): the DOM changed again after it had been still
+    // for lateGapMs, the mark of a script that reveals content on a timer. A wait with no minimum could have
+    // stopped at that pause and missed what came after it.
+    const lateGap = opts.lateGapMs ?? Math.floor(opts.quietMs / 2);
+    let pausedAt: number | null = null;
+    let late = false;
+    let stamp: number | null = null;
+    const read = async (): Promise<{ since: number; last: number } | null> => {
+      if (installed !== true) return null;
+      const r = await this.inProbeWorld<unknown>('(function(){var m=window.__blMut;return m?[performance.now()-m.last,m.last]:null})()', 2000, null);
+      return Array.isArray(r) && typeof r[0] === 'number' && typeof r[1] === 'number' ? { since: r[0], last: r[1] } : null;
+    };
+    const watch = opts.watchFrames !== false;
+    let frame0: Uint8Array | null = null;
     for (;;) {
       throwIfCancelled(signal);
       const waited = Date.now() - start;
-      if (waited >= opts.maxMs || this.isDestroyed()) return { waitedMs: waited, quiet: false };
-      if (waited >= opts.minMs) {
-        const since = installed === true ? await this.inProbeWorld<unknown>('(function(){var m=window.__blMut;return m?performance.now()-m.last:-1})()', 2000, -1) : opts.quietMs;
-        if (typeof since === 'number' && since >= opts.quietMs) return { waitedMs: Date.now() - start, quiet: true };
+      if (waited >= opts.maxMs || this.isDestroyed()) return { waitedMs: waited, quiet: false, late, stamp };
+      const m = await read();
+      if (m) {
+        stamp = m.last;
+        if (pausedAt !== null && m.last > pausedAt) late = true;
+        if (pausedAt === null && m.since >= lateGap) {
+          pausedAt = m.last;
+          if (watch) frame0 = await this.frameSample();
+        }
+      }
+      if (waited >= opts.minMs && (m ? m.since >= opts.quietMs : installed !== true)) {
+        if (watch && !late && pausedAt !== null && framesDiffer(frame0, await this.frameSample())) late = true;
+        return { waitedMs: Date.now() - start, quiet: true, late, stamp };
       }
       await new Promise((r) => setTimeout(r, SCRIPTED_POLL_MS));
     }
+  }
+
+  /** A small copy of the view's current frame (64 px wide, BGRA) for framesDiffer, or null when none. */
+  private async frameSample(): Promise<Uint8Array | null> {
+    try {
+      if (this.isDestroyed()) return null;
+      const image = await this.whileOpen(this.wc.capturePage(undefined, { stayHidden: true }));
+      if (image.isEmpty()) return null;
+      const b = image.resize({ width: 64, quality: 'good' }).toBitmap();
+      return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The page time of the DOM's last mutation as waitScripted's observer saw it, or null when it is not
+   * installed. A value later than the one a wait returned means the DOM changed after the wait.
+   */
+  async mutationStamp(): Promise<number | null> {
+    const r = await this.inProbeWorld<unknown>('(function(){var m=window.__blMut;return m?m.last:null})()', 2000, null);
+    return typeof r === 'number' ? r : null;
   }
 
   async resumeAnimations(): Promise<void> {
@@ -1113,16 +1192,24 @@ export class RenderView {
   /**
    * The text of every style sheet the document uses, read through the view's debugger (CSS domain): linked
    * sheets from the -files origin are cross-origin to the page, so neither the page nor an isolated world can
-   * read their rules (9.1 Serving), but main can. `media` is the sheet's own media list (`<link media>`,
-   * `<style media>`), when it has one. Read-only; the CSS and DOM domains are disabled again afterwards.
+   * read their rules (9.1 Serving), but main can. `media` is the media attribute of the sheet's owner node
+   * (`<link media>`, `<style media>`), when it has one, read through DOM.describeNode: CSS.getMediaQueries
+   * reports those lists without a styleSheetId, so they never reached the sheet (review finding 13); an
+   * `@import url(x) <media>` list is the importing statement's, which pdf.ts reads from the sheet's text.
+   * Read-only; the CSS and DOM domains are disabled again afterwards.
    */
   async styleSheets(maxChars = 16 * 1024 * 1024): Promise<{ sheets: StyleSheetText[]; truncated: boolean }> {
-    const headers: { styleSheetId: string; origin: string; sourceURL: string }[] = [];
+    const headers: { styleSheetId: string; origin: string; sourceURL: string; ownerNode: number | null }[] = [];
     const onMessage = (_e: unknown, method: string, params: unknown) => {
       if (method !== 'CSS.styleSheetAdded' || headers.length >= 10_000) return;
-      const h = (params as { header?: { styleSheetId?: unknown; origin?: unknown; sourceURL?: unknown } } | null)?.header;
+      const h = (params as { header?: { styleSheetId?: unknown; origin?: unknown; sourceURL?: unknown; ownerNode?: unknown } } | null)?.header;
       if (h && typeof h.styleSheetId === 'string' && typeof h.origin === 'string') {
-        headers.push({ styleSheetId: h.styleSheetId, origin: h.origin, sourceURL: typeof h.sourceURL === 'string' ? h.sourceURL : '' });
+        headers.push({
+          styleSheetId: h.styleSheetId,
+          origin: h.origin,
+          sourceURL: typeof h.sourceURL === 'string' ? h.sourceURL : '',
+          ownerNode: typeof h.ownerNode === 'number' && Number.isInteger(h.ownerNode) ? h.ownerNode : null,
+        });
       }
     };
     if (this.isDestroyed()) throw new RenderError('the render view was closed');
@@ -1136,16 +1223,28 @@ export class RenderView {
       // one more turn lets the event loop deliver any that are still queued.
       await this.cdp('CSS.enable');
       await new Promise((r) => setTimeout(r, 30));
-      const media = new Map<string, string>();
-      try {
-        const mq = await this.cdp<{ medias?: { text?: unknown; source?: unknown; styleSheetId?: unknown }[] }>('CSS.getMediaQueries');
-        for (const m of mq.medias ?? []) {
-          if ((m.source === 'linkedSheet' || m.source === 'inlineSheet') && typeof m.styleSheetId === 'string' && typeof m.text === 'string') media.set(m.styleSheetId, m.text);
+      /** The owner node's media attribute (null: none, or not a link or style element). */
+      const ownerMedia = new Map<number, string | null>();
+      const mediaOf = async (node: number | null): Promise<string | null> => {
+        if (node === null) return null;
+        if (ownerMedia.has(node)) return ownerMedia.get(node) ?? null;
+        let media: string | null = null;
+        try {
+          const d = await this.cdp<{ node?: { localName?: unknown; attributes?: unknown } }>('DOM.describeNode', { backendNodeId: node });
+          const name = typeof d.node?.localName === 'string' ? d.node.localName : '';
+          const attrs = Array.isArray(d.node?.attributes) ? d.node.attributes : [];
+          if (name === 'link' || name === 'style') {
+            for (let i = 0; i + 1 < attrs.length; i += 2) {
+              if (typeof attrs[i] === 'string' && attrs[i].toLowerCase() === 'media' && typeof attrs[i + 1] === 'string') media = String(attrs[i + 1]).slice(0, 4096);
+            }
+          }
+        } catch {
+          // Without the media list the sheet counts as `all`: a print-only sheet then reads as print CSS only
+          // through its own @page or @media print rules.
         }
-      } catch {
-        // Without the media lists every sheet counts as `all`: a print-only sheet then reads as print CSS
-        // only through its own @page or @media print rules.
-      }
+        ownerMedia.set(node, media);
+        return media;
+      };
       let chars = 0;
       for (const h of headers) {
         // The page's own sheets only: not the user agent's, not ones devtools injected.
@@ -1162,7 +1261,7 @@ export class RenderView {
           break;
         }
         chars += text.length;
-        sheets.push({ text, url: h.sourceURL.slice(0, 2048), media: media.get(h.styleSheetId) ?? null });
+        sheets.push({ text, url: h.sourceURL.slice(0, 2048), media: await mediaOf(h.ownerNode) });
       }
     } finally {
       this.wc.debugger.removeListener('message', onMessage);
@@ -1188,6 +1287,19 @@ export class RenderView {
     if (!this.wc.isDestroyed()) this.wc.close();
     if (!this.win.isDestroyed()) this.win.destroy();
   }
+}
+
+/**
+ * True when two small frames (RenderView.frameSample) differ: more than 0.2% of their pixels by more than 16
+ * in a channel. A frame that could not be taken counts as different (when unsure, wait in full).
+ */
+export function framesDiffer(a: Uint8Array | null, b: Uint8Array | null): boolean {
+  if (!a || !b || a.length !== b.length || a.length === 0) return true;
+  let n = 0;
+  for (let i = 0; i + 3 < a.length; i += 4) {
+    if (Math.abs(a[i] - b[i]) > 16 || Math.abs(a[i + 1] - b[i + 1]) > 16 || Math.abs(a[i + 2] - b[i + 2]) > 16) n++;
+  }
+  return n > (a.length / 4) * 0.002;
 }
 
 /** RenderView.visibleTextSignature: `<count>:<hash>` of the visible text (opacity and visibility of every ancestor). */
@@ -1220,21 +1332,37 @@ export interface DocumentOutline {
 
 /**
  * The outline walk (RenderView.documentOutline). The first section holds the text before the first heading;
- * each rendered h1–h3 starts the next one, numbered by its place among all of the page's h1–h3.
+ * each rendered h1–h3 starts the next one, numbered by its place among all of the page's h1–h3. A section's
+ * text is one string per run of text in one block, its inline runs joined as the page shows them, a space where
+ * white space lies between them (ipc-render SlideIndexEntry.text): a new string starts at another block, and
+ * at a line break, an inline replaced element or an inline-block, where findInPage never matches across.
  */
 const OUTLINE_JS =
   '(function(){var d=document,root=d.body||d.documentElement;if(!root)return {headings:0,sections:[],cut:false};' +
   'var SKIP={SCRIPT:1,STYLE:1,NOSCRIPT:1,TEMPLATE:1,TEXTAREA:1,TITLE:1,HEAD:1,IFRAME:1,OBJECT:1,EMBED:1,"BLUELINE-OVERLAY":1};' +
+  'var BREAK={BR:1,IMG:1,INPUT:1,SELECT:1,TEXTAREA:1,BUTTON:1,SVG:1,CANVAS:1,VIDEO:1,AUDIO:1,IFRAME:1,FRAME:1,OBJECT:1,EMBED:1,PICTURE:1,METER:1,PROGRESS:1,MATH:1};' +
   'var all=d.querySelectorAll("h1,h2,h3"),num=new Map();for(var i=0;i<all.length;i++)num.set(all[i],i);' +
-  'var cur={heading:null,level:0,title:"",text:[]},sections=[cur],chars=0,nodes=0,cut=false,vis=new Map(),range=d.createRange();' +
-  'function visible(el){var v=vis.get(el);if(v===undefined){var cs=getComputedStyle(el);v=cs.visibility==="visible";vis.set(el,v)}return v}' +
+  'var cur={heading:null,level:0,title:"",text:[]},sections=[cur],chars=0,nodes=0,cut=false,vis=new Map(),disp=new Map(),blk=new Map(),range=d.createRange();' +
+  'var lastBlock=null,broke=true,space=false;' +
+  'function cs(el){var v=disp.get(el);if(v===undefined){v=getComputedStyle(el);disp.set(el,v)}return v}' +
+  'function visible(el){var v=vis.get(el);if(v===undefined){v=cs(el).visibility==="visible";vis.set(el,v)}return v}' +
+  'function inline(el){var x=cs(el).display;return x==="inline"||x==="contents"}' +
+  'function blockOf(el){var b=blk.get(el);if(b===undefined){b=el.parentElement&&inline(el)?blockOf(el.parentElement):el;blk.set(el,b)}return b}' +
   'function boxed(n){try{range.selectNodeContents(n);return range.getClientRects().length>0}catch(e){return false}}' +
   'var w=d.createTreeWalker(root,5,{acceptNode:function(n){return n.nodeType===1&&SKIP[n.nodeName.toUpperCase()]?2:1}});' +
   'for(var n=w.nextNode();n;n=w.nextNode()){' +
-  'if(n.nodeType===1){if(num.has(n)&&n.getClientRects().length>0&&visible(n)){var t=(n.textContent||"").replace(/\\s+/g," ").trim();' +
-  'if(t){if(sections.length>=5000){cut=true;break}cur={heading:num.get(n),level:Number(n.localName.charAt(1)),title:t.slice(0,300),text:[]};sections.push(cur)}}continue}' +
-  'var s=n.data.replace(/\\s+/g," ").trim();if(!s)continue;var p=n.parentElement;if(!p||!visible(p)||!boxed(n))continue;' +
-  'if(nodes>=200000||chars+s.length>4000000){cut=true;break}nodes++;chars+=s.length;cur.text.push(s)}' +
+  'if(n.nodeType===1){if(BREAK[n.nodeName.toUpperCase()])broke=true;else if(cs(n).display!=="none"&&!inline(n))broke=true;' +
+  'if(num.has(n)&&n.getClientRects().length>0&&visible(n)){var t=(n.textContent||"").replace(/\\s+/g," ").trim();' +
+  'if(t){if(sections.length>=5000){cut=true;break}cur={heading:num.get(n),level:Number(n.localName.charAt(1)),title:t.slice(0,300),text:[]};sections.push(cur);broke=true}}continue}' +
+  'var raw=n.data,s=raw.replace(/\\s+/g," ").trim(),p=n.parentElement;if(!s){if(raw&&p&&boxed(n))space=true;continue}if(!p||!visible(p)||!boxed(n))continue;' +
+  'if(nodes>=200000||chars+s.length>4000000){cut=true;break}nodes++;chars+=s.length;var b=blockOf(p);' +
+  // review finding 12: a node whose white-space preserves breaks splits at each newline (findInPage never
+  // matches across a forced break); the first piece joins the previous run, the rest start new runs.
+  'var ws=cs(p).whiteSpace,segs=(ws&&(ws.indexOf("pre")===0||ws==="break-spaces"))?raw.split("\\n"):[raw];' +
+  'for(var gi=0;gi<segs.length;gi++){var seg=segs[gi];' +
+  'if(gi===0&&!broke&&b===lastBlock&&cur.text.length){cur.text[cur.text.length-1]+=(space?" ":"")+seg}else cur.text.push(seg)}' +
+  'lastBlock=b;broke=false;space=false}' +
+  'for(var k=0;k<sections.length;k++){var tx=sections[k].text;for(var j=0;j<tx.length;j++)tx[j]=tx[j].replace(/\\s+/g," ").trim()}' +
   'return {headings:all.length,sections:sections,cut:cut}})()';
 
 /** Checks the outline walk's result (it comes from a page-controlled view: a malformed one is an error). */

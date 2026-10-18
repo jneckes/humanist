@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Parity page size</title>
+<!--
+  A negative control of the PDF check (test/parity/parity.spec.ts): a print-CSS deck, one 1280×720 page per
+  slide (`@page { size: 1280px 720px }`), whose plain file:// load appends a later page rule of another size of
+  the same shape (1600×900). Print only: both screen renders are the same. So Blueline's PDF has 3 pages of
+  960 × 540 pt and the plain print 3 pages of 1200 × 675 pt: the same page count, pages 25% larger. The PDF
+  check must fail on the page sizes, with pdftoppm and without it (a Mac without poppler); it passed on the page
+  count alone without pdftoppm, while saying it had compared the sizes.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
+  .deck { position: relative; width: 1280px; height: 720px; }
+  .slide { position: absolute; inset: 0; width: 1280px; height: 720px; box-sizing: border-box; padding: 80px; background: #fdf6e3; color: #073642; font: 40px/1.3 sans-serif; display: none; }
+  .slide.active { display: block; }
+  h1 { font-size: 72px; margin: 0 0 24px; }
+  /* The deck's own print layout: one 1280×720 page per slide. */
+  @page { size: 1280px 720px; margin: 0; }
+  @media print {
+    html, body { height: auto; overflow: visible; background: #fff; }
+    .slide { display: block; position: relative; page-break-after: always; }
+    .slide:last-child { page-break-after: auto; }
+  }
+</style>
+<script>
+  // Only when opened from file:// (the plain render): a page rule of another size, after the deck's own.
+  if (location.protocol === 'file:') {
+    var st = document.createElement('style');
+    st.textContent = '@page { size: 1600px 900px; margin: 0; }';
+    document.head.appendChild(st);
+  }
+</script>
+</head>
+<body>
+<div class="deck">
+  <section class="slide active" id="one"><h1>Print one</h1><p>Every slide is a page.</p></section>
+  <section class="slide" id="two"><h1>Print two</h1><p>Sized by the page rule.</p></section>
+  <section class="slide" id="three"><h1>Print three</h1><p>The last page.</p></section>
+</div>
+<script>
+  (function () {
+    var slides = [].slice.call(document.querySelectorAll('.slide'));
+    var cur = 0;
+    function show(n) {
+      if (n < 0 || n >= slides.length) return;
+      slides[cur].classList.remove('active');
+      cur = n;
+      slides[cur].classList.add('active');
+    }
+    addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') show(cur + 1);
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') show(cur - 1);
+    });
+  })();
+</script>
+</body>
+</html>

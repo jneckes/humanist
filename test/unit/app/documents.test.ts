@@ -19,7 +19,9 @@ import {
   trustedDocumentId,
 } from '../../../packages/app/src/main/documents';
 import { sha256Hex } from '../../../packages/app/src/main/atomic-write';
+import { resolveOpenTrust, toTrustDecision } from '../../../packages/app/src/main/folders';
 import { handleDeckRequest } from '../../../packages/app/src/main/protocol';
+import { TrustStore } from '../../../packages/app/src/main/trust-store';
 
 const FIXTURES = path.resolve(__dirname, '../../../fixtures/decks');
 let dir: string;
@@ -246,6 +248,37 @@ describe('BlDocument.io (DeckIO with the 9.1 write-time checks)', () => {
     expect(d.knownHash).toBe(sha256Hex(two));
     const w = await loadDocument(path.join(FIXTURES, 'windows-1252.html'), opts);
     await expect(w.io(() => true).atomicWrite(two, w.version)).rejects.toThrow(/not UTF-8/);
+  });
+
+  it("6.10 Blueline's own writes never reset trust: a decision bound to the file follows its atomic write (a new inode); another program's file does not get it", async () => {
+    // The app's store (forUserData), an untrusted folder, an unmarked file: Allow network and Enable editing are
+    // bound to the file's identity (trust-store.ts bindsToFile).
+    const ud = fs.mkdtempSync(path.join(dir, 'ud-'));
+    const inbox = fs.realpathSync(fs.mkdtempSync(path.join(dir, 'inbox-')));
+    const store = TrustStore.forUserData(ud).load();
+    const resolve = (realpath: string, requested: boolean) => resolveOpenTrust(realpath, requested, { store, lists: () => ({ trusted: [], untrusted: [inbox] }), readMarker: noMarker, platform: 'linux' });
+    const decideTrust = async (realpath: string, requested: boolean) => {
+      const t = await resolve(realpath, requested);
+      return { trust: toTrustDecision(t), allowNetwork: t.allowNetwork, editing: t.editing, received: t.received, markerUncertain: t.markerUncertain };
+    };
+    const p = path.join(inbox, 'deck.html');
+    fs.writeFileSync(p, '<p>one</p>');
+    const first = await loadDocument(p, { ...opts, decideTrust });
+    expect(first.trust()).toBe('protected');
+    await store.remember(first.realpath, null, { allowNetwork: true, editing: true });
+    const doc = await loadDocument(p, { ...opts, decideTrust });
+    expect({ network: doc.networkAllowed(), editing: doc.editingAllowed() }).toEqual({ network: true, editing: true });
+    const ino = fs.statSync(doc.realpath).ino;
+    await doc.io(() => true).atomicWrite(new TextEncoder().encode('<p>two, saved by Blueline</p>'), doc.version);
+    expect(fs.statSync(doc.realpath).ino, 'the atomic write renames a new file into place').not.toBe(ino);
+    // Reopened after a restart: still both.
+    const reread = TrustStore.forUserData(ud).load();
+    const t = await resolveOpenTrust(doc.realpath, false, { store: reread, lists: () => ({ trusted: [], untrusted: [inbox] }), readMarker: noMarker, platform: 'linux' });
+    expect(t).toMatchObject({ state: 'protected', allowNetwork: true, editing: true });
+    // The control: another program saves a file there (temp + rename). Protected again with both off.
+    fs.writeFileSync(`${p}.partial`, '<p>three, from elsewhere</p>');
+    fs.renameSync(`${p}.partial`, p);
+    expect(await resolveOpenTrust(doc.realpath, false, { store: reread, lists: () => ({ trusted: [], untrusted: [inbox] }), readMarker: noMarker, platform: 'linux' })).toMatchObject({ allowNetwork: false, editing: false });
   });
 });
 

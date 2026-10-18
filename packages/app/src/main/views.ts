@@ -219,10 +219,26 @@ export function acceptDesignReport(r: DesignReport): { w: number; h: number } | 
  * "clicking an outline entry scrolls to its heading"). Decks use the index's SlideRef nav when it is ready,
  * else what the visible view reported (SlideState). Index decks (navKind 'index') are moved by main's keys:
  * `{ keys: target }`. Documents scroll to the entry's heading.
+ *
+ * `broken` names the gotos this document's deck was seen not to follow (window.ts: a hash or reveal goto that
+ * did not move the slide, review finding 17: a deck that writes its hash but never reads it). Those decks are
+ * moved by their keys at once.
  */
 export type NavPlan = { goto: GotoRequest } | { keys: number } | null;
 
-export function navPlanFor(entry: number, index: Pick<SlideIndex, 'kind' | 'slides'> | null, slides: SlideState | null): NavPlan {
+/** Goto kinds a document's deck did not follow (window.ts remembers them for the document). */
+export interface BrokenGotos {
+  hash?: boolean;
+  reveal?: boolean;
+}
+
+export function navPlanFor(entry: number, index: Pick<SlideIndex, 'kind' | 'slides'> | null, slides: SlideState | null, broken: BrokenGotos = {}): NavPlan {
+  const plan = basePlan(entry, index, slides);
+  if (plan && 'goto' in plan && ((plan.goto.kind === 'hash' && broken.hash) || (plan.goto.kind === 'reveal' && broken.reveal))) return { keys: entry };
+  return plan;
+}
+
+function basePlan(entry: number, index: Pick<SlideIndex, 'kind' | 'slides'> | null, slides: SlideState | null): NavPlan {
   if (!Number.isInteger(entry) || entry < 0 || entry >= VIEWS_LIMITS.index) return null;
   if (index && (index.kind === 'scroll' || index.kind === 'single')) {
     const e = index.slides[entry];

@@ -5,8 +5,8 @@
 //
 //   node scripts/parity.mjs [--committed] [--local] [--perf] [--decks <label|path>,…]
 //                           [--trust protected|trusted|both] [--pdf]
-//                           [--tolerance 8] [--dwell 2000] [--out <file.json>] [--work <dir>] [--max-saved 6] [--save-all]
-//                           [--seed-random] [--self-check] [--network]   (diagnosis, never the gate)
+//                           [--tolerance 2] [--dwell 2000] [--out <file.json>] [--work <dir>] [--max-saved 6] [--save-all]
+//                           [--unseeded] [--no-pdftoppm] [--network]   (diagnosis, never the gate)
 //   node scripts/parity.mjs --summarize <result.json> [--markdown]
 //
 // Decks: --committed (the default when nothing is chosen) is every committed fixture (fixtures/decks/*.html,
@@ -16,10 +16,15 @@
 // test-results/parity/parity.json). Diff images of failing slides go to <work>/diff/. Exit 0 when every deck
 // passes, 1 when a gate fails, 2 on a usage or harness error.
 //
-// Diagnosis of a failure (the gate is always measured without these): --seed-random gives both renders the
-// same seeded Math.random before any page script, so a deck's random decoration cannot be what differs;
-// --self-check walks a second plain render and compares the two plain renders, which measures the deck's own
-// variance between loads (clocks, timers, randomness). The gate runs offline (no proxy variables):
+// The method (decision D-10): every frame of both renders gets the same seeded Math.random before any page
+// script (Date, performance.now and crypto are left alone), and a control render, a second plain render walked
+// the same way, is compared with the plain render on every slide: a slide whose control differs is listed as
+// nondeterministic and judged like any other. A pixel differs when a channel differs by more than the
+// tolerance (2 of 255: rounding noise); the slides identical to the byte are counted beside the verdict.
+//
+// Diagnosis of a failure (the gate is always measured without these): --unseeded leaves every render's
+// Math.random as the page has it (a deck's own randomness); --no-pdftoppm compares printed pages as a machine
+// without poppler does (page counts and sizes, no pixels). The gate runs offline (no proxy variables):
 // Protected view sends its CDN allowlist DIRECT, never through a proxy from the environment, so behind such a
 // proxy only the plain and Trusted renders could load web fonts; --network keeps the variables.
 
@@ -27,13 +32,16 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync
 import { join, resolve } from 'node:path';
 import { bundleHarness, offlineEnv, PRELOAD, ROOT, runElectron } from '../test/parity/harness/bundle.mjs';
 
-const DEFAULT_TOLERANCE = 8;
+// harness/compare.ts DEFAULT_TOLERANCE, RENDER_GATE and PDF_GATE.
+const DEFAULT_TOLERANCE = 2;
 const RENDER_GATE = 0.005;
 const PDF_GATE = 0.01;
 
 function usage(msg) {
   if (msg) console.error(`parity: ${msg}`);
-  console.error('usage: node scripts/parity.mjs [--committed] [--local] [--perf] [--decks a,b] [--trust protected|trusted|both] [--pdf] [--tolerance 8] [--out f.json] [--work dir] [--max-saved 6]');
+  console.error(
+    'usage: node scripts/parity.mjs [--committed] [--local] [--perf] [--decks a,b] [--trust protected|trusted|both] [--pdf] [--tolerance 2] [--dwell 2000] [--out f.json] [--work dir] [--max-saved 6] [--save-all] [--unseeded] [--no-pdftoppm] [--network]',
+  );
   process.exit(2);
 }
 
@@ -63,9 +71,12 @@ function parseArgs(argv) {
     else if (a === '--work') o.work = resolve(val());
     else if (a === '--max-saved') o.maxSaved = Number(val());
     else if (a === '--save-all') o.saveAll = true;
-    else if (a === '--seed-random') o.seedRandom = true;
+    else if (a === '--unseeded') o.unseeded = true;
+    else if (a === '--no-pdftoppm') o.noPdftoppm = true;
     else if (a === '--network') o.network = true;
-    else if (a === '--self-check') o.selfCheck = true;
+    // Both are part of every run now (decision D-10); said so rather than refused, for older command lines.
+    else if (a === '--seed-random') console.error('parity: --seed-random: every run seeds Math.random now (--unseeded turns it off)');
+    else if (a === '--self-check') console.error('parity: --self-check: every run compares a control render now');
     else if (a === '--deck-timeout') o.deckTimeoutMs = Number(val()) * 1000;
     else if (a === '--dwell') {
       o.dwellMs = Number(val());
@@ -114,6 +125,11 @@ function table(rows, head, markdown = false) {
   return [line(head), line(w.map((n) => '-'.repeat(n))), ...rows.map(line)].join('\n');
 }
 
+/** Slide numbers (1-based) of a 0-based list, or '–'. */
+function slides(xs, sep = ' ') {
+  return Array.isArray(xs) && xs.length ? xs.map((x) => x + 1).join(sep) : '–';
+}
+
 /** One row per deck and trust state: the gate's figures (and the PDF's when it was made). */
 export function summarize(result, markdown = false) {
   const rows = [];
@@ -124,7 +140,8 @@ export function summarize(result, markdown = false) {
       if ('error' in d.pdf) pdf = `error: ${d.pdf.error.slice(0, 40)}`;
       else {
         const worst = Math.max(0, ...d.pdf.pageStats.map((p) => p.stats.overShare));
-        pdf = `${d.pdf.mode} ${d.pdf.pages}/${d.pdf.expectedPages}${d.pdf.plainPages !== null ? ` (plain ${d.pdf.plainPages})` : ''} worst ${pct(worst)} ${d.pdf.pass ? 'ok' : 'FAIL'}`;
+        const sizes = d.pdf.sizesOk === false ? ' page sizes differ' : '';
+        pdf = `${d.pdf.mode} ${d.pdf.pages}/${d.pdf.expectedPages}${d.pdf.plainPages !== null ? ` (plain ${d.pdf.plainPages})` : ''}${d.pdf.pageStats.length ? ` worst ${pct(worst)}` : ' no pixels'}${sizes} ${d.pdf.pass ? 'ok' : 'FAIL'}`;
       }
     }
     rows.push([
@@ -133,16 +150,43 @@ export function summarize(result, markdown = false) {
       d.kind,
       d.slides,
       d.compared,
+      d.identical ?? '–',
       d.worstSlide === null ? '–' : `${pct(d.worstOver)} (s${d.worstSlide + 1})`,
       pct(d.worstExact),
       maxDelta,
+      slides(d.nondeterministic),
+      slides(d.textDiffers),
       d.failures + (d.errors.length ? ` +${d.errors.length} err` : ''),
       d.pass ? 'pass' : 'FAIL',
       pdf,
       `${Math.round(d.ms / 1000)} s`,
     ]);
   }
-  return table(rows, ['Deck', 'Trust', 'Kind', 'Slides', 'Compared', `Worst >${result.tolerance}`, 'Worst exact', 'Max Δ', 'Failures', 'Render', 'PDF', 'Time'], markdown);
+  return table(
+    rows,
+    ['Deck', 'Trust', 'Kind', 'Slides', 'Compared', 'Identical', `Worst >${result.tolerance}`, 'Worst exact', 'Max Δ', 'Nondet.', 'Text ≠', 'Failures', 'Render', 'PDF', 'Time'],
+    markdown,
+  );
+}
+
+/** The lines under the table: the verdicts, the exact count, and what is listed beside the verdict. */
+export function verdictLines(result, withPdf) {
+  const decks = result.decks;
+  const compared = decks.reduce((n, d) => n + d.compared, 0);
+  const identical = decks.reduce((n, d) => n + (d.identical ?? 0), 0);
+  const listed = (key) => decks.filter((d) => Array.isArray(d[key]) && d[key].length).map((d) => `${d.label} (${d.trust}): slides ${slides(d[key], ', ')}`);
+  const count = (key) => decks.reduce((n, d) => n + (Array.isArray(d[key]) ? d[key].length : 0), 0);
+  const lines = [
+    `Render parity: ${decks.filter((d) => d.pass).length}/${decks.length} decks pass (≤ ${RENDER_GATE * 100}% of pixels over a per-channel tolerance of ${result.tolerance}/255, every slide); ${identical} of ${compared} slide comparisons identical to the byte.`,
+    `Randomness: ${result.determinism?.randomness ?? 'not recorded'}.`,
+    `Nondeterministic slides (the control render differed; judged like every other slide): ${count('nondeterministic')}${count('nondeterministic') ? `: ${listed('nondeterministic').join('; ')}` : ''}.`,
+    `Visible text differs (recorded, not the verdict): ${count('textDiffers')}${count('textDiffers') ? `: ${listed('textDiffers').join('; ')}` : ''}. Scroll position differs: ${count('scrollDiffers')}${count('scrollDiffers') ? `: ${listed('scrollDiffers').join('; ')}` : ''}.`,
+  ];
+  if (withPdf) {
+    const made = decks.filter((d) => d.pdf);
+    lines.push(`PDF: ${made.filter((d) => d.pdf.pass).length}/${made.length} decks pass (right page count; every raster page ≤ ${PDF_GATE * 100}% from Blueline's render of its slide; every printed page the size of, and with pdftoppm ≤ ${PDF_GATE * 100}% from, Chromium's own print of the file${result.pdftoppm ? '' : '; pdftoppm not available: printed pages compared by count and size only'}).`);
+  }
+  return lines;
 }
 
 async function main() {
@@ -150,7 +194,9 @@ async function main() {
   const si = process.argv.indexOf('--summarize');
   if (si >= 0) {
     const file = process.argv[si + 1] ?? usage('--summarize needs a result file');
-    console.log(summarize(JSON.parse(readFileSync(resolve(file), 'utf8')), process.argv.includes('--markdown')));
+    const result = JSON.parse(readFileSync(resolve(file), 'utf8'));
+    console.log(summarize(result, process.argv.includes('--markdown')));
+    console.log(`\n${verdictLines(result, result.decks.some((d) => d.pdf)).join('\n')}`);
     process.exit(0);
   }
   const o = parseArgs(process.argv.slice(2));
@@ -178,14 +224,18 @@ async function main() {
     maxSaved: o.maxSaved,
     dwellMs: o.dwellMs,
     saveAll: o.saveAll === true,
-    seedRandom: o.seedRandom === true,
-    selfCheck: o.selfCheck === true,
+    seedRandom: o.unseeded !== true,
+    pdftoppm: o.noPdftoppm !== true,
     deckTimeoutMs: o.deckTimeoutMs,
   };
   const jobFile = join(workDir, 'job.json');
   writeFileSync(jobFile, JSON.stringify(job, null, 1));
   rmSync(out, { force: true });
-  console.error(`parity: ${decks.length} decks × ${o.trust.join('+')}, tolerance ${o.tolerance}/255, dwell ${o.dwellMs} ms, gate ${RENDER_GATE * 100}%${o.pdf ? `, PDF gate ${PDF_GATE * 100}%` : ''}${o.seedRandom ? ', DIAGNOSIS: seeded Math.random' : ''}${o.network ? ', DIAGNOSIS: proxy variables kept' : ''}${o.selfCheck ? ', DIAGNOSIS: second plain render' : ''}`);
+  console.error(
+    `parity: ${decks.length} decks × ${o.trust.join('+')}, tolerance ${o.tolerance}/255, dwell ${o.dwellMs} ms, gate ${RENDER_GATE * 100}%${o.pdf ? `, PDF gate ${PDF_GATE * 100}%` : ''}` +
+      `, ${o.unseeded ? 'DIAGNOSIS: Math.random unseeded' : 'seeded Math.random (Date, performance.now, crypto left alone)'}, control render on every slide` +
+      `${o.noPdftoppm ? ', DIAGNOSIS: printed pages not rasterised' : ''}${o.network ? ', DIAGNOSIS: proxy variables kept' : ''}`,
+  );
   const code = await runElectron(harness, [`--bl-parity-job=${jobFile}`], {
     // Offline by default: every render sees the same network (offlineEnv); --network keeps the proxy variables.
     env: o.network ? process.env : offlineEnv(process.env),
@@ -206,11 +256,7 @@ async function main() {
   console.log(summarize(result));
   const decksPass = result.decks.every((d) => d.pass);
   const pdfPass = result.decks.every((d) => !d.pdf || d.pdf.pass);
-  console.log(
-    `\nRender parity: ${result.decks.filter((d) => d.pass).length}/${result.decks.length} decks pass (≤ ${RENDER_GATE * 100}% of pixels over a per-channel tolerance of ${result.tolerance}/255, every slide).` +
-      (o.pdf ? `\nPDF: ${result.decks.filter((d) => d.pdf && d.pdf.pass).length}/${result.decks.filter((d) => d.pdf).length} decks pass (right page count, every page ≤ ${PDF_GATE * 100}%).` : '') +
-      `\nResults: ${out}`,
-  );
+  console.log(`\n${verdictLines(result, o.pdf).join('\n')}\nResults: ${out}`);
   if (code !== 0) {
     console.error(`parity: the harness exited with ${code}`);
     process.exit(2);

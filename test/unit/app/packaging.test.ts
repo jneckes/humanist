@@ -11,8 +11,15 @@ const fuses = req('./scripts/fuses.cjs');
 const { macSigningFor } = req('./scripts/mac-signing.cjs');
 
 describe('electron-builder config', () => {
-  it('declares html and htm with role Editor (9.10 File associations)', () => {
-    expect(builder.fileAssociations).toEqual([{ ext: ['html', 'htm'], name: 'HTML Document', role: 'Editor', rank: 'Default' }]);
+  it('declares html and htm with role Editor for macOS only (9.10 File associations; 6.1)', () => {
+    expect(builder.mac.fileAssociations).toEqual([{ ext: ['html', 'htm'], name: 'HTML Document', role: 'Editor', rank: 'Default' }]);
+    // Windows registration comes only from build/installer.nsh (6.1): electron-builder merges a top-level list
+    // into every platform, and its NSIS APP_ASSOCIATE then sets .html's and .htm's own default ProgID (HKLM for a
+    // per-machine install) with an unquoted command (review finding 22).
+    expect(builder.fileAssociations).toBeUndefined();
+    expect(builder.win.fileAssociations).toBeUndefined();
+    expect(builder.nsis.fileAssociations).toBeUndefined();
+    expect(builder.linux.fileAssociations).toBeUndefined();
     expect(builder.productName).toBe('Blueline');
     expect(typeof builder.appId).toBe('string');
   });
@@ -78,6 +85,85 @@ describe('electron-builder config', () => {
   it('afterPack is the fuses script', () => {
     expect(builder.afterPack).toBe(path.join(repo, 'scripts/fuses.cjs'));
     expect(typeof fuses).toBe('function');
+  });
+});
+
+describe('installer.nsh (6.1): uninstall removes exactly what install wrote, and a per-machine install the per-user copy', () => {
+  const nsh = fs.readFileSync(path.join(repo, 'packages/app/build/installer.nsh'), 'utf8');
+  const code = nsh
+    .split('\n')
+    .map((l) => l.replace(/^\s*;.*$/, ''))
+    .join('\n');
+  const defines = new Map<string, string>();
+  for (const m of code.matchAll(/!define\s+(\w+)\s+"([^"]*)"/g)) defines.set(m[1], m[2]);
+  const expand = (s: string | undefined) => (s === undefined ? undefined : s.replace(/\$\{(\w+)\}/g, (all, k: string) => defines.get(k) ?? all));
+  const macro = (name: string) => {
+    const m = new RegExp(`!macro ${name}\\b([\\s\\S]*?)!macroend`).exec(code);
+    if (!m) throw new Error(`no macro ${name}`);
+    return m[1];
+  };
+  const args = (line: string) => [...line.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map((m) => m[1] ?? m[2] ?? m[3]);
+  const lines = (body: string) =>
+    body
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+  type Write = { root: string; key: string; value: string };
+  type Delete = { kind: string; ifempty: boolean; root: string; key: string; value?: string };
+  const writesIn = (body: string): Write[] =>
+    lines(body)
+      .filter((l) => /^WriteReg(Str|ExpandStr|DWORD|None|Bin)\b/.test(l))
+      .map((l) => {
+        const [, root, key, value] = args(l);
+        return { root, key: expand(key)!, value: expand(value)! };
+      });
+  const deletesIn = (body: string): Delete[] =>
+    lines(body)
+      .filter((l) => /^DeleteReg(Key|Value)\b/.test(l))
+      .map((l) => {
+        const a = args(l);
+        const ifempty = a[1] === '/ifempty';
+        const rest = ifempty ? a.slice(2) : a.slice(1);
+        return { kind: a[0], ifempty, root: rest[0], key: expand(rest[1])!, value: expand(rest[2]) };
+      });
+  const lower = (s: string) => s.toLowerCase();
+  const under = (key: string, parent: string) => lower(key) === lower(parent) || lower(key).startsWith(`${lower(parent)}\\`);
+
+  const install = macro('customInstall');
+  const uninstall = macro('customUnInstall');
+  // The per-machine branch of customInstall: everything between `${if} $installMode == "all"` and its `${endIf}`.
+  const branch = /\$\{if\}\s+\$installMode\s*==\s*"all"\s*\n([\s\S]*?)\n\s*\$\{endIf\}/.exec(install)?.[1] ?? null;
+  const writes = writesIn(install);
+  const removes = deletesIn(uninstall);
+  const removedBy = (w: Write, d: Delete) => (d.kind === 'DeleteRegKey' && !d.ifempty && under(w.key, d.key)) || (d.kind === 'DeleteRegValue' && lower(d.key) === lower(w.key) && d.value === w.value);
+
+  it('every key and value install writes is removed on uninstall, and uninstall removes nothing install did not write', () => {
+    for (const w of writes) expect(removes.some((d) => removedBy(w, d)), `${w.key} :: ${w.value}`).toBe(true);
+    for (const d of removes) {
+      // /ifempty removes a key only once nothing else is in it: it must be a key Blueline wrote into.
+      const wrote = d.ifempty ? writes.some((w) => under(w.key, d.key)) : writes.some((w) => removedBy(w, d));
+      expect(wrote, `${d.kind} ${d.key} :: ${d.value ?? ''}`).toBe(true);
+    }
+    // Install never writes an extension's own default value, so uninstall never reads or clears one (finding 22).
+    expect(writes.some((w) => /^Software\\Classes\\\.html?$/i.test(w.key) && w.value === '')).toBe(false);
+    expect(uninstall).not.toMatch(/ReadRegStr|HTML Document/);
+  });
+
+  it('a per-machine install removes the per-user registration a per-user install left (finding 23)', () => {
+    // electron-builder runs the old per-user uninstaller with --updated, so its customUnInstall is skipped and the
+    // HKCU ProgID would keep naming the deleted per-user Blueline.exe.
+    expect(branch, 'customInstall has a $installMode == "all" branch').not.toBeNull();
+    const body = lines(branch!);
+    // SHELL_CONTEXT is HKCU between these two (the pattern electron-builder's own templates use), and HKLM again
+    // after, for the rest of the install.
+    expect(body[0]).toBe('SetShellVarContext current');
+    expect(body.at(-1)).toBe('SetShellVarContext all');
+    // It removes exactly what uninstall removes, in the same order.
+    expect(deletesIn(branch!)).toEqual(removes);
+    expect(writesIn(branch!)).toEqual([]);
+    // After this install's own writes, and before Explorer is told the associations changed.
+    expect(install.indexOf('$installMode')).toBeGreaterThan(install.lastIndexOf('WriteReg'));
+    expect(install.lastIndexOf('SHChangeNotify')).toBeGreaterThan(install.lastIndexOf('SetShellVarContext all'));
   });
 });
 

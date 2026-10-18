@@ -1,116 +1,29 @@
-// First run in the real app (6.0 First run; 9.9 Telemetry; 9.1 Shell view): on a fresh userData the welcome
-// window opens, stores the user's name in config.json, records the crash-report answer, and opens the sample
-// deck from its copy in app data (Trusted, editable, 8 slides, the tour ticking); on the next launch it does
-// not open again.
+// First run in the real app (6.0 First run; 9.9 Telemetry; 9.1 Shell view): launched without a file on a fresh
+// userData, the app opens the welcome window by itself; it stores the user's name in config.json, records the
+// crash-report answer, and opens the sample deck from its copy in app data (Trusted, editable, 8 slides, the tour
+// ticking). The next launch without a file shows the Open window instead, without the first-run questions, and
+// Help › Welcome to Blueline still shows the whole welcome.
 //
-// The welcome window is the app's own when the app wires first run (the views item calls installFirstRun at
-// startup, and BLUELINE_TEST=1 exposes globalThis.__blWelcome). Until it does, this file bundles first-run.ts
-// (with config.ts and native-helper.ts) and loads it into the running main process, against the same userData,
-// dist/preload-welcome.cjs, dist/shell/welcome.html and dist/assets/sample the app ships, so the window, its
-// preload, its CSP, its channels and config.json are the real ones; the test says which ran.
+// The windows are the app's own: BLUELINE_TEST_FIRST_RUN=1 turns on the startup windows in a test build
+// (index.ts), and nothing here installs first run or opens the window itself (review finding 34).
 
 import { expect, test, type Page } from '@playwright/test';
-import * as esbuild from 'esbuild';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { APP_DIR, FIXTURES, ROOT, Scratch, launchApp, resolveRunAs, sleep, type BlApp } from '../helpers/app';
-import { sanitizeConfig } from '../../packages/app/src/main/config';
+import { APP_DIR, Scratch, launchApp, resolveRunAs, sleep, type BlApp } from '../helpers/app';
 
 test.describe.configure({ mode: 'serial' });
 
 const DIST = path.join(APP_DIR, 'dist');
 const SAMPLE = 'blueline-tour.html';
+const FIRST_RUN = { BLUELINE_TEST_FIRST_RUN: '1' };
 
-/** config.ts keeps seen.welcome and crashReports (the files-lifecycle contract request). */
-const configKeepsFirstRun = (() => {
-  const c = sanitizeConfig({ seen: { welcome: true }, crashReports: false }) as { seen?: { welcome?: boolean }; crashReports?: boolean };
-  return c.seen?.welcome === true && c.crashReports === false;
-})();
-
-let bundled: Promise<string> | null = null;
-
-/** Bundles first run into test-results/files-lifecycle/ (once per test process), readable by the app's user. */
-function harnessBundle(): Promise<string> {
-  if (bundled) return bundled;
-  bundled = (async () => {
-    const outDir = path.join(ROOT, 'test-results', 'files-lifecycle');
-    fs.mkdirSync(outDir, { recursive: true, mode: 0o755 });
-    fs.chmodSync(path.join(ROOT, 'test-results'), 0o755);
-    fs.chmodSync(outDir, 0o755);
-    const out = path.join(outDir, `welcome-harness-${process.pid}.cjs`);
-    const coreSubpaths: esbuild.Plugin = {
-      name: 'core-subpaths',
-      setup(build) {
-        build.onResolve({ filter: /^@blueline\/core\// }, (a) => ({ path: path.join(ROOT, 'packages/core/src', a.path.slice('@blueline/core/'.length) + '.ts') }));
-        build.onResolve({ filter: /^@blueline\/core$/ }, () => ({ path: path.join(ROOT, 'packages/core/src/index.ts') }));
-      },
-    };
-    await esbuild.build({
-      stdin: {
-        contents: `
-          import * as path from 'node:path';
-          import { ConfigStore } from './packages/app/src/main/config';
-          import { configFirstRunSettings, installFirstRun, SAMPLE_FILE } from './packages/app/src/main/first-run';
-          import { nativeHelper } from './packages/app/src/main/native-helper';
-          import { servedDirs } from './packages/app/src/main/app-paths';
-          export function install(o: { userData: string; dist: string }) {
-            const config = ConfigStore.forUserData(o.userData);
-            config.load();
-            const t = (globalThis as any).__blTest;
-            installFirstRun({
-              settings: configFirstRunSettings(config as any, () => 'Me'),
-              helper: nativeHelper,
-              open: async (p: string) => (await t.open(p, false)) !== null,
-              sampleSource: path.join(o.dist, 'assets', 'sample', SAMPLE_FILE),
-              userData: o.userData,
-              preload: path.join(o.dist, 'preload-welcome.cjs'),
-              shellDir: servedDirs(o.dist, false).shellDir,
-              platform: process.platform,
-              devTools: true,
-              log: (m: string) => console.error('[blueline] ' + m),
-              test: true,
-            });
-          }
-        `,
-        resolveDir: ROOT,
-        loader: 'ts',
-        sourcefile: 'welcome-harness.ts',
-      },
-      bundle: true,
-      platform: 'node',
-      format: 'cjs',
-      target: 'node24',
-      external: ['electron'],
-      outfile: out,
-      logLevel: 'silent',
-      plugins: [coreSubpaths],
-    });
-    fs.chmodSync(out, 0o644);
-    return out;
-  })();
-  return bundled;
-}
-
-/** Makes first run exist in the app: its own wiring, or the harness. */
-async function ensureFirstRun(app: BlApp): Promise<'app' | 'harness'> {
-  const wired = await app.electronApp.evaluate(() => typeof (globalThis as Record<string, unknown>).__blWelcome === 'object');
-  if (wired) return 'app';
-  const bundle = await harnessBundle();
-  await app.electronApp.evaluate(
-    (_e, a) => {
-      const req = (process as unknown as { mainModule?: { require(id: string): unknown } }).mainModule?.require;
-      if (!req) throw new Error('no main module require');
-      (req(a.bundle) as { install(o: { userData: string; dist: string }): void }).install({ userData: a.userData, dist: a.dist });
-    },
-    { bundle, userData: app.userData, dist: DIST },
-  );
-  return 'harness';
-}
-
-async function welcomePage(app: BlApp): Promise<Page> {
+/** The welcome (or Open) window's page, once the app has opened it; `except` skips a page already seen. */
+async function welcomePage(app: BlApp, except: Page | null = null): Promise<Page> {
   const end = Date.now() + 15_000;
   while (Date.now() < end) {
-    for (const p of app.electronApp.windows()) if (p.url().startsWith('app://shell/welcome.html')) {
+    for (const p of app.electronApp.windows()) {
+      if (p === except || p.isClosed() || !p.url().startsWith('app://shell/welcome.html')) continue;
       await p.waitForLoadState('domcontentloaded');
       return p;
     }
@@ -138,29 +51,17 @@ async function waitConfig(userData: string, pred: (c: Record<string, unknown>) =
   throw new Error(`config.json never matched; last: ${JSON.stringify(c)}`);
 }
 
-async function launch(s: Scratch, userData?: string): Promise<BlApp> {
-  // A file, so the app does not ask for one at startup (the welcome window replaces that ask once wired).
-  const dir = s.dir('files-lifecycle-deck');
-  const file = path.join(dir, 'single.html');
-  fs.copyFileSync(path.join(FIXTURES, 'decks', 'single.html'), file);
-  s.own(file);
-  const app = await launchApp({ files: [file], scratch: s, userData });
-  await app.waitForDeck('single.html');
-  return app;
-}
+const welcomeWc = (app: BlApp) => app.electronApp.evaluate(() => (globalThis as unknown as { __blWelcome: { webContentsId(): number | null } }).__blWelcome.webContentsId());
 
 const scratch = new Scratch(resolveRunAs());
 let userData = '';
 
 test.afterAll(() => scratch.cleanup());
 
-test('first launch: the welcome window opens, stores the name and the crash-report answer, and opens the sample deck', async () => {
-  const app = await launch(scratch);
+test('first launch: the welcome window opens by itself, stores the name and the crash-report answer, and opens the sample deck', async () => {
+  const app = await launchApp({ files: [], scratch, env: FIRST_RUN });
   userData = app.userData;
   try {
-    const mode = await ensureFirstRun(app);
-    test.info().annotations.push({ type: 'welcome-window', description: mode === 'app' ? "the app's own wiring" : 'loaded by this spec (the app does not wire first run yet)' });
-    expect(await app.electronApp.evaluate(() => (globalThis as unknown as { __blWelcome: { maybeShow(): boolean } }).__blWelcome.maybeShow())).toBe(true);
     const page = await welcomePage(app);
 
     // 9.1 Shell view: the shell CSP, and only the welcome API (named functions), no Node.
@@ -185,10 +86,11 @@ test('first launch: the welcome window opens, stores the name and the crash-repo
     const c = await waitConfig(userData, (x) => x.name === 'Ada Lovelace');
     expect(c.personId).toBe(personId);
 
-    // 9.9: crash reports, asked once; stored (nothing is sent: there is no crash server in v1).
+    // 9.9: crash reports, asked once at first run; stored (nothing is sent: there is no crash server in v1).
     await page.locator('#crash-no').check();
-    if (configKeepsFirstRun) await waitConfig(userData, (x) => x.crashReports === false);
-    else test.info().annotations.push({ type: 'fixme', description: 'config.ts does not keep crashReports and seen.welcome yet (contract request)' });
+    await waitConfig(userData, (x) => x.crashReports === false);
+    // Offered once: recorded as soon as it was on screen.
+    await waitConfig(userData, (x) => (x.seen as { welcome?: boolean } | undefined)?.welcome === true);
 
     // Try the sample deck: a copy in app data, opened Trusted and editable (6.0: it must show Edit).
     await expect(page.locator('#tour')).toBeHidden();
@@ -213,10 +115,6 @@ test('first launch: the welcome window opens, stores the name and the crash-repo
 
     // The tour ticks Review when the sample's window switches to it (the views item reports mode changes).
     await app.run('mode-review', deck.docId);
-    await app.electronApp.evaluate(
-      (_e, p) => (globalThis as unknown as { __blWelcome: { noteMode(p: string, m: string): void } }).__blWelcome.noteMode(p, 'review'),
-      w.realpath,
-    );
     await expect(page.locator('#tour-steps li').nth(1)).toHaveAttribute('data-done', 'true');
 
     // Opening it again opens the same copy (its edits and notes are the user's).
@@ -232,23 +130,34 @@ test('first launch: the welcome window opens, stores the name and the crash-repo
         if (!/has been closed/.test(String(e))) throw e;
       });
     await closed;
-    await expect.poll(async () => app.electronApp.evaluate(() => (globalThis as unknown as { __blWelcome: { webContentsId(): number | null } }).__blWelcome.webContentsId())).toBeNull();
+    await expect.poll(() => welcomeWc(app)).toBeNull();
     expect(fs.readFileSync(w.realpath, 'utf8')).toContain('the user was here');
   } finally {
     await app.close();
   }
 });
 
-test('the next launch: the welcome window does not open again', async () => {
-  test.fixme(!configKeepsFirstRun, 'config.ts drops seen.welcome until the files-lifecycle contract request (AppConfig.seen.welcome, crashReports) lands');
+test('the next launch without a file: the Open window, not the first-run questions; Help › Welcome to Blueline shows the whole welcome', async () => {
   expect(userData).not.toBe('');
-  const app = await launch(scratch, userData);
+  const app = await launchApp({ files: [], scratch, userData, env: FIRST_RUN });
   try {
-    await ensureFirstRun(app);
-    expect(await app.electronApp.evaluate(() => (globalThis as unknown as { __blWelcome: { maybeShow(): boolean } }).__blWelcome.maybeShow())).toBe(false);
-    expect(app.electronApp.windows().some((p) => p.url().startsWith('app://shell/welcome.html'))).toBe(false);
-    const c = readConfig(userData);
-    expect(c).toMatchObject({ name: 'Ada Lovelace', crashReports: false, seen: { welcome: true } });
+    const open = await welcomePage(app);
+    await expect(open.locator('#open-file')).toBeEnabled();
+    await expect(open.locator('#open-sample')).toBeEnabled();
+    for (const id of ['#name-title', '#crash-title', '#tour', '#done']) await expect(open.locator(id)).toBeHidden();
+    // The first run's answers stay as they were given.
+    expect(readConfig(userData)).toMatchObject({ name: 'Ada Lovelace', crashReports: false, seen: { welcome: true } });
+
+    // Help › Welcome to Blueline: the whole welcome replaces the Open window (the app does not quit in between).
+    const openWc = await welcomeWc(app);
+    await app.run('welcome');
+    const welcome = await welcomePage(app, open);
+    await expect.poll(() => welcomeWc(app)).not.toBe(openWc);
+    await expect(welcome.locator('#name-title')).toBeVisible();
+    await expect(welcome.locator('#crash-title')).toBeVisible();
+    await expect(welcome.locator('#name-input')).toHaveValue('Ada Lovelace');
+    await expect(welcome.locator('#crash-no')).toBeChecked();
+    await expect.poll(() => open.isClosed()).toBe(true);
   } finally {
     await app.close();
   }

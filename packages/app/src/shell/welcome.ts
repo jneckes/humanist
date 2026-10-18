@@ -4,6 +4,10 @@
 // HTML, and no data goes into a style string (9.1 Shell view); the page talks to main only through
 // window.blueline, the welcome preload's contextBridge API. Main shows the Open dialog itself: the page never
 // names a file.
+//
+// The same page is the Open window (?mode=open, first-run.ts): what later launches show on Windows and Linux,
+// with the three ways to start and none of the first run's questions or its tour. Main loads the page in one
+// mode or the other and refuses the first-run answers from the Open window whatever the page shows.
 
 import { tourSteps, type NameResult, type WelcomeApi, type WelcomeState } from '@blueline/core/ipc-files';
 import type { DefaultAppResult, DefaultAppStatus } from '@blueline/core/ipc-trust';
@@ -11,6 +15,9 @@ import type { DefaultAppResult, DefaultAppStatus } from '@blueline/core/ipc-trus
 // window.blueline is declared as the document shell's ShellApi (shell.ts); in this window the welcome preload
 // puts a WelcomeApi there instead.
 const api = (window as unknown as { blueline: WelcomeApi }).blueline;
+
+/** The first-run welcome, or the Open window. */
+const mode: 'welcome' | 'open' = new URLSearchParams(location.search).get('mode') === 'open' ? 'open' : 'welcome';
 
 function el<T extends HTMLElement = HTMLElement>(id: string): T {
   const e = document.getElementById(id);
@@ -73,7 +80,8 @@ function defaultResultText(r: DefaultAppResult): { text: string; kind: 'ok' | 'e
 
 function renderTour(s: WelcomeState): void {
   const section = el('tour');
-  section.hidden = !s.sample.opened;
+  // The Open window has no tour: it closes once the sample deck is open.
+  section.hidden = mode !== 'welcome' || !s.sample.opened;
   const list = el('tour-steps');
   list.replaceChildren();
   for (const step of tourSteps(s.platform)) {
@@ -125,7 +133,19 @@ async function saveName(): Promise<boolean> {
   return true;
 }
 
+/** The page's mode: the first run's parts are shown only in the welcome; the Open window says what it is. */
+function applyMode(): void {
+  if (mode === 'welcome') {
+    for (const e of document.querySelectorAll<HTMLElement>('[data-first-run]')) e.hidden = false;
+    return;
+  }
+  document.title = 'Blueline';
+  el('title').textContent = 'Blueline';
+  el('lede').textContent = 'Open an HTML deck or document. You can also drop an .html file anywhere on this window.';
+}
+
 function setup(): void {
+  applyMode();
   el('open-file').addEventListener('click', () => {
     void (async () => {
       if (!(await saveName())) return;

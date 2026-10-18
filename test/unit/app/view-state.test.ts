@@ -4,9 +4,13 @@
 import { describe, expect, it } from 'vitest';
 import { RELOAD_DEFERRED_TEXT, VIEW_STATE_LIMITS, type DeckBusy, type DeckViewState } from '../../../packages/core/src/ipc-files';
 import {
+  RESTORE_MAX_MS,
   ReloadCoordinator,
   ViewStateRequests,
+  reopenForTrust,
+  trustDifferences,
   validateDeckBusy,
+  validateViewStateApplied,
   validateViewState,
   validateViewStateReply,
   type ReloadCoordinatorDeps,
@@ -99,7 +103,7 @@ describe('ViewStateRequests (capture round trip)', () => {
 });
 
 /** A coordinator over recording deps; `reload` resolves when the test says so. */
-function harness(o: { capture?: DeckViewState | null; reloadFails?: boolean } = {}) {
+function harness(o: { capture?: DeckViewState | null; reloadFails?: boolean; now?: () => number } = {}) {
   const calls: string[] = [];
   const deferred: boolean[] = [];
   const applied: DeckViewState[] = [];
@@ -121,6 +125,7 @@ function harness(o: { capture?: DeckViewState | null; reloadFails?: boolean } = 
     },
     onDeferred: (d) => deferred.push(d),
     log: (m) => calls.push(`log ${m}`),
+    now: o.now,
   };
   const c = new ReloadCoordinator(deps, { version: 'v1' });
   const settle = () => new Promise((r) => setTimeout(r, 0));
@@ -281,5 +286,128 @@ describe('ReloadCoordinator: the deferral table (6.6)', () => {
     h.c.resetBusy();
     await h.finish();
     expect(h.calls[1]).toBe('reload v2 #/3');
+  });
+});
+
+describe('ReloadCoordinator: a reload during a restore (review finding 20)', () => {
+  it('a reload that starts before the page restored the last state saves that state again; capture is not called', async () => {
+    const h = harness();
+    h.c.requestReload('v2');
+    await h.finish();
+    expect(h.calls).toEqual(['capture', 'reload v2 #/3', 'apply']);
+    expect(h.c.restoring).toBe(true);
+    // The second save lands while the page still restores slide 3 (main is pressing its keys).
+    h.c.requestReload('v3');
+    await h.finish();
+    expect(h.calls).toEqual(['capture', 'reload v2 #/3', 'apply', 'reload v3 #/3', 'apply']);
+    expect(h.applied).toEqual([good, good]);
+  });
+
+  it('once the page confirmed the restore (and main replayed its keys), the next reload captures the page again', async () => {
+    const h = harness();
+    h.c.requestReload('v2');
+    await h.finish();
+    h.c.restoreDone();
+    expect(h.c.restoring).toBe(false);
+    h.c.requestReload('v3');
+    await h.finish();
+    expect(h.calls.filter((c) => c === 'capture')).toHaveLength(2);
+  });
+
+  it('a restore the page never confirms stops holding the state back after RESTORE_MAX_MS', async () => {
+    let t = 0;
+    const h = harness({ now: () => t });
+    h.c.requestReload('v2');
+    await h.finish();
+    t += RESTORE_MAX_MS + 1;
+    expect(h.c.restoring).toBe(false);
+    h.c.requestReload('v3');
+    await h.finish();
+    expect(h.calls.filter((c) => c === 'capture')).toHaveLength(2);
+  });
+
+  it('saveState reuses the restore for a reload in place too (Allow network, reduced motion)', async () => {
+    const h = harness();
+    h.c.applyState({ ...good, slide: 9 });
+    expect(await h.c.saveState()).toEqual({ ...good, slide: 9 });
+    expect(h.calls).toEqual(['apply']);
+    h.c.restoreDone();
+    expect(await h.c.saveState()).toEqual(good);
+  });
+
+  it('a forced request reloads even the version shown (a trust change, D-1); an unforced duplicate does not', async () => {
+    const h = harness();
+    h.c.requestReload('v1');
+    await h.finish();
+    expect(h.calls).toEqual([]);
+    h.c.requestReload('v1', { force: true });
+    await h.finish();
+    expect(h.calls).toEqual(['capture', 'reload v1 #/3', 'apply']);
+  });
+
+  it('the page\'s "applied" message carries nothing', () => {
+    expect(validateViewStateApplied(undefined).ok).toBe(true);
+    expect(validateViewStateApplied(null).ok).toBe(true);
+    expect(validateViewStateApplied({ slide: 3 }).ok).toBe(false);
+  });
+});
+
+describe('trust on reload (review finding 0, D-1): what differs, and whether the window opens again', () => {
+  const trusted = { trust: 'trusted' as const, reason: null, marker: null, markerUncertain: false, networkAllowed: false, editingAllowed: true };
+  const decided = (t: 'trusted' | 'protected', o: { reason?: string | null; marker?: string | null; allowNetwork?: boolean; editing?: boolean; uncertain?: boolean } = {}) => ({
+    trust: { trust: t, reason: o.reason ?? (t === 'protected' ? 'Came from the internet' : null), marker: o.marker ?? null },
+    allowNetwork: o.allowNetwork ?? false,
+    editing: o.editing ?? t === 'trusted',
+    markerUncertain: o.uncertain ?? false,
+  });
+
+  it('the same decision: nothing differs, the reload stays in place', () => {
+    expect(trustDifferences(trusted, decided('trusted'))).toEqual([]);
+    expect(reopenForTrust(trusted, decided('trusted'))).toBe(false);
+  });
+
+  it('an unmarked Trusted file replaced by a marked download opens again (Protected)', () => {
+    const d = decided('protected', { marker: '0083;6720f2b7;Chrome;' });
+    expect(trustDifferences(trusted, d)).toEqual(['trust', 'reason', 'marker']);
+    expect(reopenForTrust(trusted, d)).toBe(true);
+  });
+
+  it('Allow network remembered on marker A does not carry to marker B', () => {
+    const now = { trust: 'protected' as const, reason: 'Came from the internet', marker: 'A', markerUncertain: false, networkAllowed: true, editingAllowed: false };
+    expect(trustDifferences(now, decided('protected', { marker: 'B' }))).toEqual(['marker', 'allowNetwork']);
+    expect(reopenForTrust(now, decided('protected', { marker: 'B' }))).toBe(true);
+    // The same marker with the switch remembered: in place.
+    expect(reopenForTrust(now, decided('protected', { marker: 'A', allowNetwork: true }))).toBe(false);
+  });
+
+  it('a marker that can no longer be read, or a switch the decision no longer has, opens again', () => {
+    const now = { trust: 'protected' as const, reason: 'Came from the internet', marker: 'A', markerUncertain: false, networkAllowed: false, editingAllowed: true };
+    expect(trustDifferences(now, decided('protected', { marker: 'A' }))).toEqual(['editing']);
+    expect(reopenForTrust(now, decided('protected', { reason: 'Could not check where this file came from', uncertain: true }))).toBe(true);
+  });
+
+  it('a Protected-on-request window keeps its session-only switches across an unmarked change (review finding 0 re-verification)', () => {
+    // The user opened in Protected view on request and turned Allow network on this session (not remembered).
+    const now = { trust: 'protected' as const, reason: 'Opened at your request', marker: null, markerUncertain: false, networkAllowed: true, editingAllowed: false };
+    // An unmarked save: the fresh decision is the same requested-Protected with the switches off.
+    const d = decided('protected', { reason: 'Opened at your request', marker: null });
+    // Without the requested flag the live switch would look like a difference and force a reopen (net off).
+    expect(trustDifferences(now, d)).toEqual(['allowNetwork']);
+    expect(reopenForTrust(now, d)).toBe(true);
+    // With it, the session switch is not a trust input: reload in place and keep it.
+    expect(trustDifferences(now, d, { requested: true })).toEqual([]);
+    expect(reopenForTrust(now, d, { requested: true })).toBe(false);
+    // A real trust change (a marker appears) still reopens, even on a requested window.
+    expect(reopenForTrust(now, decided('protected', { reason: 'Came from the internet', marker: '0083;x;Chrome;' }), { requested: true })).toBe(true);
+  });
+
+  it('Protected to Trusted opens again too (a new docId and the persistent partition)', () => {
+    const now = { trust: 'protected' as const, reason: 'Came from the internet', marker: 'A', markerUncertain: false, networkAllowed: false, editingAllowed: false };
+    expect(reopenForTrust(now, decided('trusted'))).toBe(true);
+  });
+
+  it('Trusted to Trusted with another marker (a trusted folder) reloads in place: same docId, partition and switches', () => {
+    expect(trustDifferences({ ...trusted, marker: 'A' }, decided('trusted', { marker: 'B' }))).toEqual(['marker']);
+    expect(reopenForTrust({ ...trusted, marker: 'A' }, decided('trusted', { marker: 'B' }))).toBe(false);
   });
 });

@@ -14,6 +14,13 @@ vi.mock('electron', () => ({
   session: { fromPartition: () => ({}) },
 }));
 
+/** A stand-in for the document's renderer (saveAsPdf without Electron); null: the real one. */
+const fakeRenderer = vi.hoisted(() => ({ use: null as null | ((vp: unknown, fn: (view: unknown) => Promise<unknown>) => Promise<unknown>) }));
+vi.mock('../../../packages/app/src/main/render-service', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../../packages/app/src/main/render-service')>();
+  return { ...real, rendererFor: (...a: Parameters<typeof real.rendererFor>) => (fakeRenderer.use ? { use: fakeRenderer.use } : real.rendererFor(...a)) };
+});
+
 import { PDFDict, PDFDocument, PDFName, PDFRawStream, PDFRef, PDFString } from 'pdf-lib';
 import {
   LETTER_REGIONS,
@@ -22,7 +29,10 @@ import {
   decidePdfMode,
   defaultPdfPath,
   documentPageSize,
+  importMediaOf,
+  mediaAppliesToPrint,
   mediaSelectsPrint,
+  pagesHaveSlideAspect,
   pageSizeForRegion,
   paperRegion,
   pdfPageCount,
@@ -32,10 +42,12 @@ import {
   refusePdfOut,
   regionOfLocale,
   retitleIncrementally,
+  saveAsPdf,
   scanPrintCss,
   setPdfTitle,
   stripCssComments,
   titleEntryRange,
+  writePdfFile,
 } from '../../../packages/app/src/main/pdf';
 
 const tmp: string[] = [];
@@ -103,18 +115,107 @@ describe('print CSS detection (6.9: an @page rule, or a @media print that lays o
     expect(logs[1]).toMatch(/cut at 16 M/);
   });
 
-  it('decidePdfMode: documents print as documents; decks by their print CSS, else raster', () => {
+  it('decidePdfMode: documents print as documents; a deck prints its CSS only as slide pages (one per slide, the slide’s aspect within 1%), else raster (decision D-6)', () => {
     const none = { pageRule: false, printBreaks: false, printRules: false };
     const page = { ...none, pageRule: true };
     const breaks = { ...none, printBreaks: true, printRules: true };
+    const design = { w: 1280, h: 720 };
+    const slidePages = (n: number) => ({ pageSizes: Array(n).fill({ w: 960, h: 540 }), design });
     expect(decidePdfMode('scroll', page, null, 3)).toBe('document');
     expect(decidePdfMode('single', none, null, 1)).toBe('document');
-    expect(decidePdfMode('generic', page, null, 3)).toBe('print-css');
-    expect(decidePdfMode('reveal', page, 5, 3)).toBe('print-css');
-    expect(decidePdfMode('generic', breaks, 4, 4)).toBe('print-css');
-    expect(decidePdfMode('generic', breaks, 2, 4)).toBe('raster');
+    // An @page rule is no longer print-css by itself: Chromium's print must be the deck as slide pages.
+    expect(decidePdfMode('generic', page, null, 3)).toBe('raster');
+    expect(decidePdfMode('reveal', page, 5, 3)).toBe('raster');
+    expect(decidePdfMode('reveal', page, 5, 3, slidePages(5))).toBe('raster');
+    expect(decidePdfMode('generic', page, 1, 4, slidePages(1))).toBe('raster');
+    expect(decidePdfMode('generic', page, 3, 3, slidePages(3))).toBe('print-css');
+    expect(decidePdfMode('generic', breaks, 4, 4, slidePages(4))).toBe('print-css');
+    expect(decidePdfMode('generic', breaks, 4, 4)).toBe('raster');
+    expect(decidePdfMode('generic', breaks, 2, 4, slidePages(2))).toBe('raster');
     expect(decidePdfMode('generic', breaks, null, 4)).toBe('raster');
-    expect(decidePdfMode('generic', none, 4, 4)).toBe('raster');
+    expect(decidePdfMode('generic', none, 4, 4, slidePages(4))).toBe('raster');
+    // One page per slide on the default paper (Letter): not the slide's aspect.
+    expect(decidePdfMode('generic', breaks, 4, 4, { pageSizes: Array(4).fill({ w: 612, h: 792 }), design: { w: 1600, h: 900 } })).toBe('raster');
+    // A page count that matches but one page of another shape.
+    expect(decidePdfMode('generic', page, 3, 3, { pageSizes: [{ w: 960, h: 540 }, { w: 960, h: 600 }, { w: 960, h: 540 }], design })).toBe('raster');
+    // The page sizes must be the printed pages.
+    expect(decidePdfMode('generic', page, 3, 3, slidePages(2))).toBe('raster');
+  });
+
+  it('pagesHaveSlideAspect: within 1% of the design size’s aspect', () => {
+    const design = { w: 1600, h: 900 };
+    expect(pagesHaveSlideAspect({ pageSizes: [{ w: 1200, h: 675 }], design })).toBe(true);
+    expect(pagesHaveSlideAspect({ pageSizes: [{ w: 1200, h: 681 }], design })).toBe(true); // 0.9 %
+    expect(pagesHaveSlideAspect({ pageSizes: [{ w: 1200, h: 683 }], design })).toBe(false); // 1.2 %
+    expect(pagesHaveSlideAspect({ pageSizes: [{ w: 612, h: 792 }], design: { w: 720, h: 932 } })).toBe(true);
+    expect(pagesHaveSlideAspect({ pageSizes: [], design })).toBe(false);
+    expect(pagesHaveSlideAspect({ pageSizes: [{ w: 0, h: 675 }], design })).toBe(false);
+  });
+
+  it('a sheet’s media list: <link>/<style> media, an @import’s list for the sheet it imports, and sheets that never apply to print (review finding 13)', () => {
+    const doc = 'blueline://0123456789abcdef/deck.html';
+    const files = 'blueline://0123456789abcdef-files/';
+    const breaks = '.slide { display: block; break-after: page }';
+    // `@import url(x) print` in an inline sheet: the imported sheet (served from the -files host) is print CSS.
+    expect(scanPrintCss([{ text: '@import url("print.css") print;', url: doc, media: null }, { text: breaks, url: `${files}print.css`, media: null }]).printBreaks).toBe(true);
+    expect(scanPrintCss([{ text: "@import 'print.css' print;", url: doc, media: null }, { text: breaks, url: `${files}print.css`, media: null }]).printBreaks).toBe(true);
+    // A wrapper sheet that imports it with print.
+    expect(scanPrintCss([{ text: '@import url(print.css) layer(p) print;', url: `${files}wrapper.css`, media: null }, { text: breaks, url: `${files}print.css`, media: null }]).printBreaks).toBe(true);
+    // Imported with no media, or for screen: not print CSS.
+    expect(scanPrintCss([{ text: '@import url("print.css");', url: doc, media: null }, { text: breaks, url: `${files}print.css`, media: null }]).printBreaks).toBe(false);
+    expect(scanPrintCss([{ text: '@import url("print.css") screen;', url: doc, media: null }, { text: `@page { size: 1280px 720px } ${breaks}`, url: `${files}print.css`, media: null }])).toEqual({ pageRule: false, printBreaks: false, printRules: false });
+    // <link media="print"> and <style media="print"> (the owner node's media attribute).
+    expect(scanPrintCss([{ text: breaks, url: `${files}print.css`, media: 'print' }]).printBreaks).toBe(true);
+    // A screen-only sheet is not read at all: its @page rule and @media print layout apply to no print.
+    expect(scanPrintCss([{ text: `@page { size: 1280px 720px } @media print { ${breaks} }`, url: `${files}screen.css`, media: 'screen' }])).toEqual({ pageRule: false, printBreaks: false, printRules: false });
+    expect(scanPrintCss([{ text: '@page { margin: 0 }', url: doc, media: 'all' }]).pageRule).toBe(true);
+    expect(scanPrintCss([{ text: '@page { margin: 0 }', url: doc, media: 'not screen' }]).pageRule).toBe(true);
+
+    // The print scope is inherited down the @import chain (review finding 13 re-verification): an imported sheet
+    // with no media list of its own takes the scope of the print-media sheet that pulled it in, at any depth.
+    const layout = `${files}layout.css`;
+    const wrap = `${files}wrap-plain.css`;
+    // N1: <style media=print>@import url(layout.css);</style> — layout.css inherits the style's print scope.
+    expect(scanPrintCss([{ text: '@import url(layout.css);', url: doc, media: 'print' }, { text: breaks, url: layout, media: null }]).printBreaks).toBe(true);
+    // N2: <style>@import url(wrap-plain.css) print;</style>, wrap-plain.css: @import url(layout.css);
+    expect(
+      scanPrintCss([
+        { text: '@import url(wrap-plain.css) print;', url: doc, media: null },
+        { text: '@import url(layout.css);', url: wrap, media: null },
+        { text: breaks, url: layout, media: null },
+      ]).printBreaks,
+    ).toBe(true);
+    // N3: <link href=wrap-plain.css media=print>, wrap-plain.css: @import url(layout.css);
+    expect(
+      scanPrintCss([
+        { text: '@import url(layout.css);', url: wrap, media: 'print' },
+        { text: breaks, url: layout, media: null },
+      ]).printBreaks,
+    ).toBe(true);
+    // Still screen-scoped when the chain narrows to screen: <style media=print>@import url(x) screen;</style>.
+    expect(scanPrintCss([{ text: '@import url(layout.css) screen;', url: doc, media: 'print' }, { text: breaks, url: layout, media: null }]).printBreaks).toBe(false);
+  });
+
+  it('mediaAppliesToPrint and importMediaOf', () => {
+    expect(mediaAppliesToPrint('')).toBe(true);
+    expect(mediaAppliesToPrint('all')).toBe(true);
+    expect(mediaAppliesToPrint('print')).toBe(true);
+    expect(mediaAppliesToPrint('screen, print and (orientation: landscape)')).toBe(true);
+    expect(mediaAppliesToPrint('(min-width: 600px)')).toBe(true);
+    expect(mediaAppliesToPrint('not screen')).toBe(true);
+    expect(mediaAppliesToPrint('screen')).toBe(false);
+    expect(mediaAppliesToPrint('only screen and (max-width: 900px)')).toBe(false);
+    expect(mediaAppliesToPrint('not print')).toBe(false);
+    expect(mediaAppliesToPrint('speech, tv')).toBe(false);
+    const doc = 'blueline://0123456789abcdef/sub/deck.html';
+    // A no-media @import (c.css) is kept with media null: the sheet it pulls in inherits the importing sheet's
+    // scope (review finding 13 re-verification).
+    expect(importMediaOf('@import url("../a.css") print; @import "b.css" screen and (color); @import url(c.css); @import url(d.css) supports(display: grid) print;', doc)).toEqual([
+      { key: 'blueline://0123456789abcdef/a.css', media: 'print' },
+      { key: 'blueline://0123456789abcdef/sub/b.css', media: 'screen and (color)' },
+      { key: 'blueline://0123456789abcdef/sub/c.css', media: null },
+      { key: 'blueline://0123456789abcdef/sub/d.css', media: 'print' },
+    ]);
   });
 });
 
@@ -264,6 +365,7 @@ describe('raster pages (6.9 Other decks: the slide’s aspect, lossless)', () =>
     await expect(pdf.addPage(new Uint8Array(3), w, h)).rejects.toThrow();
     const bytes = await pdf.save();
     expect(await pdfPageCount(bytes)).toBe(2);
+    expect(pdf.pages).toBe(2);
     const doc = await PDFDocument.load(bytes);
     expect(doc.getTitle()).toBe('Deck “title”');
     const page = doc.getPage(0);
@@ -277,6 +379,25 @@ describe('raster pages (6.9 Other decks: the slide’s aspect, lossless)', () =>
     const rgb = inflateSync(img.contents);
     expect(rgb.length).toBe(w * h * 3);
     expect(Array.from(rgb.subarray(0, 3))).toEqual([10, 120, 200]);
+  });
+
+  it('pages in slide order, whatever order the captures came in; a slide captured twice keeps its last capture (review finding 33)', async () => {
+    const pdf = await RasterPdf.create({ w: 16, h: 9 }, null);
+    const w = 2;
+    const h = 1;
+    const shot = (v: number) => new Uint8Array(Array.from({ length: w * h }, () => [v, v, v, 255]).flat());
+    // The walk reached slides 0, 1, 3, 4 by keys and slide 2 by its hash, last.
+    for (const slide of [0, 1, 3, 4]) await pdf.addPage(shot(slide * 10), w, h, slide);
+    await pdf.addPage(shot(99), w, h, 2);
+    await pdf.addPage(shot(20), w, h, 2);
+    await expect(pdf.addPage(shot(1), w, h, -1)).rejects.toThrow(/slot/);
+    expect(pdf.pages).toBe(5);
+    const doc = await PDFDocument.load(await pdf.save());
+    const firstByte = doc.getPages().map((page) => {
+      const xo = page.node.Resources()!.lookup(PDFName.of('XObject'), PDFDict);
+      return inflateSync((doc.context.lookup(xo.values()[0] as PDFRef) as PDFRawStream).contents)[0];
+    });
+    expect(firstByte).toEqual([0, 10, 20, 30, 40]);
   });
 });
 
@@ -306,5 +427,95 @@ describe('the output path', () => {
     fs.linkSync(deck, path.join(d, 'hard.pdf'));
     expect(await refusePdfOut(path.join(d, 'hard.pdf'), doc)).toMatch(/document itself/);
     expect(await refusePdfOut(path.join(d, 'missing', 'x.pdf'), doc)).toMatch(/does not exist/);
+  });
+
+  it('the PDF is marked before it is in place: a mark that fails keeps the PDF the user chose to replace (review finding 30)', async () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-pdfmark-'));
+    tmp.push(d);
+    const out = path.join(d, 'report.pdf');
+    const old = Buffer.from('%PDF-1.4 the old report');
+    fs.writeFileSync(out, old);
+    const fresh = new TextEncoder().encode('%PDF-1.7 the new report');
+    // The mark fails (a helper timeout, a volume that refuses the attribute): `out` keeps its bytes.
+    await expect(writePdfFile(out, fresh, () => Promise.reject(new Error('helper timed out')), 'report.html')).rejects.toThrow(
+      /could not keep report\.html's internet marker, so it was not saved \(helper timed out\)/,
+    );
+    expect(fs.readFileSync(out).equals(old)).toBe(true);
+    // A new file stays absent.
+    const neu = path.join(d, 'new.pdf');
+    await expect(writePdfFile(neu, fresh, () => Promise.reject(new Error('no')), 'report.html')).rejects.toThrow(/internet marker/);
+    expect(fs.existsSync(neu)).toBe(false);
+    // The mark runs on the temp file, which already holds the new bytes, while `out` still holds the old ones.
+    const seen: { temp: string; bytes: string; outThen: string }[] = [];
+    await writePdfFile(out, fresh, async (temp) => void seen.push({ temp, bytes: fs.readFileSync(temp, 'utf8'), outThen: fs.readFileSync(out, 'utf8') }), 'report.html');
+    expect(seen).toHaveLength(1);
+    expect(path.dirname(seen[0].temp)).toBe(d);
+    expect(seen[0].temp).not.toBe(out);
+    expect(seen[0].bytes).toBe('%PDF-1.7 the new report');
+    expect(seen[0].outThen).toBe('%PDF-1.4 the old report');
+    expect(fs.readFileSync(out, 'utf8')).toBe('%PDF-1.7 the new report');
+    expect(fs.statSync(out).mode & 0o777).toBe(0o644);
+    expect(fs.readdirSync(d).filter((f) => f.startsWith('.bl-write-'))).toEqual([]);
+  });
+
+  it('saveAsPdf: a copyMarker that fails leaves a pre-existing out file with its bytes, and the error says why (review finding 30)', async () => {
+    const d = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-pdfsave-'));
+    tmp.push(d);
+    const deck = path.join(d, 'report.html');
+    fs.writeFileSync(deck, '<h1>Report</h1>');
+    const out = path.join(d, 'report.pdf');
+    const old = Buffer.from('%PDF-1.4 a PDF the user chose to replace');
+    fs.writeFileSync(out, old);
+    const blank = await PDFDocument.create();
+    blank.addPage([612, 792]);
+    const printed = await blank.save();
+    // A document printed by a stand-in render view (no Electron here).
+    const view = {
+      load: async () => undefined,
+      waitStable: async () => ({ fontsReady: true, stillRunning: 0 }),
+      waitScripted: async () => ({ waitedMs: 0, quiet: true, late: false }),
+      overlayMounted: async () => false,
+      documentTitle: async () => 'Report',
+      printToPDF: async () => printed,
+    };
+    fakeRenderer.use = (_vp, fn) => fn(view);
+    try {
+      const version = 'a'.repeat(64);
+      const doc = {
+        docId: '0123456789abcdef',
+        fileName: 'report.html',
+        partition: 'persist:x',
+        folderReal: d,
+        realpath: fs.realpathSync(deck),
+        fileKey: '0123456789abcdef',
+        version,
+        title: 'Report',
+        marker: null,
+        isProtected: () => true,
+        networkOpen: () => false,
+        renderPolicyTag: () => 'test-policy',
+        reducedMotion: true,
+      };
+      const index = { version, kind: 'single' as const, navKind: 'none' as const, slides: [{ index: 0, title: 'Report', nav: { kind: 'none' as const, value: 0 }, text: ['Report'] }], designSize: { w: 1600, h: 900 }, complete: true };
+      const marks: string[] = [];
+      const failing = async (_from: string, to: string) => {
+        marks.push(to);
+        throw new Error('the helper timed out');
+      };
+      const host = { preload: '/x/preload-deck.cjs', userData: d, log: () => undefined };
+      await expect(saveAsPdf(doc, out, { index, host, copyMarker: failing })).rejects.toThrow(/could not keep report\.html's internet marker, so it was not saved \(the helper timed out\)/);
+      expect(fs.readFileSync(out).equals(old), 'the PDF that was there keeps its bytes').toBe(true);
+      // The marker was asked for on the PDF's temp file, never on `out` itself.
+      expect(marks).toHaveLength(1);
+      expect(marks[0]).not.toBe(out);
+      expect(path.dirname(marks[0])).toBe(d);
+      expect(fs.readdirSync(d).filter((f) => f.startsWith('.bl-write-'))).toEqual([]);
+      // With a mark that works the new PDF replaces it.
+      const r = await saveAsPdf(doc, out, { index, host, copyMarker: async () => undefined });
+      expect(r).toMatchObject({ out, pages: 1, mode: 'document', title: 'Report' });
+      expect((await PDFDocument.load(fs.readFileSync(out))).getPageCount()).toBe(1);
+    } finally {
+      fakeRenderer.use = null;
+    }
   });
 });

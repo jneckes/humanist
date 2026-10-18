@@ -13,7 +13,7 @@ import { MAX_FOLDER_PATH, MAX_FOLDERS, MAX_HOSTS, type ConfigStore } from './con
 import type { TrustDecision } from './documents';
 import { REASON_INTERNET, REASON_UNKNOWN, caseInsensitivePaths, readInternetMarker, refuseAsTrustedFolder, type InternetMarker, type LocationOptions } from './markers';
 import { DEFAULT_ALLOWLIST, normalizeAllowlistHost } from './network-policy';
-import type { RememberedTrust, TrustStore } from './trust-store';
+import { bindsToFile, readFileIdentity, sameIdentity, type FileIdentity, type RememberedTrust, type TrustStore } from './trust-store';
 
 /** The trust bar's reasons (6.10: "The yellow trust bar states the reason"). Same text as documents.ts. */
 export const REASON_REQUESTED = 'Opened at your request';
@@ -43,6 +43,11 @@ export interface OpenTrust {
   receivedRemembered: boolean;
   /** The marker's whole value, or null (what trust.json remembers a decision against). */
   marker: string | null;
+  /**
+   * The file's identity as read at open, where a decision is bound to the file (trust-store.ts bindsToFile);
+   * null otherwise, or when it could not be read (then nothing is remembered for this open).
+   */
+  identity: FileIdentity | null;
   /**
    * The marker could not be read. Nothing is remembered for such an open (there is no marker to remember it
    * against): the trust bar's switches then apply to this window only.
@@ -125,7 +130,9 @@ export function folderFor(realpath: string, lists: FolderLists, platform: NodeJS
  *
  * In Protected view a remembered **Allow network** and **Enable editing** apply while the file carries the
  * same marker the decision was made on (`remembered.marker`, the whole value; a marker that cannot be read
- * matches nothing). The caller passes the decision trust.json holds for this realpath (TrustStore.get).
+ * matches nothing) and, where the marker cannot tell two files apart (no marker, or Windows: bindsToFile),
+ * while it is the same file (`remembered.identity` equals `opts.identity`, the file's identity now; a missing
+ * one matches nothing). The caller passes the decision trust.json holds for this realpath (TrustStore.get).
  */
 export function trustFor(
   realpath: string,
@@ -133,11 +140,13 @@ export function trustFor(
   requestedProtected: boolean,
   remembered: RememberedTrust | null,
   lists: FolderLists,
-  opts: { platform?: NodeJS.Platform } = {},
+  opts: { platform?: NodeJS.Platform; identity?: FileIdentity | null } = {},
 ): OpenTrust {
   const platform = opts.platform ?? process.platform;
   const value = marker.uncertain ? null : marker.marker;
-  const applies = remembered !== null && !marker.uncertain && remembered.marker === marker.marker;
+  const sameFile = !bindsToFile(marker.marker, platform) || sameIdentity(remembered?.identity, opts.identity);
+  const applies = remembered !== null && !marker.uncertain && remembered.marker === marker.marker && sameFile;
+  const identity = !marker.uncertain && bindsToFile(marker.marker, platform) ? (opts.identity ?? null) : null;
   const mem = applies ? remembered : null;
   const markerReason = marker.uncertain ? (marker.reason ?? REASON_UNKNOWN) : marker.marker !== null ? (marker.reason ?? REASON_INTERNET) : null;
   const protectedOpen = (reason: string, rule: OpenTrust['rule'], folder: string | null, switches: boolean): OpenTrust => ({
@@ -148,6 +157,7 @@ export function trustFor(
     received: mem ? mem.received : true,
     receivedRemembered: mem !== null,
     marker: value,
+    identity,
     markerUncertain: marker.uncertain === true,
     rule,
     folder,
@@ -160,6 +170,7 @@ export function trustFor(
     received: mem ? mem.received : false,
     receivedRemembered: mem !== null,
     marker: m,
+    identity,
     markerUncertain: marker.uncertain === true,
     rule,
     folder,
@@ -182,27 +193,36 @@ export interface ResolveDeps {
   lists(): FolderLists;
   /** Default readInternetMarker (the native helper on macOS, Zone.Identifier on Windows). */
   readMarker?: (realpath: string) => Promise<InternetMarker>;
+  /** Default trust-store.ts readFileIdentity (fs.stat with bigint). */
+  readIdentity?: (realpath: string) => Promise<FileIdentity | null>;
   platform?: NodeJS.Platform;
 }
 
 /**
- * Decides the trust a file opens in (6.10): reads its marker, looks up the decision trust.json holds for it on
- * that marker (a decision on another marker is dropped there), and applies trustFor. A file that opens
- * Protected for the first time is remembered as received (6.8: "A file is received when it first opened in
- * Protected view … The state and any switch are remembered in trust.json"). `realpath` must be the file's
- * realpath.
+ * Decides the trust a file opens in (6.10): reads its marker and, where a decision is bound to the file
+ * (trust-store.ts bindsToFile: no marker, or Windows), its identity; looks up the decision trust.json holds for
+ * it on that marker and file (a decision on another marker or file is dropped there), and applies trustFor. A
+ * file that opens Protected for the first time is remembered as received (6.8: "A file is received when it
+ * first opened in Protected view … The state and any switch are remembered in trust.json"), with the identity
+ * read here, so a switch pressed later binds to the file the user saw. When the marker or a needed identity
+ * cannot be read, no decision applies and nothing is remembered. `realpath` must be the file's realpath.
  */
 export async function resolveOpenTrust(realpath: string, requestedProtected: boolean, deps: ResolveDeps): Promise<OpenTrust> {
+  const platform = deps.platform ?? process.platform;
   let m: InternetMarker;
   try {
     m = await (deps.readMarker ?? ((p: string) => readInternetMarker(p)))(realpath);
   } catch {
     m = { marker: null, reason: REASON_UNKNOWN, uncertain: true };
   }
-  const remembered = m.uncertain ? null : deps.store.get(realpath, m.marker);
-  const t = trustFor(realpath, m, requestedProtected, remembered, deps.lists(), { platform: deps.platform });
-  if (t.state === 'protected' && remembered === null && !m.uncertain) {
-    await deps.store.set(realpath, { marker: m.marker, allowNetwork: false, editing: false, received: true }).catch(() => undefined);
+  const bound = !m.uncertain && bindsToFile(m.marker, platform);
+  let identity: FileIdentity | null = null;
+  if (bound) identity = await (deps.readIdentity ?? readFileIdentity)(realpath).catch(() => null);
+  const comparable = !m.uncertain && (!bound || identity !== null);
+  const remembered = comparable ? deps.store.get(realpath, m.marker, { identity, platform }) : null;
+  const t = trustFor(realpath, m, requestedProtected, remembered, deps.lists(), { platform, identity });
+  if (t.state === 'protected' && remembered === null && comparable) {
+    await deps.store.set(realpath, { marker: m.marker, ...(identity ? { identity } : {}), allowNetwork: false, editing: false, received: true }).catch(() => undefined);
   }
   return t;
 }

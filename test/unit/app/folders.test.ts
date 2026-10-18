@@ -16,9 +16,9 @@ import {
   trustFor,
   type FolderLists,
 } from '../../../packages/app/src/main/folders';
-import { REASON_INTERNET, REASON_UNKNOWN, refuseAsTrustedFolder, type InternetMarker } from '../../../packages/app/src/main/markers';
+import { REASON_INTERNET, REASON_UNKNOWN, readInternetMarker, refuseAsTrustedFolder, type InternetMarker } from '../../../packages/app/src/main/markers';
 import { DEFAULT_ALLOWLIST } from '../../../packages/app/src/main/network-policy';
-import { TrustStore, type RememberedTrust } from '../../../packages/app/src/main/trust-store';
+import { TrustStore, readFileIdentity, type FileIdentity, type RememberedTrust } from '../../../packages/app/src/main/trust-store';
 
 const Q = '0083;65f1c2a3;Safari;6E1F6E7C-1C1B-4B8E-9D2E-123456789ABC';
 const Q2 = '0083;65f1c2b9;Safari;0A0B0C0D-1C1B-4B8E-9D2E-123456789ABC';
@@ -27,6 +27,8 @@ const none: InternetMarker = { marker: null, reason: null };
 const marked: InternetMarker = { marker: Q, reason: REASON_INTERNET };
 const unreadable: InternetMarker = { marker: null, reason: REASON_UNKNOWN, uncertain: true };
 const remembered = (marker: string | null, o: Partial<RememberedTrust> = {}): RememberedTrust => ({ marker, allowNetwork: true, editing: true, received: true, at, ...o });
+const ID1: FileIdentity = { dev: '2049', ino: '1851480' };
+const ID2: FileIdentity = { dev: '2049', ino: '1851417' };
 
 const lists: FolderLists = {
   trusted: ['/Users/j/Decks', '/Users/j/Inbox/mine'],
@@ -59,7 +61,6 @@ describe('trustFor: 6.10 When it applies, every case', () => {
     ['remembered Enable editing alone (network keeps its policy)', ELSEWHERE, marked, false, remembered(Q, { allowNetwork: false }), { state: 'protected', allowNetwork: false, editing: true }],
     ['a remembered decision on another marker does not apply', ELSEWHERE, marked, false, remembered(Q2), { state: 'protected', allowNetwork: false, editing: false, received: true }],
     ['a remembered decision does not apply when the marker cannot be read', ELSEWHERE, unreadable, false, remembered(null), { state: 'protected', allowNetwork: false, editing: false }],
-    ['remembered switches apply in an untrusted folder (marker null = null)', IN_UNTRUSTED, none, false, remembered(null), { state: 'protected', allowNetwork: true, editing: true }],
     ['remembered "yours" (received false) is kept', ELSEWHERE, marked, false, remembered(Q, { received: false }), { state: 'protected', received: false }],
     ['a remembered received file stays received when Trusted (trusted folder)', IN_TRUSTED, marked, false, remembered(Q, { received: true }), { state: 'trusted', received: true }],
     ['nested: an untrusted folder inside a trusted one wins (deepest)', '/Users/j/Decks/from-clients/acme.html', none, false, null, { state: 'protected', rule: 'untrusted-folder', folder: '/Users/j/Decks/from-clients' }],
@@ -101,7 +102,27 @@ describe('trustFor: 6.10 When it applies, every case', () => {
     expect(trustFor(ELSEWHERE, marked, false, remembered(Q, { received: false }), lists, o)).toMatchObject({ received: false, receivedRemembered: true });
     expect(trustFor(ELSEWHERE, marked, false, null, lists, o)).toMatchObject({ received: true, receivedRemembered: false });
     expect(trustFor(ELSEWHERE, none, false, null, lists, o)).toMatchObject({ received: false, receivedRemembered: false });
-    expect(trustFor(ELSEWHERE, none, false, remembered(null, { received: true }), lists, o)).toMatchObject({ received: true, receivedRemembered: true });
+    expect(trustFor(ELSEWHERE, none, false, remembered(null, { identity: ID1, received: true }), lists, { ...o, identity: ID1 })).toMatchObject({ received: true, receivedRemembered: true });
+  });
+
+  it('an untrusted folder, no marker: remembered switches apply only to the same file (findings 5, 28; it used to be null = null)', () => {
+    const mem = remembered(null, { identity: ID1 });
+    expect(trustFor(IN_UNTRUSTED, none, false, mem, lists, { ...o, identity: ID1 })).toMatchObject({ state: 'protected', allowNetwork: true, editing: true, identity: ID1 });
+    // Another file saved at the path (a new identity), or an identity that could not be read: nothing applies.
+    expect(trustFor(IN_UNTRUSTED, none, false, mem, lists, { ...o, identity: ID2 })).toMatchObject({ state: 'protected', allowNetwork: false, editing: false, receivedRemembered: false });
+    expect(trustFor(IN_UNTRUSTED, none, false, mem, lists, o)).toMatchObject({ allowNetwork: false, editing: false });
+    // A decision without an identity (made before identities were kept) applies to no file.
+    expect(trustFor(IN_UNTRUSTED, none, false, remembered(null), lists, { ...o, identity: ID1 })).toMatchObject({ allowNetwork: false, editing: false });
+  });
+
+  it('Windows: remembered switches apply only to the same file, even with the same Zone.Identifier text; macOS: the quarantine value alone decides', () => {
+    const zone: InternetMarker = { marker: '[ZoneTransfer]\r\nZoneId=3\r\n', reason: REASON_INTERNET };
+    const p = 'C:\\Users\\j\\Downloads\\q4.html';
+    const empty = { trusted: [], untrusted: [] };
+    const mem = remembered(zone.marker, { identity: ID1 });
+    expect(trustFor(p, zone, false, mem, empty, { platform: 'win32', identity: ID1 })).toMatchObject({ allowNetwork: true, editing: true });
+    expect(trustFor(p, zone, false, mem, empty, { platform: 'win32', identity: ID2 })).toMatchObject({ allowNetwork: false, editing: false });
+    expect(trustFor(ELSEWHERE, marked, false, remembered(Q), lists, { platform: 'darwin', identity: ID2 })).toMatchObject({ allowNetwork: true, editing: true, identity: null });
   });
 
   it('the reasons match documents.ts, and toTrustDecision keeps state, reason and marker', () => {
@@ -150,6 +171,73 @@ describe('resolveOpenTrust: the marker, trust.json and trustFor together', () =>
     const store = new TrustStore(path.join(dir, 'trust-c.json')).load();
     const r = await resolveOpenTrust('/d/x.html', false, { store, lists: () => ({ trusted: [], untrusted: [] }), readMarker: async () => Promise.reject(new Error('boom')), platform: 'linux' });
     expect(r).toMatchObject({ state: 'protected', reason: REASON_UNKNOWN });
+  });
+
+  it('untrusted folder, no marker: a decision is kept for the same file and dropped when another file is saved at the path (findings 5, 28)', async () => {
+    const inbox = path.join(dir, 'Shared');
+    fs.mkdirSync(inbox);
+    const file = path.join(inbox, 'proposal.html');
+    fs.writeFileSync(file, '<h1>Proposal</h1>');
+    const real = fs.realpathSync(file);
+    const store = new TrustStore(path.join(dir, 'trust-e.json'), undefined, undefined, { platform: 'linux' }).load();
+    const deps = { store, lists: () => ({ trusted: [], untrusted: [fs.realpathSync(inbox)] }), readMarker: async () => none, platform: 'linux' as const };
+    const first = await resolveOpenTrust(real, false, deps);
+    expect(first).toMatchObject({ state: 'protected', reason: REASON_UNTRUSTED_FOLDER, allowNetwork: false, editing: false });
+    const seenIno = fs.statSync(real, { bigint: true }).ino.toString();
+    // The trust bar's switches (window.ts calls remember with the marker, here null).
+    await store.remember(real, null, { allowNetwork: true });
+    await store.remember(real, null, { editing: true });
+    // The same file, reopened (a fresh store, as after a restart): both apply.
+    const again = { ...deps, store: new TrustStore(store.file, undefined, undefined, { platform: 'linux' }).load() };
+    expect(await resolveOpenTrust(real, false, again)).toMatchObject({ state: 'protected', allowNetwork: true, editing: true });
+    // A sync client saves a different file over it (temp + rename: a new inode, still no marker).
+    fs.writeFileSync(`${file}.partial`, '<h1>Something else</h1>');
+    fs.renameSync(`${file}.partial`, file);
+    const after = { ...deps, store: new TrustStore(store.file, undefined, undefined, { platform: 'linux' }).load() };
+    expect(await resolveOpenTrust(real, false, after)).toMatchObject({ state: 'protected', reason: REASON_UNTRUSTED_FOLDER, allowNetwork: false, editing: false, received: true });
+    await after.store.idle();
+    // The old decision is gone from trust.json; the new file is recorded as received, with its own identity.
+    expect(JSON.parse(fs.readFileSync(store.file, 'utf8')).files[real]).toMatchObject({ marker: null, identity: await readFileIdentity(real), allowNetwork: false, editing: false, received: true });
+    // The identity read at the first open was that of the file the user saw.
+    expect(first.identity?.ino).toBe(seenIno);
+  });
+
+  it.each([
+    ['Chromium (a second download of the same link)', '[ZoneTransfer]\r\nZoneId=3\r\nReferrerUrl=https://share.example/folder\r\nHostUrl=https://share.example/deck.html\r\n'],
+    ['Outlook (any other attachment)', '[ZoneTransfer]\r\nZoneId=3\r\n'],
+  ])('Windows, %s: a new file with a byte-identical Zone.Identifier drops the decision; the same file keeps it (finding 28)', async (_who, stream) => {
+    // The real Zone.Identifier reader: on Linux `<file>:Zone.Identifier` is an ordinary sibling file.
+    const d = fs.mkdtempSync(path.join(dir, 'win-'));
+    const file = path.join(d, 'deck.html');
+    const write = (text: string) => {
+      fs.writeFileSync(file, text);
+      fs.writeFileSync(`${file}:Zone.Identifier`, stream);
+    };
+    write('<h1>Version 1</h1>');
+    const real = fs.realpathSync(file);
+    const fresh = () => new TrustStore(path.join(d, 'trust.json'), undefined, undefined, { platform: 'win32' }).load();
+    const deps = (store: TrustStore) => ({ store, lists: () => ({ trusted: [], untrusted: [] }), readMarker: (p: string) => readInternetMarker(p, { platform: 'win32' }), platform: 'win32' as const });
+    const store = fresh();
+    expect(await resolveOpenTrust(real, false, deps(store))).toMatchObject({ state: 'protected', reason: REASON_INTERNET, marker: stream, allowNetwork: false });
+    await store.remember(real, stream, { allowNetwork: true });
+    await store.remember(real, stream, { editing: true });
+    expect(await resolveOpenTrust(real, false, deps(fresh()))).toMatchObject({ allowNetwork: true, editing: true });
+    // A second download: the browser writes a temp file and renames it over the old one (a new file); its stream
+    // has the same text.
+    fs.writeFileSync(`${file}.crdownload`, '<h1>Version 2, which nobody reviewed</h1>');
+    fs.renameSync(`${file}.crdownload`, file);
+    fs.writeFileSync(`${file}:Zone.Identifier`, stream);
+    expect(await resolveOpenTrust(real, false, deps(fresh()))).toMatchObject({ state: 'protected', marker: stream, allowNetwork: false, editing: false });
+  });
+
+  it('a needed identity that cannot be read: no decision applies, none is dropped, nothing is recorded', async () => {
+    const store = new TrustStore(path.join(dir, 'trust-f.json'), undefined, undefined, { platform: 'linux' }).load();
+    await store.set('/d/in/x.html', { marker: null, identity: ID1, allowNetwork: true, editing: true, received: true, at });
+    const deps = { store, lists: () => ({ trusted: [], untrusted: ['/d/in'] }), readMarker: async () => none, readIdentity: async () => null, platform: 'linux' as const };
+    expect(await resolveOpenTrust('/d/in/x.html', false, deps)).toMatchObject({ state: 'protected', allowNetwork: false, editing: false, identity: null });
+    expect(await resolveOpenTrust('/d/in/y.html', false, deps)).toMatchObject({ state: 'protected', received: true, receivedRemembered: false });
+    expect(store.size).toBe(1);
+    expect(store.get('/d/in/x.html', null, { identity: ID1 })).toMatchObject({ allowNetwork: true });
   });
 
   it('a Trusted open writes nothing to trust.json', async () => {

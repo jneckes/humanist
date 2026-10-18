@@ -15,9 +15,10 @@
 //   same scrollIntoView of the section's heading;
 // - which slide shows: the render agent's own 9.4 detection (core/slides), run in an isolated world
 //   (plain-probe.ts), never the page's world;
-// - settling and capture: RenderView's own probe methods (waitStable, pauseAnimations, visibleTextSignature,
-//   scrollToHeading, showRevealFragments, setHash, capture), borrowed onto this window so the code is
-//   literally the same.
+// - settling and capture: RenderView's own probe methods (waitStable, waitScripted through slide-index
+//   settleScripted, pauseAnimations, visibleTextSignature, scrollToHeading, showRevealFragments, setHash,
+//   capture), borrowed onto this window so the code is literally the same;
+// - randomness: the same seeded Math.random as Blueline's render views (SEEDED_RANDOM_JS).
 
 import { BrowserWindow, type WebContents } from 'electron';
 import { pathToFileURL } from 'node:url';
@@ -33,10 +34,12 @@ export const PROBE_WORLD_ID = 1041;
 export const HARNESS_WORLD_ID = 1043;
 
 /**
- * --seed-random (diagnosis): Math.random replaced, in the page's own world and before any page script, by a
- * seeded mulberry32 that starts from the same seed on every load. Both renders get it the same way, so a deck
- * that places or writes things at random does so identically in both, and what still differs is not the
- * deck's randomness.
+ * Math.random replaced, in the page's own world and before any page script, by a seeded mulberry32 that starts
+ * from the same seed (0x2f6b1d35) on every load of every frame. Every render of a gate run gets it the same way
+ * (decision D-10; harness/main.ts installs it on Blueline's render views, PlainView on its own window), so a deck
+ * that places or writes things at random does so identically in both, and what still differs is not the deck's
+ * Math.random. Date, performance.now and crypto.getRandomValues are left alone: no committed fixture needs them
+ * fixed, and the control render (main.ts) shows a deck that depends on them as nondeterministic.
  */
 export const SEEDED_RANDOM_JS =
   '(function(){var a=0x2f6b1d35;Object.defineProperty(Math,"random",{configurable:true,writable:true,value:function random(){' +
@@ -150,6 +153,7 @@ export class PlainView {
     private readonly probeSrc: string,
     private readonly keys: ReturnType<typeof replayKeys>,
     private readonly log: (m: string) => void,
+    /** seedRandom: SEEDED_RANDOM_JS before any page script (default on; false only for a diagnosis run). */
     private readonly diag: { seedRandom?: boolean } = {},
   ) {
     // RenderView's window, without its preload and its partition's handler and policy (9.1 render service).
@@ -186,11 +190,14 @@ export class PlainView {
     this.key = keys.forward;
   }
 
-  /** about:blank, reduced motion (as RenderView.applyMotion), then the original file, settled (fonts, frames). */
+  /**
+   * about:blank, the seeded Math.random, reduced motion (as RenderView.applyMotion), then the original file,
+   * settled (fonts, frames).
+   */
   async loadPlain(): Promise<void> {
     if (!this.wc.getURL()) {
       await this.wc.loadURL('about:blank');
-      if (this.diag.seedRandom) await addInitScript(this.wc, SEEDED_RANDOM_JS);
+      if (this.diag.seedRandom !== false) await addInitScript(this.wc, SEEDED_RANDOM_JS);
     }
     if (!this.wc.debugger.isAttached()) this.wc.debugger.attach('1.3');
     await this.wc.debugger.sendCommand('Emulation.setEmulatedMedia', emulatedMediaCommand(true));

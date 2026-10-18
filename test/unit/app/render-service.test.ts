@@ -52,7 +52,7 @@ vi.mock('../../../packages/app/src/main/channels', () => ({ attachDeckView: () =
 vi.mock('../../../packages/app/src/main/trust-hooks', () => ({ installDeckWebContentsPolicy: () => ({ dispose() {} }) }));
 
 import type { RenderCmd } from '@blueline/core/ipc';
-import { RenderView, resultCheck } from '../../../packages/app/src/main/render-service';
+import { RenderView, framesDiffer, renderPolicyTag, renderTargetFor, resultCheck } from '../../../packages/app/src/main/render-service';
 
 // ------------------------------------------------------------------------------------------- results
 
@@ -83,6 +83,15 @@ describe('resultCheck.collect: the walk result is validated and copied in the re
     expect(omitted(['ok', 5])).toBeUndefined();
     expect(omitted('Docs')).toBeUndefined();
     expect(omitted(Array.from({ length: 256 }, () => 'x'))).toHaveLength(256);
+  });
+
+  it('keeps the slide index’s block joins when they are whole and well formed, and drops them otherwise (review finding 12)', () => {
+    const blocks = [{ key: 9, hasInline: true, nodeKeys: [3, 4] }];
+    expect(resultCheck.collect({ nodes: [wn(), wn({ key: 4 })], blocks, joins: [0, 1] }).joins).toEqual([0, 1]);
+    expect(resultCheck.collect({ nodes: [wn(), wn({ key: 4 })], blocks, joins: [0] }).joins).toBeUndefined();
+    expect(resultCheck.collect({ nodes: [wn(), wn({ key: 4 })], blocks, joins: [0, 3] }).joins).toBeUndefined();
+    expect(resultCheck.collect({ nodes: [wn(), wn({ key: 4 })], blocks, joins: 'x' }).joins).toBeUndefined();
+    expect(resultCheck.collect({ nodes: [wn()], blocks: [] }).joins).toBeUndefined();
   });
 
   it('refuses a malformed node, tree or frame list', () => {
@@ -170,5 +179,100 @@ describe('RenderView.pressKey: trusted keys (review finding 33; 6.7 Index replay
     expect(view.trustedKeys).toBe(false);
     await view.load({ docId: '0123456789abcdef', fileName: 'deck.html' });
     expect(view.trustedKeys).toBeNull();
+  });
+});
+
+// ------------------------------------------------------------------------------------------- scripted settle
+
+describe('RenderView.waitScripted: what scripts reveal after a slide arrives (decision D-5)', () => {
+  /**
+   * A view whose page mutates at the given times (ms after the wait starts), read through main's own world;
+   * `frame(ms)` is the picture's brightness at that time (a canvas a script draws on, no DOM change).
+   */
+  function viewMutating(at: number[], frame: (ms: number) => number = () => 128) {
+    const view = RenderView.create({ partition: 'p', preload: 'x.cjs', folderReal: '/tmp', isProtected: () => false, networkOpen: () => false });
+    const t0 = Date.now();
+    const wc = view.wc as unknown as { executeJavaScriptInIsolatedWorld(id: number, s: { code: string }[]): Promise<unknown>; capturePage(): Promise<unknown> };
+    wc.capturePage = async () => {
+      const v = frame(Date.now() - t0);
+      const small = { toBitmap: () => Buffer.alloc(64 * 36 * 4, v) };
+      return { isEmpty: () => false, resize: () => small };
+    };
+    wc.executeJavaScriptInIsolatedWorld = async (_id, s) => {
+      const now = Date.now() - t0;
+      const last = Math.max(0, ...at.filter((m) => m <= now));
+      if (s[0].code.includes('return true')) return true; // the observer is installed
+      if (s[0].code.includes('performance.now()-m.last')) return [now - last, last];
+      if (s[0].code.includes('return m?m.last')) return last;
+      return null;
+    };
+    return view;
+  }
+
+  it('says a change came after a pause (late) when the DOM changes again after being still for 200 ms', async () => {
+    const r = await viewMutating([0, 400]).waitScripted({ minMs: 600, quietMs: 300, maxMs: 2000 });
+    expect(r).toMatchObject({ quiet: true, late: true });
+    expect(r.stamp).toBe(400);
+  });
+
+  it('a slide whose changes all come close together is not late, and a quiet-only wait ends at its quiet point', async () => {
+    const dense = await viewMutating([0, 100, 200, 300]).waitScripted({ minMs: 600, quietMs: 300, maxMs: 2000 });
+    expect(dense).toMatchObject({ quiet: true, late: false, stamp: 300 });
+    const quiet = await viewMutating([0]).waitScripted({ minMs: 0, quietMs: 300, maxMs: 2000 });
+    expect(quiet).toMatchObject({ quiet: true, late: false });
+    expect(quiet.waitedMs).toBeLessThan(600);
+  });
+
+  it('a picture that still changes while the DOM is still (a canvas a script draws on) is late too', async () => {
+    const r = await viewMutating([0], (ms) => (ms < 500 ? 40 : 200)).waitScripted({ minMs: 700, quietMs: 300, maxMs: 2000 });
+    expect(r).toMatchObject({ quiet: true, late: true });
+    const still = await viewMutating([0], () => 90).waitScripted({ minMs: 700, quietMs: 300, maxMs: 2000 });
+    expect(still).toMatchObject({ quiet: true, late: false });
+    // Without frames to compare (watchFrames off), only the DOM counts.
+    expect(await viewMutating([0], (ms) => (ms < 500 ? 40 : 200)).waitScripted({ minMs: 700, quietMs: 300, maxMs: 2000, watchFrames: false })).toMatchObject({ late: false });
+  });
+
+  it('framesDiffer: more than 0.2% of the pixels changed, or a frame missing', () => {
+    const a = new Uint8Array(64 * 36 * 4).fill(100);
+    const b = a.slice();
+    expect(framesDiffer(a, b)).toBe(false);
+    for (let i = 0; i < 4 * 4; i += 4) b[i] = 200; // 4 pixels of 2,304: 0.17%
+    expect(framesDiffer(a, b)).toBe(false);
+    for (let i = 0; i < 8 * 4; i += 4) b[i] = 200; // 8 pixels: 0.35%
+    expect(framesDiffer(a, b)).toBe(true);
+    expect(framesDiffer(null, a)).toBe(true);
+    expect(framesDiffer(a, a.subarray(4))).toBe(true);
+  });
+
+  it('a page that never goes quiet is waited for up to the cap', async () => {
+    const ticks = Array.from({ length: 40 }, (_, i) => i * 50);
+    const r = await viewMutating(ticks).waitScripted({ minMs: 100, quietMs: 300, maxMs: 700 });
+    expect(r.quiet).toBe(false);
+    expect(r.waitedMs).toBeGreaterThanOrEqual(700);
+  });
+});
+
+describe('renderPolicyTag: the product cache keys on the trust policy (review finding 15)', () => {
+  it('differs when the network is open vs blocked, and with the strict option and the allowlist', () => {
+    const blocked = renderPolicyTag(false, false, ['a.example']);
+    const open = renderPolicyTag(true, false, ['a.example']);
+    expect(open).not.toBe(blocked);
+    // Same inputs give the same tag; the allowlist order does not matter.
+    expect(renderPolicyTag(false, false, ['a.example'])).toBe(blocked);
+    expect(renderPolicyTag(false, false, ['b.example', 'a.example'])).toBe(renderPolicyTag(false, false, ['a.example', 'b.example']));
+    // The strict option and the allowlist contents each change it.
+    expect(renderPolicyTag(false, true, ['a.example'])).not.toBe(blocked);
+    expect(renderPolicyTag(false, false, ['a.example', 'c.example'])).not.toBe(blocked);
+  });
+
+  it('renderTargetFor gives a Protected target a different tag from a Trusted one', () => {
+    const base = {
+      docId: 'd', fileName: 'x.html', partition: 'persist:x', folderReal: '/f', realpath: '/f/x.html',
+      fileKey: '0123456789abcdef', version: 'a'.repeat(64), title: '', marker: null,
+      networkAllowed: () => false, strict: () => false, allowlist: () => ['a.example'],
+    };
+    const prot = renderTargetFor({ ...base, trust: () => 'protected' as const });
+    const trust = renderTargetFor({ ...base, trust: () => 'trusted' as const });
+    expect(prot.renderPolicyTag()).not.toBe(trust.renderPolicyTag());
   });
 });

@@ -9,23 +9,35 @@
 //   fragment holds and a still render shows the slide's final state.
 // - Documents (9.4 scroll and single) get one entry per rendered h1–h3 section, its text in document order,
 //   so Find works on documents too (the outline itself is the views item's).
+// - A slide's text is one string per run of text in one block (ipc-render SlideIndexEntry.text): inline runs
+//   joined as the page shows them, a new string at every block boundary and line break (review finding 12).
+// - Each slide is read after the scripted settle a still image waits for (decision D-5: what its scripts
+//   reveal after it arrives), and a deck whose thumbnails render at the walk's own viewport (1600×900 at 2x)
+//   gets the rail's thumbnails from the same walk, so the wait is paid once per slide. The settle adapts per
+//   slide and version (SettleMemory), and thumbnails, PDF pages and Print share what the walk learnt.
 // - The design size (6.9): reveal.js width and height, else the slide element's box at a 1600×900 viewport,
 //   else 1600×900. The walk runs at 1600×900 for that reason.
 // - Background renders use reduced motion (docs/PHASE1-PLAN.md): the render views emulate it.
 // - A render waits until the document has had no write for 300 ms (6.7 step 1; render-service untilQuiet).
 // - Cached per (fileKey, version) in memory and as JSON at <userData>/files/<fileKey>/thumbs/index-<version>.json
-//   (9.7 thumbs/).
+//   (9.7 thumbs/); once a version's index is complete, the other versions' index files go (review finding 14).
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { DetectResult, WalkNode } from '@blueline/core/ipc';
+import type { CollectResult, DetectResult, WalkNode } from '@blueline/core/ipc';
+import type { CollectJoins } from '@blueline/core/dom-walk';
 import type { SlideIndex, SlideIndexEntry, SlideIndexKind } from '@blueline/core/ipc-render';
 import { DEFAULT_DESIGN } from '@blueline/core/slides';
 import type { SlideRef } from '@blueline/core/types';
 import { atomicWriteFile, readRegularFile } from './atomic-write';
 import { DeckWalker, MAX_PRESSES, PRESS_RETRY_GAPS_MS } from './map-command';
+import { LEFT_RAIL_WIDTH } from './layout';
 import { slideRefFor } from './notes';
+// thumbnails.ts imports this module too; only functions and constants used at run time cross that cycle.
+import { THUMB_SCALE, removeVersionThumbs, thumbFileName, thumbPixelSize, validThumbWidth } from './thumbnails';
+import { railThumbWidth } from './views';
 import {
+  RenderCancelled,
   RenderError,
   navKeyFor,
   rendererFor,
@@ -145,11 +157,50 @@ function boundedText(strings: Iterable<string>, budget: { chars: number }): stri
   return out;
 }
 
-/** The walk's nodes as text per slide, in walk order (each collect is in document order). */
-export function textBySlide(nodes: readonly { w: Pick<WalkNode, 'node'>; slide: number }[], count: number): string[][] {
+/** How a walk node continues the one before it in its block (from a collect's joins; dom-walk CollectJoins). */
+export type NodeJoins = Map<number, { prev: number; sep: 1 | 2 }>;
+
+/**
+ * Records a collect's block joins: each node that continues the previous visible text node of its block
+ * (WalkBlock.nodeKeys order) directly (1) or after white space (2). The latest collect of a node wins.
+ */
+export function noteJoins(res: Pick<CollectResult, 'nodes' | 'blocks'> & CollectJoins, into: NodeJoins): void {
+  const joins = res.joins;
+  if (!joins || joins.length !== res.nodes.length) return;
+  const pos = new Map<number, number>();
+  res.nodes.forEach((n, i) => pos.set(n.key, i));
+  for (const b of res.blocks) {
+    for (let j = 0; j < b.nodeKeys.length; j++) {
+      const k = b.nodeKeys[j];
+      const i = pos.get(k);
+      if (i === undefined) continue;
+      const sep = joins[i];
+      if (j > 0 && (sep === 1 || sep === 2)) into.set(k, { prev: b.nodeKeys[j - 1], sep });
+      else into.delete(k);
+    }
+  }
+}
+
+/**
+ * The walk's nodes as text per slide, in walk order (each collect is in document order): one string per run of
+ * text in one block (ipc-render SlideIndexEntry.text). A node joins the slide's last string when `joins` says it
+ * continues the node that string ended with (directly, or after a space); otherwise it starts a new one.
+ */
+export function textBySlide(nodes: readonly { w: Pick<WalkNode, 'node'> & Partial<Pick<WalkNode, 'key' | 'pre'>>; slide: number }[], count: number, joins?: ReadonlyMap<number, { prev: number; sep: 1 | 2 }>): string[][] {
   const per: string[][] = Array.from({ length: count }, () => []);
+  const last: (number | undefined)[] = new Array(count);
   for (const n of nodes) {
-    if (n.slide >= 0 && n.slide < count) per[n.slide].push(n.w.node.data);
+    if (!(n.slide >= 0 && n.slide < count)) continue;
+    const list = per[n.slide];
+    const j = joins && n.w.key !== undefined ? joins.get(n.w.key) : undefined;
+    // A node whose white-space preserves breaks splits at each newline: findInPage never matches across a
+    // forced break, so each line is its own run (review finding 12). The first piece joins the previous run as
+    // usual; the rest start new runs.
+    const segs = n.w.pre ? n.w.node.data.split('\n') : [n.w.node.data];
+    if (j && list.length > 0 && last[n.slide] === j.prev) list[list.length - 1] += (j.sep === 2 ? ' ' : '') + segs[0];
+    else list.push(segs[0]);
+    for (let k = 1; k < segs.length; k++) list.push(segs[k]);
+    last[n.slide] = n.w.key;
   }
   return per;
 }
@@ -249,7 +300,8 @@ export function parseSlideIndex(v: unknown, version: string): SlideIndex | null 
     }
     slides.push(e);
   }
-  return { version, kind: v.kind as SlideIndexKind, navKind: v.navKind as SlideRef['nav']['kind'], slides, designSize: ds, complete: v.complete };
+  const policyTag = typeof v.policyTag === 'string' && v.policyTag.length <= 128 ? v.policyTag : undefined;
+  return { version, kind: v.kind as SlideIndexKind, navKind: v.navKind as SlideRef['nav']['kind'], slides, designSize: ds, complete: v.complete, policyTag };
 }
 
 async function readCachedIndex(userData: string, fileKey: string, version: string): Promise<SlideIndex | null> {
@@ -265,6 +317,36 @@ async function writeCachedIndex(userData: string, fileKey: string, index: SlideI
   const dir = thumbsDir(userData, fileKey);
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
   await atomicWriteFile(path.join(dir, indexFileName(index.version)), new TextEncoder().encode(JSON.stringify(index)), { newFileMode: 0o600 });
+}
+
+const INDEX_FILE = /^index-([0-9a-f]{64})\.json$/;
+
+/**
+ * Deletes the index files of the file's other versions once this version's index is complete (9.7 thumbs/ is
+ * a cache of the current version). Documents have no thumbnail run, whose prune (thumbnails.ts) would remove
+ * them, so without this every external change left one more index file behind (review finding 14).
+ * Thumbnails stay: the thumbnail run prunes those. Returns how many went.
+ */
+export async function pruneOtherIndexFiles(userData: string, fileKey: string, keepVersion: string): Promise<number> {
+  const dir = thumbsDir(userData, fileKey);
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return 0;
+  }
+  let n = 0;
+  for (const name of names) {
+    const m = INDEX_FILE.exec(name);
+    if (!m || m[1] === keepVersion) continue;
+    try {
+      await fs.promises.unlink(path.join(dir, name));
+      n++;
+    } catch {
+      // gone already, or in use (Windows): the next index tries again
+    }
+  }
+  return n;
 }
 
 // ------------------------------------------------------------------------------------------- slide visits
@@ -304,7 +386,11 @@ export interface VisitOptions {
   /** Visit only these slides (thumbnails missing from the cache); default all. */
   only?: ReadonlySet<number> | null;
   log?: (msg: string) => void;
-  /** How long a slide may take to show what its scripts reveal (RenderView.waitScripted); default SCRIPTED_SETTLE. */
+  /**
+   * How long a slide may take to show what its scripts reveal (RenderView.waitScripted). Default: the adaptive
+   * settle (SettleMemory): SCRIPTED_SETTLE, or QUIET_SETTLE on a slide a full wait of this version showed
+   * still. A value given here is used on every slide, unchanged.
+   */
   scripted?: ScriptedSettle;
 }
 
@@ -315,13 +401,128 @@ export interface ScriptedSettle {
 }
 
 /**
- * The wait for script-timed content before a still image of a slide (RenderView.waitScripted). At least 1.5 s
- * on the slide: a deck that reveals a slide's content from a timer (D5 types its draft 1.3 s after the slide
- * arrives) otherwise lost it from thumbnails and PDF pages; then 400 ms without a DOM change; at most 3 s
- * (a clock or a ticker never goes quiet). It costs about 1.5 s per slide, and only background renders and
- * Save as PDF and Print pay it.
+ * The wait for script-timed content before a still image of a slide, its text in the slide index, and every
+ * print of a document or a print-CSS deck (RenderView.waitScripted; decision D-5). At least 1.5 s on the
+ * slide: a deck that reveals a slide's content from a timer (D5 types its draft 1.3 s after the slide
+ * arrives) otherwise lost it from thumbnails, PDF pages and Find; then 400 ms without a DOM change; at most
+ * 3 s (a clock or a ticker never goes quiet). It costs about 1.5 s per slide; SettleMemory makes later walks
+ * of the same version cheaper where it can.
  */
 export const SCRIPTED_SETTLE: Readonly<ScriptedSettle> = Object.freeze({ minMs: 1500, quietMs: 400, maxMs: 3000 });
+
+/** The quiet-only wait: 400 ms without a DOM change, no minimum, at most 3 s (SettleMemory). */
+export const QUIET_SETTLE: Readonly<ScriptedSettle> = Object.freeze({ minMs: 0, quietMs: 400, maxMs: 3000 });
+
+/**
+ * The adaptive settle of one document version (decision D-5), shared by the index walk, thumbnails, PDF pages
+ * and Print. A slide gets the full wait (SCRIPTED_SETTLE) until a full wait on it has shown that its DOM, once
+ * it has been still for 200 ms, stays still (RenderView.waitScripted `late` false: no script changed it after
+ * a pause); from then on the quiet-only wait (QUIET_SETTLE) is enough there. A slide whose DOM changed after
+ * such a pause (a timer's reveal: delayed-build.html, D5's typed draft on its fifth slide) keeps the full
+ * wait. The rule is per slide, not "the first slides decide for the rest": D5 reveals by timer on one slide
+ * only, which a deck-wide rule learned on its first slides would have lost. Any late change seen during or
+ * after a quiet-only wait restores the full wait for every slide of the version. A document's page always keeps
+ * the full wait: it is one page printed once, and a canvas a script animates below the first screen is outside
+ * the viewport the picture check samples, so the quiet-only wait would print it mid-animation (review finding
+ * 10). The first walk of a version (normally the index walk) pays the full wait everywhere.
+ */
+export class SettleMemory {
+  private readonly slides = new Map<number, 'quiet' | 'full'>();
+  private allFull = false;
+
+  /** The wait slide `slide` gets (null: the whole page of a document). */
+  waitFor(slide: number | null): Readonly<ScriptedSettle> {
+    // A document's page (slot null) always gets the full wait. The quiet-only wait learns "quiet" from the DOM
+    // going still and a viewport-sized picture not changing; a document is scrolled to its top, so a canvas a
+    // script animates below the first screen (a chart's requestAnimationFrame, no DOM mutation) is neither seen
+    // by the observer nor inside the picture, and the no-minimum wait would print it mid-animation (review
+    // finding 10). The full wait's 1.5 s minimum covers such a build, and a document is printed once, so the
+    // per-slide saving the quiet-only wait gives a deck does not apply (decision D-5: once per document).
+    if (slide === null) return SCRIPTED_SETTLE;
+    if (this.allFull) return SCRIPTED_SETTLE;
+    const s = this.slides.get(slide);
+    return s === 'quiet' ? QUIET_SETTLE : SCRIPTED_SETTLE;
+  }
+
+  /** Records what a wait of `settle` on `slide` saw (null: a document's page, which always keeps the full wait). */
+  learn(slide: number | null, settle: Readonly<ScriptedSettle>, seen: { quiet: boolean; late: boolean }): void {
+    // A document's page is never put on the quiet-only wait (waitFor above), so nothing is learnt for it.
+    if (slide === null) return;
+    const full = settle.minMs >= SCRIPTED_SETTLE.minMs;
+    if (seen.late && !full) this.allFull = true;
+    // A slide that never went quiet (a ticker) waits to the cap either way: kept on the full wait.
+    const verdict: 'quiet' | 'full' | null = seen.late || !seen.quiet ? 'full' : full ? 'quiet' : null;
+    if (verdict === null) return;
+    if (this.slides.get(slide) !== 'full') this.slides.set(slide, verdict);
+  }
+
+  /** The DOM changed after a quiet-only wait ended: every slide of the version gets the full wait again. */
+  changedAfterQuiet(): void {
+    this.allFull = true;
+  }
+
+  /** True when slide `slide` would get the quiet-only wait. */
+  isQuiet(slide: number | null): boolean {
+    return this.waitFor(slide) === QUIET_SETTLE;
+  }
+}
+
+const settleMemories = new Map<string, SettleMemory>();
+/** Settle memories are kept for the most recent versions only. */
+const SETTLE_MEMORY_MAX = 16;
+
+/** The adaptive settle of (fileKey, version), created on first use. */
+export function settleMemoryFor(fileKey: string, version: string): SettleMemory {
+  const k = `${fileKey}:${version}`;
+  let m = settleMemories.get(k);
+  if (m) {
+    settleMemories.delete(k);
+  } else m = new SettleMemory();
+  settleMemories.set(k, m);
+  while (settleMemories.size > SETTLE_MEMORY_MAX) settleMemories.delete(settleMemories.keys().next().value as string);
+  return m;
+}
+
+/**
+ * The adaptive wait for what scripts reveal on slide `slot` (null: a document's page): the wait SettleMemory
+ * gives it, learnt from; and when a quiet-only wait saw a late change (a timer's reveal, a picture still
+ * moving), the full wait from there, so that slide is not taken early either.
+ */
+export async function waitAdaptive(
+  view: Pick<RenderView, 'waitScripted'>,
+  memory: SettleMemory,
+  slot: number | null,
+  signal: AbortSignal | null,
+): Promise<{ waitedMs: number; quiet: boolean; late: boolean; stamp: number | null; settle: Readonly<ScriptedSettle> }> {
+  let settle = memory.waitFor(slot);
+  let w = await view.waitScripted(settle, signal);
+  memory.learn(slot, settle, w);
+  if (settle === QUIET_SETTLE && w.late) {
+    settle = SCRIPTED_SETTLE;
+    const more = await view.waitScripted(settle, signal);
+    memory.learn(slot, settle, more);
+    w = { ...more, waitedMs: w.waitedMs + more.waitedMs };
+  }
+  return { ...w, settle };
+}
+
+/**
+ * 6.7 step 3 and what scripts reveal, as visitSlides waits before a still image: fonts, frames and finite
+ * animations (waitStable); then the scripted settle (waitScripted); then fonts, frames and the finite
+ * animations that reveal started. Prints and document PDFs wait this once per document (decision D-5).
+ */
+export async function settleScripted(
+  view: Pick<RenderView, 'waitStable' | 'waitScripted'>,
+  signal: AbortSignal | null = null,
+  log: (m: string) => void = () => undefined,
+  settle: Readonly<ScriptedSettle> | { memory: SettleMemory; slot: number | null } = SCRIPTED_SETTLE,
+): Promise<{ waitedMs: number; quiet: boolean; late: boolean; stamp: number | null }> {
+  await view.waitStable();
+  const w = 'memory' in settle ? await waitAdaptive(view, settle.memory, settle.slot, signal) : await view.waitScripted(settle, signal);
+  if (!w.quiet) log(`render: the page kept changing; went on after ${w.waitedMs} ms`);
+  await view.waitStable();
+  return w;
+}
 
 export interface VisitResult {
   visited: number[];
@@ -360,19 +561,31 @@ export async function visitSlides(
   for (let i = 0; i < count; i++) if (!opts.only || opts.only.has(i)) wanted.add(i);
   const visited: number[] = [];
   const done = new Set<number>();
-  const scripted = opts.scripted ?? SCRIPTED_SETTLE;
+  // The adaptive settle (SettleMemory), unless the caller fixed the wait.
+  const memory = opts.scripted ? null : settleMemoryFor(doc.fileKey, doc.version);
+  // A document is one page: its sections share one observation.
+  const pageWide = !isDeck(index.kind);
   const at = async (i: number): Promise<void> => {
     if (!wanted.has(i) || done.has(i)) return;
     throwIfCancelled(signal);
     // 6.7 step 3, and what the deck's scripts reveal after the slide arrives (waitScripted), then fonts,
     // frames and the finite animations that reveal started.
+    const slot = pageWide ? null : i;
     await view.waitStable();
-    const w = await view.waitScripted(scripted, signal);
+    const w = memory ? await waitAdaptive(view, memory, slot, signal) : { ...(await view.waitScripted(opts.scripted!, signal)), settle: opts.scripted! };
+    const scripted = w.settle;
     if (!w.quiet) log(`render: slide ${i + 1} kept changing; captured after ${w.waitedMs} ms`);
     await view.waitStable();
     await view.pauseAnimations();
     try {
       await visit(i);
+      if (memory && scripted === QUIET_SETTLE && typeof w.stamp === 'number') {
+        const now = await view.mutationStamp();
+        if (now !== null && now > w.stamp) {
+          memory.changedAfterQuiet();
+          log(`render: slide ${i + 1} changed after its quiet-only wait; the full wait again for every slide`);
+        }
+      }
     } finally {
       await view.resumeAnimations();
     }
@@ -468,94 +681,225 @@ async function toFirstSlide(view: RenderView, index: SlideIndex, back: NavKey, s
 
 // ------------------------------------------------------------------------------------------- the walk
 
+/** What one index walk carries: its document, the adaptive settle, the rail's thumbnails it takes, the log. */
+interface IndexWalk {
+  doc: RenderTarget;
+  signal: AbortSignal | null;
+  log: (m: string) => void;
+  memory: SettleMemory;
+  /** The rail's thumbnails, taken at each settled slide (null: not from this walk). */
+  thumbs: IndexThumbs | null;
+  joins: NodeJoins;
+}
+
+/** Thumbnails the index walk writes as it goes (decision D-5: one wait per slide for the index and the rail). */
+interface IndexThumbs {
+  dir: string;
+  width: number;
+  px: { width: number; height: number };
+  taken: Set<number>;
+}
+
+/**
+ * The rail's thumbnails can come from the index walk when the deck's thumbnails render at the index walk's own
+ * viewport: designViewport(index, THUMB_SCALE) is INDEX_VIEWPORT (a deck whose design size is 1600×900).
+ */
+export function indexWalkTakesThumbs(kind: SlideIndexKind, design: { w: number; h: number }, width: number | null): boolean {
+  if (!isDeck(kind) || width === null || !validThumbWidth(width)) return false;
+  return design.w === INDEX_VIEWPORT.w && design.h === INDEX_VIEWPORT.h && THUMB_SCALE === INDEX_VIEWPORT.dpr;
+}
+
+/**
+ * The settle before the walk reads slide `slide` (decision D-5: the index collects a slide's text after the
+ * same scripted settle as a still image), then the rail's thumbnail of it when the walk takes them.
+ */
+async function settleSlide(view: RenderView, walk: IndexWalk, slide: number): Promise<void> {
+  const w = await waitAdaptive(view, walk.memory, slide, walk.signal);
+  const settle = w.settle;
+  if (!w.quiet) walk.log(`index: slide ${slide + 1} kept changing; read after ${w.waitedMs} ms`);
+  await view.waitStable();
+  if (walk.thumbs && !walk.thumbs.taken.has(slide)) {
+    walk.thumbs.taken.add(slide);
+    await takeThumb(view, walk, walk.thumbs, slide);
+    if (settle === QUIET_SETTLE && typeof w.stamp === 'number') {
+      const now = await view.mutationStamp();
+      if (now !== null && now > w.stamp) walk.memory.changedAfterQuiet();
+    }
+  }
+}
+
+/** One rail thumbnail from the settled slide, as thumbnails.ts renders it (paused, resized, PNG, atomic). */
+async function takeThumb(view: RenderView, walk: IndexWalk, t: IndexThumbs, slide: number): Promise<void> {
+  try {
+    const file = path.join(t.dir, thumbFileName(walk.doc.version, slide, t.width));
+    if (await fs.promises.lstat(file).then((st) => st.isFile() && st.size > 0, () => false)) return;
+    await view.pauseAnimations();
+    let png: Buffer | null = null;
+    try {
+      const cap = await view.capture();
+      if (!cap.empty) png = cap.image.resize({ width: t.px.width, height: t.px.height, quality: 'best' }).toPNG();
+    } finally {
+      await view.resumeAnimations();
+    }
+    if (!png) return;
+    throwIfCancelled(walk.signal);
+    await fs.promises.mkdir(t.dir, { recursive: true, mode: 0o700 });
+    await atomicWriteFile(file, new Uint8Array(png.buffer, png.byteOffset, png.byteLength), { newFileMode: 0o600 });
+  } catch (e) {
+    if (e instanceof RenderCancelled) throw e;
+    // The thumbnail run renders what the walk could not.
+    walk.log(`index: slide ${slide + 1}: no thumbnail (${e instanceof Error ? e.message : String(e)})`);
+  }
+}
+
+/** Methods of a render view that show another slide or position (a settle is due before the next read). */
+const MOVES: ReadonlySet<string> = new Set(['load', 'pressKey', 'goto', 'setHash', 'scrollTo', 'scrollToTop', 'scrollToHeading', 'showRevealFragments']);
+
+/**
+ * The render view the map's DeckWalker walks for the index: whenever the deck moved since the last wait (a
+ * load, a key, a hash), its waitStable, which the walker calls before every collect, also waits for what the
+ * slide's scripts reveal and takes the slide's thumbnail (settleSlide); its collect records the block joins.
+ * Everything else is the view itself.
+ */
+function settlingView(view: RenderView, walk: IndexWalk, count: () => number): RenderView {
+  let moved = true;
+  return new Proxy(view, {
+    get(target, prop) {
+      if (prop === 'waitStable') {
+        return async (maxMs?: number) => {
+          const r = await target.waitStable(maxMs);
+          if (!moved) return r;
+          moved = false;
+          const cur = Math.min(Math.max(0, (await target.detect()).current), Math.max(0, count() - 1));
+          await settleSlide(target, walk, cur);
+          return r;
+        };
+      }
+      if (prop === 'collect') {
+        return async () => {
+          const res = await target.collect();
+          noteJoins(res, walk.joins);
+          return res;
+        };
+      }
+      const v: unknown = Reflect.get(target, prop, target);
+      if (typeof v !== 'function') return v;
+      const fn = v as (...a: unknown[]) => unknown;
+      if (typeof prop === 'string' && MOVES.has(prop)) {
+        return (...a: unknown[]) => {
+          moved = true;
+          return fn.apply(target, a);
+        };
+      }
+      return fn.bind(target);
+    },
+  });
+}
+
 /** The index walk on a loaded-or-not view at INDEX_VIEWPORT. */
-async function walkIndex(view: RenderView, doc: RenderTarget, signal: AbortSignal | null, log: (m: string) => void): Promise<SlideIndex> {
+async function walkIndex(view: RenderView, doc: RenderTarget, signal: AbortSignal | null, log: (m: string) => void, opts: { userData: string; thumbWidth: number | null }): Promise<SlideIndex> {
   throwIfCancelled(signal);
   await view.load(doc);
   await view.waitStable();
   if (await view.overlayMounted()) throw new RenderError('a render view showed the overlay; render mode has no UI (6.7)');
   const det = await view.detect();
   const kind = det.kind;
-  if (kind === 'reveal') return revealIndex(view, doc, det, signal);
-  if (kind === 'generic') return genericIndex(view, doc, det, signal, log);
+  const memory = settleMemoryFor(doc.fileKey, doc.version);
+  const walk: IndexWalk = { doc, signal, log, memory, thumbs: null, joins: new Map() };
+  const design = chooseDesignSize(kind, det.designSize);
+  if (indexWalkTakesThumbs(kind, design, opts.thumbWidth)) {
+    const width = opts.thumbWidth as number;
+    walk.thumbs = { dir: thumbsDir(opts.userData, doc.fileKey), width, px: thumbPixelSize(design, width), taken: new Set() };
+  }
+  if (kind === 'reveal') return revealIndex(view, walk, det);
+  if (kind === 'generic') return genericIndex(view, walk, det);
+  // A document is one page: what its scripts fill in after load is read after one settle (decision D-5).
+  await settleScripted(view, signal, log, { memory, slot: null });
   const outline = await view.documentOutline();
   return {
     version: doc.version,
     kind,
     navKind: det.navKind,
     slides: documentEntries(outline.sections, (await view.documentTitle()) || doc.title),
-    designSize: chooseDesignSize(kind, det.designSize),
+    designSize: design,
     complete: !outline.cut,
   };
 }
 
-/** reveal.js: Reveal.slide(h, v) for each slide (section 10 step 3), every fragment shown, then collect. */
-async function revealIndex(view: RenderView, doc: RenderTarget, det: DetectResult, signal: AbortSignal | null): Promise<SlideIndex> {
+/** reveal.js: Reveal.slide(h, v) for each slide (section 10 step 3), every fragment shown, settled, then collect. */
+async function revealIndex(view: RenderView, walk: IndexWalk, det: DetectResult): Promise<SlideIndex> {
   const count = Math.min(det.count, INDEX_LIMITS.slides);
   const seen = new Set<number>();
   const nodes: { w: WalkNode; slide: number }[] = [];
   const reached: boolean[] = new Array(count).fill(false);
   for (let i = 0; i < count; i++) {
-    throwIfCancelled(signal);
+    throwIfCancelled(walk.signal);
     const r = await view.goto(i);
     const pair = det.revealIndices?.[i];
     if (pair) await view.showRevealFragments(pair[0], pair[1]);
     await view.waitStable();
+    await settleSlide(view, walk, i);
     const cur = (await view.detect()).current;
     if (r.current === i || cur === i) reached[i] = true;
-    for (const w of (await view.collect()).nodes) {
+    const res = await view.collect();
+    noteJoins(res, walk.joins);
+    for (const w of res.nodes) {
       if (seen.has(w.key)) continue;
       seen.add(w.key);
       nodes.push({ w, slide: typeof w.slide === 'number' && w.slide < count ? w.slide : Math.min(cur, count - 1) });
     }
   }
   return {
-    version: doc.version,
+    version: walk.doc.version,
     kind: 'reveal',
     navKind: 'reveal',
-    slides: deckEntries({ ...det, count }, textBySlide(nodes, count)),
+    slides: deckEntries({ ...det, count }, textBySlide(nodes, count, walk.joins)),
     designSize: chooseDesignSize('reveal', det.designSize),
     complete: reached.every(Boolean),
   };
 }
 
-/** A generic engine: the map's DeckWalker; then the stored deckNav keys for what it did not reach. */
-async function genericIndex(view: RenderView, doc: RenderTarget, first: DetectResult, signal: AbortSignal | null, log: (m: string) => void): Promise<SlideIndex> {
-  const walker = new DeckWalker(view, (m) => log(`index: ${m}`));
-  const walk = await walker.walk(doc);
-  throwIfCancelled(signal);
-  const count = Math.min(walk.detect.count, INDEX_LIMITS.slides);
-  const nodes = walk.nodes.map((n) => ({ w: n.w, slide: n.slide }));
-  const reached = walk.reached.slice(0, count);
+/** A generic engine: the map's DeckWalker (on settlingView); then the stored deckNav keys for what it did not reach. */
+async function genericIndex(view: RenderView, walk: IndexWalk, first: DetectResult): Promise<SlideIndex> {
+  const doc = walk.doc;
+  const settling = settlingView(view, walk, () => first.count);
+  const walker = new DeckWalker(settling, (m) => walk.log(`index: ${m}`));
+  const result = await walker.walk(doc);
+  throwIfCancelled(walk.signal);
+  const count = Math.min(result.detect.count, INDEX_LIMITS.slides);
+  const nodes = result.nodes.map((n) => ({ w: n.w, slide: n.slide }));
+  const reached = result.reached.slice(0, count);
   // The hashes as known after the walk: a deck that opens with no hash shows its format only after a move.
-  let det: DetectResult = { ...walk.detect, count };
+  let det: DetectResult = { ...result.detect, count };
   const last = await view.detect();
-  if (last.kind === 'generic' && last.count === walk.detect.count) det = { ...det, navKind: last.navKind, hashes: last.hashes, ids: last.ids ?? det.ids };
+  if (last.kind === 'generic' && last.count === result.detect.count) det = { ...det, navKind: last.navKind, hashes: last.hashes, ids: last.ids ?? det.ids };
   const keys = replayKeys(doc.deckNav);
   if (reached.includes(false) && !['ArrowRight', 'PageDown'].includes(keys.forward)) {
-    await supplementWalk(view, doc, keys, count, reached, nodes, signal);
+    await supplementWalk(settling, walk, keys, count, reached, nodes);
   }
   return {
     version: doc.version,
     kind: 'generic',
     navKind: det.navKind,
-    slides: deckEntries(det, textBySlide(nodes, count)),
+    slides: deckEntries(det, textBySlide(nodes, count, walk.joins)),
     designSize: chooseDesignSize('generic', first.designSize),
     complete: reached.every(Boolean),
   };
 }
 
-/** Index replay with Session.deckNav's keys (ArrowDown, Space…): reload, from slide 0, collect each new slide. */
+/**
+ * Index replay with Session.deckNav's keys (ArrowDown, Space…): reload, from slide 0, collect each new slide
+ * (on settlingView: each one settled first, as the walk's own).
+ */
 async function supplementWalk(
   view: RenderView,
-  doc: RenderTarget,
+  walk: IndexWalk,
   keys: ReturnType<typeof replayKeys>,
   count: number,
   reached: boolean[],
   nodes: { w: WalkNode; slide: number }[],
-  signal: AbortSignal | null,
 ): Promise<void> {
-  await view.load(doc);
+  await view.load(walk.doc);
   await view.waitStable();
   const seenText = new Set(nodes.map((n) => `${n.slide}\u0000${n.w.node.data}`));
   const take = async (cur: number) => {
@@ -571,8 +915,8 @@ async function supplementWalk(
   let cur = (await view.detect()).current;
   if (cur === 0) await take(0);
   for (let presses = 0; presses < MAX_PRESSES && cur < count - 1 && reached.includes(false); presses++) {
-    throwIfCancelled(signal);
-    const p = await pressPatiently(view, keys.forward, signal);
+    throwIfCancelled(walk.signal);
+    const p = await pressPatiently(view, keys.forward, walk.signal);
     if (!p.moved) break;
     cur = p.to;
     await view.waitStable();
@@ -587,7 +931,16 @@ export interface BuildIndexOptions {
   host?: RenderHost;
   /** Rebuild even when a cached index exists. */
   force?: boolean;
+  /**
+   * The width (CSS px) of the rail thumbnails the walk writes as it goes, when the deck's thumbnails render at
+   * the walk's own viewport (indexWalkTakesThumbs). Default the rail's (views.ts railThumbWidth of
+   * layout.ts LEFT_RAIL_WIDTH), so the window's thumbnail run finds them cached; null: none.
+   */
+  thumbWidth?: number | null;
 }
+
+/** The rail's thumbnail width (the window asks renderThumbnails for this one). */
+export const RAIL_THUMB_WIDTH = railThumbWidth(LEFT_RAIL_WIDTH);
 
 const memory = new Map<string, SlideIndex>();
 /** Walks in flight, with the signal of the caller that started them (a later caller never joins an aborted one). */
@@ -631,20 +984,38 @@ export async function buildSlideIndex(doc: RenderTarget, opts: BuildIndexOptions
     // A walk its caller aborted (a window closed, its render views disposed) fails; a new caller walks again.
     if (pending && !pending.signal?.aborted) return pending.job;
   }
+  const ptag = doc.renderPolicyTag();
+  const pruneOthers = async (): Promise<void> => {
+    const n = await pruneOtherIndexFiles(host.userData, doc.fileKey, doc.version);
+    if (n) host.log(`slide index: removed ${n} index files of older versions`);
+  };
   const job = (async () => {
     if (!opts.force) {
       const disk = await readCachedIndex(host.userData, doc.fileKey, doc.version);
-      if (disk) return disk;
+      if (disk && (disk.policyTag ?? '') === ptag) {
+        if (disk.complete) await pruneOthers();
+        return disk;
+      }
+      if (disk) {
+        // Cached under a different trust policy (review finding 15): a Protected render blocks non-allowlisted
+        // hosts, so its index and thumbnails miss remote text and images. Drop this version's thumbnails so the
+        // walk re-renders them under the policy now, and rebuild the index.
+        const n = await removeVersionThumbs(host.userData, doc.fileKey, doc.version);
+        host.log(`slide index: ${doc.fileName}: cached under a different trust policy; rebuilding (removed ${n} thumbnails)`);
+      }
     }
     await untilQuiet(doc.fileKey, opts.signal);
     const t0 = Date.now();
-    const index = await rendererFor(doc, host).use(INDEX_VIEWPORT, (view) => walkIndex(view, doc, opts.signal ?? null, host.log), opts.signal);
+    const thumbWidth = opts.thumbWidth === undefined ? RAIL_THUMB_WIDTH : opts.thumbWidth;
+    const index = await rendererFor(doc, host).use(INDEX_VIEWPORT, (view) => walkIndex(view, doc, opts.signal ?? null, host.log, { userData: host.userData, thumbWidth }), opts.signal);
+    index.policyTag = ptag;
     host.log(`slide index: ${doc.fileName}: ${index.kind}, ${index.slides.length} entries${index.complete ? '' : ' (incomplete)'} in ${Date.now() - t0} ms`);
     // An incomplete walk is not kept on disk: a later walk with the keys the visible view learns
     // (Session.deckNav) may reach every slide of the same version.
     if (index.complete) {
       try {
         await writeCachedIndex(host.userData, doc.fileKey, index);
+        await pruneOthers();
       } catch (e) {
         host.log(`slide index: not cached (${e instanceof Error ? e.message : String(e)})`);
       }

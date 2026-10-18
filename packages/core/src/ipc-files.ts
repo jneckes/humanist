@@ -30,6 +30,12 @@ export const FilesDeckToMain = {
   viewState: 'bl:files:view-state',
   /** DeckBusy: sent whenever it changes, and once after each init (6.6: reloads wait for edits and cards). */
   busy: 'bl:files:busy',
+  /**
+   * No payload. The page finished applying MainToDeckFiles.applyViewState (its layout settled, its slide and
+   * scroll restored). Until then, and until main's own key replay of an index deck's slide is done, a reload
+   * that starts reuses the state it restored instead of reading a half-restored page (6.6; review finding 20).
+   */
+  viewStateApplied: 'bl:files:view-state-applied',
 } as const;
 
 /** Main → deck preload (`webContents.send`). */

@@ -3,7 +3,9 @@
 // which starts the app with --bl-cmd=pdf, prints the app's line and exits with its code. Each run's folder in
 // the temp folder is gone afterwards, also after a SIGTERM, and a folder that a killed command left behind more
 // than a day ago is swept by the next run. The app runs as root with --no-sandbox here, as the other E2E tests
-// of the command do, on the display the global setup started.
+// of the command do, on the display the global setup started. The command reads the user's Trust settings from
+// the app's userData (command-trust.ts): each run gets an empty XDG_CONFIG_HOME, so the runner's own Blueline
+// settings never change what is tested.
 
 import { expect, test } from '@playwright/test';
 import { spawn, spawnSync } from 'node:child_process';
@@ -45,7 +47,7 @@ interface Run {
 }
 
 function blueline(args: string[], o: { cwd?: string; tmpdir: string }): Run {
-  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: o.tmpdir };
+  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: o.tmpdir, XDG_CONFIG_HOME: tmp('bl-fl-pdf-xdg-') };
   delete env.BLUELINE_USER_DATA;
   delete env.BLUELINE_TEST;
   const r = spawnSync(SHIM, args, { cwd: o.cwd, env, encoding: 'utf8', timeout: 150_000 });
@@ -105,7 +107,7 @@ test("refusals: a missing file (1, before the app starts) and the app's own (2)"
 test('SIGTERM to the command stops the run (143), writes no PDF, and removes the run folder', async () => {
   const deck = deckCopy();
   const t = tmp('bl-fl-pdf-tmp-');
-  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: t };
+  const env: NodeJS.ProcessEnv = { ...process.env, TMPDIR: t, XDG_CONFIG_HOME: tmp('bl-fl-pdf-xdg-') };
   delete env.BLUELINE_USER_DATA;
   const child = spawn(SHIM, ['pdf', deck], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   let err = '';

@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Media import deck</title>
+<!--
+  Four 720 x 932 slides (Letter's aspect), shown one at a time on screen. The print layout comes in with "@import url(media-sheet.css) print".
+  See media-sheet.css and fixtures/render/README.md (review finding 13; decision D-6).
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #222; overflow: hidden; }
+  .slide { position: absolute; left: 0; top: 0; width: 720px; height: 932px; box-sizing: border-box; padding: 72px; background: #e0f2fe; color: #0c4a6e; font: 40px/1.3 sans-serif; display: none; }
+  .slide.active { display: block; }
+  h1 { font-size: 64px; margin: 0 0 24px; }
+</style>
+<style>@import url("media-sheet.css") print;</style>
+</head>
+<body>
+  <section class="slide active"><h1>Media one</h1><p>First portrait page.</p></section>
+  <section class="slide"><h1>Media two</h1><p>Second portrait page.</p></section>
+  <section class="slide"><h1>Media three</h1><p>Third portrait page.</p></section>
+  <section class="slide"><h1>Media four</h1><p>Fourth portrait page.</p></section>
+<script>
+  (function () {
+    var slides = [].slice.call(document.querySelectorAll('.slide'));
+    var cur = 0;
+    addEventListener('keydown', function (e) {
+      var n = e.key === 'ArrowRight' || e.key === 'PageDown' ? cur + 1 : e.key === 'ArrowLeft' || e.key === 'PageUp' ? cur - 1 : cur;
+      if (n === cur || n < 0 || n >= slides.length) return;
+      slides[cur].classList.remove('active');
+      cur = n;
+      slides[cur].classList.add('active');
+    });
+  })();
+</script>
+</body>
+</html>

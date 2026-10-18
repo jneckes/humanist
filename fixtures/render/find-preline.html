@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Find across preserved line breaks</title>
+<!--
+  A document with preserved line breaks (review finding 12 re-verification). Find must not list a phrase that
+  runs across a forced break: findInPage never matches across a preserved newline (a <pre> block, or
+  white-space: pre-line), the same as it never matches across a block boundary. So "growth plan" matches only
+  the two ordinary paragraphs, not the <pre> ("step growth\nplan next") or the pre-line paragraph
+  ("growth\nplan"). Each real hit highlights its own paragraph.
+-->
+<style>
+  body { font: 18px/1.5 serif; margin: 40px; }
+  .gap { height: 1400px; }
+  pre { font: 18px/1.5 monospace; }
+</style>
+</head>
+<body>
+<pre id="pre1">step growth
+plan next</pre>
+<div class="gap"></div>
+<p id="p2">A growth plan in full.</p>
+<div class="gap"></div>
+<p id="p3" style="white-space: pre-line">growth
+plan</p>
+<div class="gap"></div>
+<p id="p4">Another growth plan here.</p>
+</body>
+</html>

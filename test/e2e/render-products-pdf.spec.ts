@@ -1,6 +1,8 @@
 // Save as PDF and Print in the real app (6.9 Save as PDF, Print; section 11 Render parity and PDF): a raster
 // deck (one page per slide at the slide's aspect, the title from <title>), print-CSS decks (preferCSSPageSize
-// honoured; a linked same-folder sheet read), documents (Letter or A4 by the injected locale), a document
+// honoured; a linked same-folder sheet read), decks whose print CSS does not print them as slide pages (an
+// @page rule alone, @media print on the default paper: rendered slide by slide, decision D-6), documents
+// (Letter or A4 by the injected locale), a document
 // without a <title> (the URL never becomes the title), notes never printed, and Print through the same
 // pipeline with printToPDF in place of the system dialog. Driven through the test build's main-process
 // harness (`__blRenderTest`, pdf-command.ts). pdfinfo/pdftotext (poppler) check the files independently
@@ -140,14 +142,66 @@ test('print CSS: an @page rule (preferCSSPageSize honoured), a linked sibling sh
     expect(p.h).toBeCloseTo(675, 0);
   }
 
+  // @media print alone on the default paper: one Letter page per slide is not the slide's aspect, so the
+  // slides are rendered instead (decision D-6; review finding 35), each page the slide's aspect.
   const media = await open('media-print.html');
-  expect(await rt<PdfResult>('pdf', media, path.join(outDir, 'media.pdf'))).toMatchObject({ mode: 'print-css', pages: 4 });
+  const mout = path.join(outDir, 'media.pdf');
+  const mi = await rt<{ designSize: { w: number; h: number } }>('index', media);
+  expect(await rt<PdfResult>('pdf', media, mout)).toMatchObject({ mode: 'raster', pages: 4, missed: [] });
+  for (const p of await pageSizes(mout)) expect(p.w / p.h).toBeCloseTo(mi.designSize.w / mi.designSize.h, 3);
 
   // A print layout that is not one page per slide: the slides are rendered instead.
   const flow = await open('media-print-flow.html');
   const fout = path.join(outDir, 'flow.pdf');
   expect(await rt<PdfResult>('pdf', flow, fout)).toMatchObject({ mode: 'raster', pages: 4 });
   expect(await pageSizes(fout)).toEqual(Array(4).fill({ w: 1200, h: 675 }));
+});
+
+/** The colour in the middle of each page of a PDF (pdftoppm at a low resolution). */
+function pageColours(file: string): [number, number, number][] {
+  expect(has('pdftoppm'), 'pdftoppm (poppler-utils) reads the pages here').toBe(true);
+  const out: [number, number, number][] = [];
+  for (let page = 1; page <= 50; page++) {
+    const r = spawnSync('pdftoppm', ['-r', '8', '-f', String(page), '-l', String(page), file], { maxBuffer: 64 * 1024 * 1024 });
+    if (r.status !== 0 || r.stdout.length === 0) break;
+    const m = /^P6\s+(\d+)\s+(\d+)\s+255\s/.exec(r.stdout.subarray(0, 64).toString('latin1'));
+    expect(m, 'a P6 image').not.toBeNull();
+    const [w, h] = [Number(m![1]), Number(m![2])];
+    const at = m![0].length + (Math.floor(h / 2) * w + Math.floor(w / 2)) * 3;
+    out.push([r.stdout[at], r.stdout[at + 1], r.stdout[at + 2]]);
+  }
+  return out;
+}
+
+test('an @page rule alone is no print layout: the deck is rendered slide by slide, every slide a page in slide order (decision D-6; review finding 9)', async () => {
+  // pagemargin.html: only `@page { margin: 0 }`; pagesize.html: only `@page { size: 1280px 720px; margin: 0 }`.
+  // Chromium's print of either is the screen layout, slide 1 alone.
+  const red = (c: number[]) => c[0] > 150 && c[1] < 100 && c[2] < 100;
+  const green = (c: number[]) => c[0] < 100 && c[1] > 150 && c[2] < 100;
+  const blue = (c: number[]) => c[0] < 100 && c[1] < 100 && c[2] > 150;
+  const yellow = (c: number[]) => c[0] > 150 && c[1] > 150 && c[2] < 100;
+  for (const file of ['pagemargin.html', 'pagesize.html']) {
+    const id = await open(file);
+    const out = path.join(outDir, file.replace(/\.html$/, '.pdf'));
+    expect(await rt<PdfResult>('pdf', id, out), file).toMatchObject({ mode: 'raster', pages: 4, missed: [] });
+    expect(await pageSizes(out)).toEqual(Array(4).fill({ w: 960, h: 540 }));
+    const colours = pageColours(out);
+    expect([red(colours[0]), green(colours[1]), blue(colours[2]), yellow(colours[3])], `${file}: slides 1 to 4 in order`).toEqual([true, true, true, true]);
+    const printed = path.join(outDir, file.replace(/\.html$/, '-print.pdf'));
+    expect(await rt<{ ok: boolean; mode: string; pages: number }>('print', id, printed), file).toMatchObject({ ok: true, mode: 'raster', pages: 4 });
+    await rt('close', id);
+  }
+
+  // reveal.js with an @page rule: Chromium prints reveal's paper handout (9 pages for 8 slides), so raster.
+  const rv = path.join(dir, 'reveal-page');
+  fs.cpSync(path.join(dir, 'reveal'), rv, { recursive: true });
+  const html = path.join(rv, 'index.html');
+  fs.writeFileSync(html, fs.readFileSync(html, 'utf8').replace('</head>', '<style>@page { size: 960px 700px; margin: 0; }</style>\n</head>'));
+  s.own(rv);
+  const rid = await open('reveal-page/index.html');
+  const rout = path.join(outDir, 'reveal-page.pdf');
+  expect(await rt<PdfResult>('pdf', rid, rout)).toMatchObject({ mode: 'raster', pages: 8, missed: [] });
+  await rt('close', rid);
 });
 
 test('a document: Letter or A4 by the locale, its title, and never the notes block', async () => {
@@ -232,14 +286,20 @@ test('Print: the same pipeline, then the print call (printToPDF in place of the 
 test('a PDF running when its document closes settles at once (disposeRenderer cancels it) and writes nothing', async () => {
   // The views item saw a closed window's render job wait forever on a destroyed webContents and keep the
   // document in memory; RenderView now rejects whatever still waits on a closed view (RenderCancelled).
-  const id = await open('generic-index.html');
+  // A copy no walk has seen (its own file key): the index walk pays the full scripted settle on every slide,
+  // and the raster walk then waits on each slide too (the adaptive settle, decision D-5).
+  const file = path.join(dir, 'closed-mid-way.html');
+  fs.copyFileSync(path.join(dir, 'generic-index.html'), file);
+  s.own(file);
+  const id = await open('closed-mid-way.html');
   const out = path.join(outDir, 'closed-mid-way.pdf');
   const settled = rt('pdf', id, out).then(
     () => 'resolved',
     (e: unknown) => String(e instanceof Error ? e.message : e),
   );
-  // The index walk is done well within this, and the raster walk is on its slides (about 1.5 s each).
-  await new Promise((r) => setTimeout(r, 6000));
+  // Closed once the index is built, while the raster walk is on its slides.
+  await expect.poll(() => app.logsMatching(/slide index: closed-mid-way\.html: generic/).length, { timeout: 60_000 }).toBeGreaterThan(0);
+  await new Promise((r) => setTimeout(r, 800));
   const closedAt = Date.now();
   await rt('close', id);
   const outcome = await Promise.race([settled, new Promise<string>((r) => setTimeout(() => r('still pending'), 15_000))]);

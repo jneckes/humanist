@@ -1,0 +1,6 @@
+/* The print layout of the media-*.html decks: every slide shown, one per page, and no @page rule, so only the
+   sheet's media list makes it print CSS (review finding 13). The slides are 720 x 932 px, the aspect of the
+   default (Letter) paper, so Chromium's print is the deck as slide pages (decision D-6). */
+html, body { height: auto; overflow: visible; background: #fff; }
+.slide { display: block !important; position: relative !important; break-after: page; }
+.slide:last-child { break-after: auto; }

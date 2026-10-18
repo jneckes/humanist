@@ -18,6 +18,7 @@ import type { DeckIO } from '@blueline/core/capabilities';
 import { atomicWriteFile, createDeckIO, readRegularFile, sha256Hex } from './atomic-write';
 import { isUntrustedLocation, readInternetMarker, type InternetMarker } from './markers';
 import type { ServedDoc } from './protocol';
+import { readFileIdentity, rebindAfterOwnWrite } from './trust-store';
 
 /** The trust bar's reason when the user asked for Protected view (6.10: `--protected`, File › Open in Protected View). */
 export const REASON_REQUESTED = 'Opened at your request';
@@ -281,7 +282,8 @@ export class BlDocument implements ServedDoc {
    * Added by views: the file changed on disk, by someone else (9.2 Watcher step 3: "rebuild the map … and tell
    * the deck view to reload, with the new version"). The document now serves `bytes`: their decoding, map,
    * hashes and served copies replace the old ones, and knownHash is the new version. The docId, partition and
-   * trust stay: a reload shows the new version in the same window (6.6). Transforming locked spans is Phase 4.
+   * trust stay: window.ts calls this only after 6.10 decided the same trust for the new bytes (D-1); a different
+   * decision opens the file again as a new BlDocument. Transforming locked spans is Phase 4.
    * Throws (and keeps the old content) when the new bytes cannot be mapped.
    */
   replaceContent(bytes: Uint8Array): void {
@@ -366,9 +368,14 @@ export class BlDocument implements ServedDoc {
    * Every write re-checks, at the moment of the write, that the Edit capability is on, the file is UTF-8
    * and editing is allowed (9.1: "checks this at the moment of the write"; 9.2 rule 1), and a successful
    * write sets knownHash (9.2 Write protocol step 6).
+   *
+   * 6.10: Blueline's own writes never reset trust. The atomic write puts a new file (a new identity) at the
+   * path, so after each write a trust.json decision bound to the file it replaced is bound to the new one
+   * (trust-store.ts rebindAfterOwnWrite); the write resolves once that is done.
    */
   io(editCapability: () => boolean): DeckIO {
-    return createDeckIO(this.realpath, {
+    const realpath = this.realpath;
+    const deck = createDeckIO(realpath, {
       refuse: () => {
         if (!editCapability()) return 'Edit is not available in this version of Blueline';
         if (this.readOnlyReason) return this.readOnlyReason;
@@ -380,6 +387,15 @@ export class BlDocument implements ServedDoc {
         this.knownHash = hash;
       },
     });
+    return {
+      ...deck,
+      async atomicWrite(bytes: Uint8Array, expectHash: string): Promise<void> {
+        // The file this write replaces: the atomic write checks its bytes (expectHash) right before the rename.
+        const before = await readFileIdentity(realpath);
+        await deck.atomicWrite(bytes, expectHash);
+        await rebindAfterOwnWrite(realpath, before);
+      },
+    };
   }
 
   /** The served copy (9.1 Serving): stamps, notes block removed, resource hints removed while Protected. */
@@ -415,8 +431,9 @@ export interface LoadOptions {
   docIdFor?: (trust: TrustState, fileKey: string) => Promise<string>;
   /**
    * Added by views: the app's 6.10 decision (folders.ts resolveOpenTrust: trusted and untrusted folders, and the
-   * switches trust.json remembers for this file and marker). Without it, decideTrust above (marker or request
-   * only): map, the probe and Diagnostics open files that way.
+   * switches trust.json remembers for this file and marker). `blueline pdf` and `blueline map` pass
+   * command-trust.ts's (the same rules, with no remembered decision). Without it, decideTrust above (marker or
+   * request only): the render-products test harness (pdf-command.ts __blRenderTest) opens files that way.
    */
   decideTrust?: (realpath: string, requestedProtected: boolean) => Promise<OpenDecision>;
 }

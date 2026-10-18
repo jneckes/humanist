@@ -55,7 +55,14 @@ export interface DeckInit {
   trust: TrustState;
   capabilities: Capabilities;
   editingAllowed: boolean;
+  /** The client map, or null (not UTF-8, or mapPending). */
   map: ClientMap | null;
+  /**
+   * True when main has not finished the map yet (D-9: its second half runs after the first paint). `map` is then
+   * null and a MainToDeck.map with the complete map follows. The deck never acts on a partial map: whatever
+   * needs the map (Phase 2's hover outlines and matcher) waits for that message.
+   */
+  mapPending?: boolean;
   notes: Note[];
   /** Display name of the user, for the note card's author chip. */
   userName: string;
@@ -314,6 +321,12 @@ export interface WalkNode {
    * null when none does; absent when the agent has no slide model.
    */
   slide?: number | null;
+  /**
+   * The node's white-space preserves line breaks (`pre`, `pre-wrap`, `pre-line`, `break-spaces`), so a newline
+   * in its data is a forced break findInPage never matches across (review finding 12): the index text splits
+   * the run there. Absent (false) for ordinary white-space, where a newline collapses to a space.
+   */
+  pre?: boolean;
 }
 
 export interface WalkBlock {

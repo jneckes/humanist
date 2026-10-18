@@ -3,10 +3,20 @@
 // slide. Choosing a result navigates to that slide, then highlights the match with findInPage."
 //
 // - findInDeck searches the slide index (slide-index.ts), never the live page: every slide, shown or not.
-//   Matching ignores case and diacritics (NFD, combining marks removed), treats curly and straight quotes,
-//   dashes and every kind of space alike, and collapses whitespace; snippets keep the original spelling.
+//   Matching ignores case and diacritics (NFKD, combining marks removed, so ligatures and full-width forms too),
+//   treats curly and straight quotes, dashes and every kind of space alike, and collapses whitespace; snippets
+//   keep the original spelling. A slide's text is one string per block (ipc-render SlideIndexEntry.text), and
+//   a match never spans two strings: findInPage never matches across a block boundary or a line break, so a
+//   phrase that ran from a heading into its paragraph was a hit findInPage could not reach (review finding 12).
+// - Each hit has its identity on the slide (matchIndex: Find's own count) and the occurrence findInPage must
+//   reach (occurrence: the earlier hits on the slide, or on the page for a document, whose text findInPage
+//   would also match when asked for this hit's text). Chromium's find matches with ICU collation at base
+//   strength after folding curly quotes and dropping soft hyphens (checked in Electron 44: it equates case,
+//   accents, ß and ss, ligatures, the ellipsis and "...", and ignores zero-width characters, but keeps en and em
+//   dashes, the minus sign, primes and guillemets apart from their ASCII forms); findInPageSame reproduces that
+//   with Intl.Collator, so a slide that spells a term two ways highlights each spelling in its own place.
 // - findOnSlide gives the views item what to ask findInPage for after navigating to the hit's slide: the
-//   matched text in its original spelling and its occurrence on the slide.
+//   matched text in its original spelling and its occurrence.
 // - highlightMatch drives findInPage on the deck view to that occurrence. findInPage searches the whole page,
 //   including slides that are rendered but not shown (opacity 0, moved off screen; Phase 1 finding), so it
 //   steps through the matches and counts only those whose selection lies inside the view.
@@ -42,11 +52,25 @@ export interface Folded {
   end: number[];
 }
 
-/** Folds one code point: case and diacritics removed (NFD, lower case, NFD again, marks dropped). */
+/**
+ * Letters ICU's root collation treats as their base letters at base strength (so findInPage matches them),
+ * which no Unicode decomposition gives: Find folds them too, so it lists every match findInPage counts.
+ */
+const FOLD_LETTERS: Readonly<Record<string, string>> = Object.freeze({
+  'ß': 'ss', 'æ': 'ae', 'œ': 'oe', 'ø': 'o', 'đ': 'd', 'ð': 'd', 'ł': 'l', 'ħ': 'h',
+});
+
+/**
+ * Folds one code point: case and diacritics removed (NFKD, lower case, NFD again, marks dropped), so
+ * compatibility forms (ﬁ, Ｆ, ²) fold to their plain letters as findInPage folds them.
+ */
 export function foldCodePoint(cp: string): string {
   const f = FOLD_CHARS[cp];
   if (f !== undefined) return f;
-  return cp.normalize('NFD').toLowerCase().normalize('NFD').replace(MARKS, '');
+  const base = cp.normalize('NFKD').toLowerCase().normalize('NFD').replace(MARKS, '');
+  let out = '';
+  for (const c of base) out += FOLD_LETTERS[c] ?? (SPACE.test(c) ? '' : c);
+  return out;
 }
 
 /** Folds `s` for matching (see the module comment), keeping the map back to the original. */
@@ -126,14 +150,40 @@ function isLowSurrogate(c: number): boolean {
 
 // ------------------------------------------------------------------------------------------- search
 
-/** The slide's searchable text: its strings in order, one space between them (a phrase may span two). */
+/**
+ * The slide's text as one string for snippets: its strings (one per block) in order, one space between them.
+ * Matching never spans two strings (searchIndex).
+ */
 export function slideText(strings: readonly string[]): string {
   return strings.join(' ');
 }
 
+/** Chromium's own folds before it searches (find_buffer.cc): curly quotes to straight ones, soft hyphens out. */
+function chromiumPreFold(s: string): string {
+  return s
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/\u00ad/g, '')
+    .replace(/[\s\u00a0\u2007\u202f]+/g, ' ')
+    .trim();
+}
+
+let collator: Intl.Collator | null = null;
+
 /**
- * Every match of `query` in the index, by slide, then by position (6.9 Find). Case- and diacritic-insensitive.
- * At most FIND_MAX_HITS hits (`truncated` says there were more).
+ * True when findInPage, asked for `a`, also matches the text `b` (and the other way round): ICU collation at
+ * base strength after Chromium's quote and soft-hyphen folds, as Chromium's find compares (see the module
+ * comment; checked against findInPage in Electron 44).
+ */
+export function findInPageSame(a: string, b: string): boolean {
+  collator ??= new Intl.Collator('und', { sensitivity: 'base', usage: 'search' });
+  return collator.compare(chromiumPreFold(a), chromiumPreFold(b)) === 0;
+}
+
+/**
+ * Every match of `query` in the index, by slide, then by position (6.9 Find). Case- and diacritic-insensitive;
+ * a match lies inside one of a slide's strings (blocks), never across two. At most FIND_MAX_HITS hits
+ * (`truncated` says there were more).
  */
 export function searchIndex(index: SlideIndex, query: string): { hits: FindHit[]; truncated: boolean } {
   const q = foldQuery(typeof query === 'string' ? query : '');
@@ -142,25 +192,36 @@ export function searchIndex(index: SlideIndex, query: string): { hits: FindHit[]
   // A document is one page: findInPage counts its matches across all sections.
   const pageWide = index.kind === 'scroll' || index.kind === 'single';
   let pageCount = 0;
+  /** The hits findInPage counts with the next one: this slide's, or the page's. */
+  let counted: FindHit[] = [];
   for (const slide of index.slides) {
     const text = slideText(slide.text);
-    const f = fold(text);
+    if (!pageWide) counted = [];
     let onSlide = 0;
-    for (let at = f.text.indexOf(q); at >= 0; at = f.text.indexOf(q, at + q.length)) {
-      if (hits.length >= FIND_MAX_HITS) return { hits, truncated: true };
-      const os = f.start[at];
-      const oe = f.end[at + q.length - 1];
-      const snip = makeSnippet(text, os, oe);
-      hits.push({
-        slide: slide.index,
-        title: slide.title,
-        snippet: snip.snippet,
-        snippetMatch: { start: snip.start, end: snip.end },
-        matchIndex: pageWide ? pageCount : onSlide,
-        text: text.slice(os, oe),
-      });
-      onSlide++;
-      pageCount++;
+    let offset = 0;
+    for (const str of slide.text) {
+      const f = fold(str);
+      for (let at = f.text.indexOf(q); at >= 0; at = f.text.indexOf(q, at + q.length)) {
+        if (hits.length >= FIND_MAX_HITS) return { hits, truncated: true };
+        const os = f.start[at];
+        const oe = f.end[at + q.length - 1];
+        const snip = makeSnippet(text, offset + os, offset + oe);
+        const matched = str.slice(os, oe);
+        const hit: FindHit = {
+          slide: slide.index,
+          title: slide.title,
+          snippet: snip.snippet,
+          snippetMatch: { start: snip.start, end: snip.end },
+          matchIndex: pageWide ? pageCount : onSlide,
+          text: matched,
+          occurrence: counted.filter((h) => findInPageSame(h.text, matched)).length,
+        };
+        hits.push(hit);
+        counted.push(hit);
+        onSlide++;
+        pageCount++;
+      }
+      offset += str.length + 1;
     }
   }
   return { hits, truncated: false };
@@ -180,15 +241,17 @@ export function findResponse(index: SlideIndex | null, query: string): FindRespo
 
 /**
  * What findInPage needs once the deck view shows the hit's slide (6.9 Find): the matched text as the slide
- * spells it, and which of the matches on the slide this is (on a document, on the page). findInPage itself
- * ignores case and diacritics, so the text finds the same occurrences Find counted.
+ * spells it, and which of findInPage's matches of that text on the slide (on a document, on the page) this
+ * is: `occurrence`, the earlier hits findInPage would also match (findInPageSame). A hit without one (an older
+ * caller's) falls back to its matchIndex.
  */
 export function findOnSlide(
-  hit: Pick<FindHit, 'text' | 'matchIndex'>,
+  hit: Pick<FindHit, 'text' | 'matchIndex'> & Partial<Pick<FindHit, 'occurrence'>>,
   index?: Pick<SlideIndex, 'kind'>,
 ): { text: string; occurrence: number; pageWide: boolean; options: { matchCase: false } } {
   const pageWide = index ? index.kind === 'scroll' || index.kind === 'single' : false;
-  return { text: hit.text, occurrence: hit.matchIndex, pageWide, options: { matchCase: false } };
+  const occurrence = typeof hit.occurrence === 'number' ? hit.occurrence : hit.matchIndex;
+  return { text: hit.text, occurrence, pageWide, options: { matchCase: false } };
 }
 
 /** The hit a shell's Find-show call names, checked against the current index (the shell names, main decides). */

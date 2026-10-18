@@ -21,7 +21,10 @@
 // marker; on Windows, a blueline.cmd with Blueline's marker); any other file, link or folder of that name is left
 // alone and the result says why. A replaced link is swapped atomically (a new link renamed over the old one).
 // The result tells the user when the folder is not on the PATH their login shell sets (the login shell is run
-// with `-l -c /usr/bin/env` and its PATH= line read).
+// with `-l -c /usr/bin/env` and its PATH= line read). ~/.local/bin is made before that PATH is read, because
+// Debian's and Ubuntu's ~/.profile add it only `if [ -d "$HOME/.local/bin" ]`. When the login PATH has it but
+// this session's does not (the folder was just made), Linux terminals find the command after the next login:
+// they start non-login shells, which do not read ~/.profile (review finding 25).
 //
 // Pure apart from the injected file system, child process and dialogs (CliInstallEnv), so unit tests pin every
 // path decision for each platform; createCliInstallEnv wires the real ones.
@@ -97,6 +100,11 @@ export type CliInstallResult =
       onPath: boolean | null;
       /** What to do when it is not. */
       pathHint: string | null;
+      /**
+       * Linux: `dir` is on the login PATH but not on this session's (it was just made, and ~/.profile adds it
+       * once it exists): terminals find the command after the next login.
+       */
+      loginNeeded?: boolean;
       admin: boolean;
     }
   | { ok: false; canceled?: boolean; reason: string; link?: string };
@@ -191,7 +199,10 @@ export function pathHint(dir: string, o: { platform: NodeJS.Platform; home: stri
   const shown = dir.startsWith(o.home + '/') ? `$HOME/${dir.slice(o.home.length + 1)}` : dir;
   if (shell === 'fish') return `Add it to your PATH with: fish_add_path ${dir}. Then open a new terminal.`;
   const file = shell === 'zsh' ? '~/.zprofile' : shell === 'bash' ? (o.platform === 'darwin' ? '~/.bash_profile' : '~/.profile') : '~/.profile';
-  return `Add it to your PATH: add the line export PATH="${shown}:$PATH" to ${file}, then open a new terminal.`;
+  // Terminal on macOS starts login shells, which read the file; Linux terminals start non-login shells, so the
+  // line applies from the next login.
+  const then = o.platform === 'darwin' ? 'then open a new terminal' : 'then log out and log back in';
+  return `Add it to your PATH: add the line export PATH="${shown}:$PATH" to ${file}, ${then}.`;
 }
 
 /** The Windows wrapper: calls the shipped blueline.cmd, so the command always matches the installed app. */
@@ -258,6 +269,11 @@ export async function installCommandLineTool(env: CliInstallEnv): Promise<CliIns
   const userDir = p.join(env.home, '.local', 'bin');
   const userLink = p.join(userDir, 'blueline');
   const systemLink = p.join(systemDir, 'blueline');
+  // Made first on Linux: a ~/.profile that adds the folder only once it exists (Debian, Ubuntu) has it on the
+  // login PATH only then, so it must exist before loginPath() is read. macOS does not put ~/.local/bin on PATH
+  // that way, and the install may go to /usr/local/bin, so creating it up front there would leave an empty
+  // folder behind (review finding 25 side effect); on macOS it is made only when the link goes into it (below).
+  if (env.platform === 'linux') await env.fs.mkdirp(userDir).catch(() => undefined);
   const loginPath = await env.loginPath().catch(() => null);
   const userOnPath = isOnPath(userDir, loginPath, env);
   const [userKind, systemKind] = await Promise.all([
@@ -291,6 +307,8 @@ export async function installCommandLineTool(env: CliInstallEnv): Promise<CliIns
   if (kind === 'folder' || kind === 'foreign-file' || kind === 'foreign-link') return { ok: false, reason: refusal(kind, link), link };
   // /usr/local/bin is on every macOS PATH (/etc/paths): unknown counts as yes there.
   const onPath = where === 'system' ? (isOnPath(systemDir, loginPath, env) ?? true) : userOnPath;
+  // Linux only: a macOS app started from the Finder has launchd's short PATH, whatever the shells have.
+  const loginNeeded = env.platform === 'linux' && onPath === true && isOnPath(dir, env.env.PATH, env) === false;
   const done = (o: { replaced: boolean; upToDate: boolean; admin: boolean }): CliInstallResult => ({
     ok: true,
     link,
@@ -299,6 +317,7 @@ export async function installCommandLineTool(env: CliInstallEnv): Promise<CliIns
     ...o,
     onPath,
     pathHint: onPath === false ? pathHint(dir, { platform: env.platform, home: env.home, shell: env.loginShell() }) : null,
+    loginNeeded,
   });
   if (kind === 'same') return done({ replaced: false, upToDate: true, admin: false });
 
@@ -360,6 +379,7 @@ export function cliInstallMessage(r: CliInstallResult): { type: 'info' | 'warnin
     'Try it in a terminal: blueline deck.html, or blueline pdf deck.html. It needs Node.js 22 or later (nodejs.org).',
   ];
   if (r.onPath === false && r.pathHint) lines.push(`${r.dir} is not on your PATH yet, so your terminal will not find blueline. ${r.pathHint}`);
+  else if (r.loginNeeded) lines.push(`${r.dir} will be on your PATH after you log in again: terminals opened before then may not find blueline.`);
   else if (r.onPath === null) lines.push(`Blueline could not read your PATH. If your terminal does not find blueline, add ${r.dir} to your PATH.`);
   return {
     type: r.onPath === false ? 'warning' : 'info',

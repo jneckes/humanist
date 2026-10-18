@@ -101,16 +101,23 @@ describe('the probe copy keeps the deck’s internet marker (9.9 Derived files k
     marker,
   });
 
-  it('marks the copy with the deck’s marker and trust once it is written', async () => {
+  it('marks the copy with the deck’s marker and trust right after it is created, before any of the deck’s bytes is written (review finding 30)', async () => {
     const seen: unknown[] = [];
+    let sizeAtMark = -1;
     const copy = await ProbeCopy.create(deck('protected', '0083;65f1c2a3;Safari;'), '0123456789abcdef', {
       mark: async (c, src) => {
-        expect(fs.readFileSync(c)).toEqual(Buffer.from(bytes));
+        // A run killed from here on leaves a marked copy, never the deck's bytes without the marker.
+        sizeAtMark = fs.statSync(c).size;
         seen.push({ c, ...src });
       },
     });
-    expect(seen).toEqual([{ c: copy.path, realpath: path.join(dir, 'deck.html'), marker: '0083;65f1c2a3;Safari;', protectedView: true }]);
-    copy.removeSync();
+    try {
+      expect(sizeAtMark).toBe(0);
+      expect(seen).toEqual([{ c: copy.path, realpath: path.join(dir, 'deck.html'), marker: '0083;65f1c2a3;Safari;', protectedView: true }]);
+      expect(fs.readFileSync(copy.path)).toEqual(Buffer.from(bytes));
+    } finally {
+      copy.removeSync();
+    }
   });
 
   it('a copy whose marker cannot be written is removed, and the probe is refused', async () => {

@@ -341,6 +341,38 @@ describe('Windows markers with fs and NTFS stream paths (9.9)', () => {
     expect(made).toContain('ReferrerUrl=file:///');
   });
 
+  it('a volume without streams (FAT, exFAT: ENOENT on <file>:Zone.Identifier) keeps no marker: the PDF’s mark carries on, an HTML copy’s still fails (review finding 29)', async () => {
+    const files = new Map<string, Uint8Array>([['C:\\d\\q4.html:Zone.Identifier', new TextEncoder().encode(text)]]);
+    const writes: string[] = [];
+    // E:\ is a FAT stick: libuv reports ERROR_INVALID_NAME for a stream path there as ENOENT.
+    const fat = {
+      platform: 'win32' as const,
+      readFile: fsFake(files).readFile,
+      writeFile: async (p: string, b: Uint8Array) => {
+        writes.push(p);
+        if (p.startsWith('E:\\') && p.endsWith(':Zone.Identifier')) throw Object.assign(new Error(`ENOENT: no such file or directory, open '${p}'`), { code: 'ENOENT', errno: -4058, syscall: 'open' });
+        files.set(p, b);
+      },
+    };
+    const sources = [
+      { realpath: 'C:\\d\\q4.html', marker: text, protectedView: true }, // a marked deck
+      { realpath: 'C:\\d\\asked.html', marker: null, protectedView: true }, // --protected, no marker
+      { realpath: 'C:\\d\\q4.html', marker: null, protectedView: false }, // Trusted, but the file carries one now
+    ];
+    for (const src of sources) {
+      await expect(markDerivedFile('E:\\out.pdf', src, { ...fat, allowStreamlessVolume: true })).resolves.toBeUndefined();
+      // The probe copy and other HTML copies: still refused (a copy that lost the marker would open Trusted).
+      await expect(markDerivedFile('E:\\.deck.bl-probe.html', src, fat)).rejects.toThrow(/ENOENT/);
+    }
+    expect(writes.filter((w) => w === 'E:\\out.pdf:Zone.Identifier')).toHaveLength(3);
+    // Any other write error still fails the PDF's mark.
+    const denied = { ...fat, writeFile: async () => Promise.reject(Object.assign(new Error('EACCES'), { code: 'EACCES' })), allowStreamlessVolume: true };
+    await expect(markDerivedFile('E:\\out.pdf', sources[0], denied)).rejects.toThrow(/EACCES/);
+    // An NTFS target is marked as before.
+    await markDerivedFile('C:\\d\\q4.pdf', sources[0], { ...fat, allowStreamlessVolume: true });
+    expect(new TextDecoder().decode(files.get('C:\\d\\q4.pdf:Zone.Identifier')!)).toBe(text);
+  });
+
   it('zoneStreamPath', () => {
     expect(zoneStreamPath('C:\\d\\deck.html')).toBe('C:\\d\\deck.html:Zone.Identifier');
   });

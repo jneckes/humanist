@@ -1,90 +1,23 @@
-// Shared by the trust-native E2E specs and the trust security specs: opens the Settings window in a running app
-// and finds its Playwright page.
+// Shared by the trust-native E2E specs and the trust security specs: opens the app's own Settings window in a
+// running app and finds its Playwright page.
 //
-// When the app wires Settings itself (the views item calls installSettingsWindow at startup; under
-// BLUELINE_TEST=1 that exposes globalThis.__blSettings), the specs use that. Until it does, this harness bundles
-// the Settings modules (settings-window.ts with config.ts, folders.ts and native-helper.ts) with esbuild and
-// loads them into the running main process, against the same userData, dist/preload-settings.cjs and
-// dist/shell/settings.html the app ships, so the window, its preload, its CSP, its channels and config.json are
-// the real ones. `mode` in the result says which ran.
+// The app wires Settings itself (index.ts calls installSettingsWindow at startup; under BLUELINE_TEST=1 that
+// exposes globalThis.__blSettings). The specs only ever drive that window: nothing here installs a Settings
+// window of its own, so a test can never pass against test-installed channels (review finding 32). When the app
+// does not expose __blSettings, openSettings throws and the test fails.
 
 import type { Page } from '@playwright/test';
-import * as esbuild from 'esbuild';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { APP_DIR, ROOT, sleep, type BlApp } from '../helpers/app';
 
 export const DIST = path.join(APP_DIR, 'dist');
 
-let bundled: Promise<string> | null = null;
-
-/** Bundles the Settings modules into test-results/trust-native/ (once per test process). */
-export function settingsHarnessBundle(): Promise<string> {
-  if (bundled) return bundled;
-  bundled = (async () => {
-    const outDir = path.join(ROOT, 'test-results', 'trust-native');
-    fs.mkdirSync(outDir, { recursive: true, mode: 0o755 });
-    fs.chmodSync(outDir, 0o755);
-    const out = path.join(outDir, `settings-harness-${process.pid}.cjs`);
-    const coreSubpaths: esbuild.Plugin = {
-      name: 'core-subpaths',
-      setup(build) {
-        build.onResolve({ filter: /^@blueline\/core\// }, (a) => ({ path: path.join(ROOT, 'packages/core/src', a.path.slice('@blueline/core/'.length) + '.ts') }));
-        build.onResolve({ filter: /^@blueline\/core$/ }, () => ({ path: path.join(ROOT, 'packages/core/src/index.ts') }));
-      },
-    };
-    await esbuild.build({
-      stdin: {
-        contents: `
-          import * as path from 'node:path';
-          import { ConfigStore } from './packages/app/src/main/config';
-          import { TrustSettings } from './packages/app/src/main/folders';
-          import { nativeHelper } from './packages/app/src/main/native-helper';
-          import { servedDirs } from './packages/app/src/main/app-paths';
-          import { appLocationOptions, installSettingsWindow } from './packages/app/src/main/settings-window';
-          export function install(o: { userData: string; dist: string }) {
-            const config = ConfigStore.forUserData(o.userData);
-            config.load();
-            const settings = new TrustSettings(config, appLocationOptions());
-            const changes: string[] = [];
-            installSettingsWindow({
-              settings,
-              helper: nativeHelper,
-              preload: path.join(o.dist, 'preload-settings.cjs'),
-              shellDir: servedDirs(o.dist, false).shellDir,
-              platform: process.platform,
-              devTools: true,
-              onTrustSettingsChanged: (c) => changes.push(c),
-              log: (m) => console.error('[blueline] ' + m),
-              test: true,
-            });
-            (globalThis as Record<string, unknown>).__blSettingsHarness = { changes };
-          }
-        `,
-        resolveDir: ROOT,
-        loader: 'ts',
-        sourcefile: 'settings-harness.ts',
-      },
-      bundle: true,
-      platform: 'node',
-      format: 'cjs',
-      target: 'node24',
-      external: ['electron'],
-      outfile: out,
-      logLevel: 'silent',
-      plugins: [coreSubpaths],
-    });
-    fs.chmodSync(out, 0o644);
-    return out;
-  })();
-  return bundled;
-}
-
 export interface OpenedSettings {
   page: Page;
   webContentsId: number;
-  /** `app`: the app's own wiring (__blSettings); `harness`: loaded by this file. */
-  mode: 'app' | 'harness';
+  /** Always `app`: the app's own wiring (__blSettings). The specs assert it. */
+  mode: 'app';
 }
 
 /** Whether the app wired Settings itself (BLUELINE_TEST=1 exposes __blSettings). */
@@ -92,21 +25,10 @@ export async function appHasSettings(app: BlApp): Promise<boolean> {
   return await app.electronApp.evaluate(() => typeof (globalThis as Record<string, unknown>).__blSettings === 'object');
 }
 
-/** Makes the Settings window's channels exist: the app's, or the harness's. */
-export async function ensureSettings(app: BlApp): Promise<'app' | 'harness'> {
+/** The app's own Settings channels exist; throws when the app does not wire Settings. */
+export async function ensureSettings(app: BlApp): Promise<'app'> {
   if (await appHasSettings(app)) return 'app';
-  const bundle = await settingsHarnessBundle();
-  await app.electronApp.evaluate(
-    (_e, a) => {
-      const g = globalThis as Record<string, unknown>;
-      if (g.__blSettings) return;
-      const req = (process as unknown as { mainModule?: { require(id: string): unknown } }).mainModule?.require;
-      if (!req) throw new Error('no main module require');
-      (req(a.bundle) as { install(o: { userData: string; dist: string }): void }).install({ userData: a.userData, dist: a.dist });
-    },
-    { bundle, userData: app.userData, dist: DIST },
-  );
-  return 'harness';
+  throw new Error(`the app does not wire its Settings window (no __blSettings under BLUELINE_TEST=1)\n${app.logs.slice(-30).join('\n')}`);
 }
 
 /** Opens Settings (or focuses it) and returns its page. */

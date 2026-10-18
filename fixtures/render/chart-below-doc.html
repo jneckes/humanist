@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Below-fold chart report</title>
+<!--
+  A document whose only script-timed content is a canvas chart BELOW the first screen (SPEC 6.9 Save as PDF and
+  Print of documents; decision D-5; review finding 10 re-verification). The bar grows over 1000 ms with
+  requestAnimationFrame (a chart library's default animation; reduced motion does not stop it) and NEVER mutates
+  the DOM. The index walk's DOM observer sees no change, and its picture check samples only the first screen, so
+  without the fix the adaptive settle learnt the page "quiet" and Save as PDF / Print used the no-minimum wait
+  and printed the bar mid-animation. A document's page keeps the full wait, so the whole bar is printed.
+-->
+<style>
+  body { font: 16px/1.4 Arial, sans-serif; margin: 40px; max-width: 800px; color: #222; background: #fff; }
+  .intro { height: 1100px; background: #eef; }
+  canvas { display: block; border: 1px solid #888; }
+</style>
+</head>
+<body>
+<h1>Revenue report</h1>
+<div class="intro"><p>A long introduction that fills the first screen, so the chart below is off it.</p></div>
+<h2>Results</h2>
+<canvas id="chart" width="400" height="300"></canvas>
+<p>Closing paragraph.</p>
+<script>
+  (function () {
+    var c = document.getElementById('chart'), x = c.getContext('2d'), t0 = null;
+    function ease(t) { return 1 - Math.pow(1 - t, 4); }
+    function frame(ts) {
+      if (t0 === null) t0 = ts;
+      var t = Math.min(1, (ts - t0) / 1000), h = Math.round(280 * ease(t));
+      x.clearRect(0, 0, 400, 300);
+      x.fillStyle = '#2d6cdf';
+      x.fillRect(150, 300 - h, 100, h);
+      // No DOM mutation on completion: the only signal the chart finished is the canvas pixels.
+      if (t < 1) requestAnimationFrame(frame);
+    }
+    requestAnimationFrame(frame);
+  })();
+</script>
+</body>
+</html>

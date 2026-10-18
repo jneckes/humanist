@@ -98,7 +98,11 @@ escapeJsText(text: string, quote: "'" | '"' | '`', kind: 'string' | 'template'):
 escapeJsonText(text: string): string                                                   // 9.2 Strategy 2 step 5.3
 
 // mapper.ts
-buildMap(src: string, opts: { version: string; utf8: boolean }): DeckMap
+buildMap(src: string, opts: { version: string; utf8: boolean; defer?: boolean }): DeckMap
+// Since review round 1 (decision D-9) buildMap returns after Strategy 1 (the stamps the served copy needs) unless
+// defer is false; the Strategy 2 fields (units, literals, scripts, keyValues, keys, shadows) are accessors that
+// complete all of them on the first read of any. completeMap(map) runs Strategy 2 now; isMapComplete(map) says
+// whether it ran. A complete map equals the eager one field for field.
 toClientMap(map: DeckMap): ClientMap
 buildServedCopy(src: string, map: DeckMap, opts: { protected: boolean }): string   // (served.ts) stamps, data-bl-e stripped, notes block removed, rel hints stripped when protected
 
@@ -134,7 +138,11 @@ parse5 errors, Strategy 2 checks), restore on failure, and the verbatim fallback
   is a `WebContentsView` added to `win.contentView`, positioned in the content area from `ShellLayout`
   (main owns the layout numbers and sends them in `ShellState`). Playwright's `_electron` sees the window.
 - **Deck view webPreferences:** `sandbox: true, contextIsolation: true, nodeIntegration: false,
-  webSecurity: true, partition, preload: dist/preload-deck.cjs, additionalArguments: ['--bl-mode=deck']`.
+  nodeIntegrationInSubFrames: true, webSecurity: true, partition, preload: dist/preload-deck.cjs,
+  additionalArguments: ['--bl-mode=deck']`. `nodeIntegrationInSubFrames` (review round 1, decision D-4) only
+  loads the sandboxed preload in every frame: in a subframe it installs the file-drop guard and nothing else
+  (`preload/drop-guard.ts guardFrameDrops`), and main's IPC guard still answers only the main frame. The
+  Diagnostics window's visible deck view sets it too.
   Partition: non-persistent `deck-<docId>` when Protected, `persist:deck-<fileKey>` when Trusted.
   A Trusted file keeps its docId (and so its origin and storage, 6.10) across opens: random, generated once,
   kept in `<userData>/files/<fileKey>/origin` (`documents.ts` `trustedDocumentId`). Protected opens always get
@@ -242,22 +250,27 @@ through the IPC guard. IPC types live in one core file per area: `ipc-render.ts`
 |---|---|---|
 | `setRenderHost({ preload, userData, log })` | `render-service.ts` | the render windows every render product uses |
 | `configureNativeHelper(…)`, `disposeNativeHelper()` on `will-quit` | `native-helper.ts` | macOS: the Swift helper (`native/macos`) or `/usr/bin/xattr`; Windows: Default Apps, `reg.exe`; Linux: unsupported |
-| `TrustStore.forUserData(userData).load()` | `trust-store.ts` | `<userData>/trust.json`: remembered decisions, each with the marker it was made on |
+| `TrustStore.forUserData(userData).load()` | `trust-store.ts` | `<userData>/trust.json`: remembered decisions, each with the marker it was made on and, for an unmarked file and on Windows, the file's identity (`readFileIdentity`: dev, ino, birth time; decision D-2); kept under 7 MiB. It registers the live store that `documents.ts` re-binds after Blueline's own atomic writes (`rebindAfterOwnWrite`) |
 | `new TrustSettings(config, …)` | `folders.ts` | trusted and untrusted folders, the strict option, the CDN allowlist (in `config.json`) |
 | `RecentFiles.forUserData(…)` | `recent.ts` | `recent.json`, File › Open Recent, `app.addRecentDocument` |
 | `setShellThumbResolver(…)` | `protocol.ts` | `app://shell/thumbs/<docId>/<sha256>-<slide>-<width>.png`, mapped in main to that window's thumbnail cache (`thumbnails.ts readThumb`) |
 | `installSettingsWindow(…)` | `settings-window.ts` | the Settings window (General, Trust) and its `bl:settings:*` channels, answered only for its own shell |
 | `installDropHandler(…)` | `drop.ts` | `bl:files:open-dropped` from document shells and the welcome window |
-| `installFirstRun(…)` | `first-run.ts` | the welcome window and its `bl:welcome:*` channels; the sample deck copied to `<userData>/sample` |
-| `runPdfCommand(…)` for `--bl-cmd=pdf` | `pdf-command.ts` | `blueline pdf`, headless, with a private userData (as `map`) |
+| `installFirstRun(…)` | `first-run.ts` | the welcome window and its `bl:welcome:*` channels, and the Open window later launches show on Linux and Windows (`OPEN_URL`, the same page without the first-run questions; main refuses the name and crash-report channels from it); the sample deck copied to `<userData>/sample` |
+| `runPdfCommand(…)` for `--bl-cmd=pdf` | `pdf-command.ts` | `blueline pdf`, headless, with a private userData (as `map`); before switching to it, `command-trust.ts commandTrust()` reads the user's `config.json` read-only (`BLUELINE_USER_DATA`, else `<appData>/Blueline`) for the folders, the strict option and the allowlist, and decides trust with `resolveOpenTrust` and `TrustStore.inMemory()` (never trust.json; decision D-3). `map-command.ts` does the same |
+| `noFileStart()` and `second-instance` | `index.ts`, `first-run.ts` | a launch without a file: `startupWindow({platform, welcomeSeen})` gives the first-run welcome on the first launch only (`seen.welcome`), then the Open window (`welcome.html?mode=open`) on Linux and Windows and nothing on macOS; a second launch without a file brings forward the window `secondLaunchFocus` picks (decision D-12) |
 
 ### Opening a file (`controller.ts`)
 
 `AppController.open` → `documents.ts loadDocument({ decideTrust })`, where `decideTrust` is `folders.ts
 resolveOpenTrust` (6.10 When it applies: the requested Protected view, the marker read through the native
-helper, the folder lists, then the decision remembered in `trust.json` for the same marker). The result also
-says whether Allow network and Enable editing were remembered; the window applies them. A Settings change
-(`onTrustSettingsChanged`) re-applies every open window's partition policy (`DocWindow.reapplyPolicy`).
+helper, the folder lists, then the decision remembered in `trust.json` for the same marker, and for the same
+file where the identity binds it). The result also says whether Allow network and Enable editing were
+remembered; the window applies them. A Settings change (`onTrustSettingsChanged`, with the kind of change)
+re-applies every open window's partition policy (`DocWindow.reapplyPolicy`). A Protected request for a file
+already open in another state focuses that window and says so (`protectedRequestNotice`). `AppController`
+also reopens a window whose trust changed on disk (below); on Linux and Windows a hidden placeholder window
+keeps the app running while no window shows the file.
 
 ### One document window (`window.ts`)
 
@@ -274,20 +287,41 @@ says whether Allow network and Enable editing were remembered; the window applie
   Find (`bl:render:find`, `bl:render:find-show`) answers from the index (`find.ts findResponse`), navigates,
   then `highlightMatch` (findInPage). Save as PDF (`pdf.ts saveAsPdf`) and Print (`print.ts printDocument`)
   reuse the index. Every still image waits for what the slide's scripts reveal (`RenderView.waitScripted`,
-  `slide-index.ts SCRIPTED_SETTLE`). On close: `cancelThumbnails(fileKey)` and `disposeRenderer(docId)`
-  before the partition is retired; whatever still waits on a closed render view rejects with
-  `RenderCancelled`. The render products reach the window only through `productsLive`, cleared on close.
-- **Reload** (`watcher.ts watchDeck` → `onExternalChange` → `doc.replaceContent` → `view-state.ts
-  ReloadCoordinator`): the deck preload reports and applies the view state (`bl:files:capture-view-state`,
-  `bl:files:view-state`, `bl:files:apply-view-state`) and its busy state (`bl:files:busy`); a reload waits for
-  an edit or a card with unsaved input. `noteDocumentWrite(fileKey)` makes renders wait 300 ms after a write
-  (6.7 step 1).
+  `slide-index.ts SCRIPTED_SETTLE`), and so do the slide index (before it reads a slide's text) and every
+  `printToPDF` or print of a document or a print-CSS deck. The wait adapts per version (`SettleMemory`,
+  decision D-5): a slide whose full wait saw no late change gets the 400 ms quiet-only wait next time; a
+  document's page always gets the full wait. The index walk also takes the rail's thumbnails (width
+  `railThumbWidth(LEFT_RAIL_WIDTH)`) in the same pass, so the wait is paid once per slide. Save as PDF picks
+  print CSS only when Chromium's print is one page per slide at the slide's aspect (`pdf.ts decidePdfMode`,
+  decision D-6), and lays raster pages out in slide order. Each index records the network policy it was made
+  under (`renderPolicyTag`); a window whose policy differs, or that turned on Allow network or changed Settings ›
+  Trust, makes the products again (`rebuildProducts`). On close: `cancelThumbnails(fileKey)` and
+  `disposeRenderer(docId)` before the partition is retired; whatever still waits on a closed render view rejects
+  with `RenderCancelled`. The render products reach the window only through `productsLive`, cleared on close.
+- **The map after first paint** (decision D-9): `loadDocument` serves the stamped copy after Strategy 1;
+  `sendInit` sends `DeckInit.map: null` with `mapPending` while Strategy 2 has not run, and
+  `completeMapAfterPaint` runs it once the deck view reports its first contentful paint (3 s at most) and sends
+  the complete map on `MainToDeck.map`. The preload never receives a partial map.
+- **Navigation** (decision D-7): a hash or reveal.js goto that has not moved the visible slide within 1.5 s puts
+  the hash back and uses the deck's keys (`Session.deckNav`); the window then remembers it (`brokenGotos`). A
+  key replay or a load gives the keyboard back to the webContents that had it (the Find bar).
+- **Reload** (`watcher.ts watchDeck` → `onExternalChange` → trust decided again → `doc.replaceContent` →
+  `view-state.ts ReloadCoordinator`): the deck preload reports and applies the view state
+  (`bl:files:capture-view-state`, `bl:files:view-state`, `bl:files:apply-view-state`,
+  `bl:files:view-state-applied`) and its busy state (`bl:files:busy`); a reload waits for an edit or a card
+  with unsaved input. Every external change is decided again as an open is (the controller's `decideTrust`),
+  and the marker is read once more 500 ms later; when the decision differs (`trustDifferences`,
+  `reopenForTrust`), the file opens again in a new window instead of reloading in place (decision D-1). A
+  reload never captures a page that is still restoring: `saveState` reuses the state being restored until the
+  page acknowledges it and main's key replay has finished (`restoreDone`, decision D-8).
+  `noteDocumentWrite(fileKey)` makes renders wait 300 ms after a write (6.7 step 1).
 - **Trust bar**: Allow network and Enable editing call `TrustStore.remember(realpath, marker, …)` (not when
   the marker could not be read).
 - **Deck channels** added in Phase 1, all validated in main, none carrying a path: `bl:views:design`,
   `bl:views:page-step` and `bl:views:wheel` (honoured only right after main saw the matching real input in
   `before-input-event` / `input-event`), `bl:files:view-state`, `bl:files:busy`, `bl:files:drop-refused` (no
-  payload). Shell channels: `bl:views:command`, `show`, `scroll`, `find-closed`, and the render ones above.
+  payload), `bl:files:view-state-applied` (no payload). Shell channels: `bl:views:command`, `show`, `scroll`,
+  `find-closed`, and the render ones above.
 - **Menus** (`menu.ts`): Open Recent, Reveal, Present, View › Fit / 100% / Fill width / Reading Width / Hide
   Slides, Find, Save as PDF, Print, Settings…, Help › Install Command Line Tool (`cli-install.ts`), Welcome to
   Blueline, About Protected View.
@@ -300,7 +334,9 @@ says whether Allow network and Enable editing were remembered; the window applie
 - `dist/assets/sample/blueline-tour.html`: the sample deck.
 - `packages/cli/dist/blueline` and `blueline.cmd`: the shims that find Node 22+ (`cli-install.ts` links to them).
 - `native/macos/build/blueline-helper`, when `native/macos/build.sh` ran on a Mac; electron-builder ships it in
-  `Resources/helper`. `packages/app/build/installer.nsh`: the Windows registry entries for Default Apps.
+  `Resources/helper`. `packages/app/build/installer.nsh`: the Windows registry entries for Default Apps, the only
+  Windows file-type registration (`fileAssociations` sit under `mac` in `electron-builder.config.cjs`, decision
+  D-11); a per-machine install also removes the per-user entries a per-user install left.
 
 ### Tests and the exit gate
 
@@ -311,7 +347,9 @@ says whether Allow network and Enable editing were remembered; the window applie
 - The exit-gate harnesses (`scripts/parity.mjs`, `scripts/first-paint.mjs`, `test/parity/harness/`) are their
   own Electron main and import the app's modules from source (`documents.ts`, `protocol.ts`,
   `trust-hooks.ts`, `render-service.ts`, `slide-index.ts`, `pdf.ts`, …): renaming those breaks them, and tsc
-  says so. Results: `docs/PHASE1-RESULTS.md`.
+  says so. The parity harness seeds `Math.random` in every render by wrapping `RenderView.prototype.load` in its
+  own process (decision D-10; the app never does), so `RenderView.load` must stay a prototype method and `wc`
+  public. Results: `docs/PHASE1-RESULTS.md`.
 
 ## Phase 0 findings
 

@@ -1,7 +1,9 @@
 // `blueline map deck.html --report [--json] [--min-coverage 0.95]` (section 10, Phase 0; section 11
 // Coverage baseline). Runs headless in the app (the CLI launches it under xvfb-run on Linux CI):
-//   1. Load the document in an offscreen render view at 1600×900 under its own trust state (its partition,
-//      protocol and session policy, as the visible view would have).
+//   1. Load the document in an offscreen render view at 1600×900 under its own trust state, decided as the app
+//      decides an open (command-trust.ts: the trusted and untrusted folders and the marker, never a remembered
+//      decision), with its partition, protocol and session policy as the visible view would have them (the
+//      user's strict option and CDN allowlist). The probe copy loads in the same partition (9.9 Derived files).
 //   2. Walk the slides: reveal.js, Reveal.slide(h, v) for each; generic engine, ArrowRight until the visible
 //      slide stops changing, up to 200 times; scrolling document, scrollIntoView on each block; single page,
 //      one pass. Scrolling and single-page documents are also stepped through in viewport heights until
@@ -21,9 +23,10 @@ import { app, session } from 'electron';
 import type { CommandResult, DetectResult, MapArgs, WalkNode } from '@blueline/core/ipc';
 import { createMatcher } from '@blueline/core/matcher';
 import { readRegularFile } from './atomic-write';
+import { commandTrust, type CommandTrust } from './command-trust';
 import { loadDocument, newDocumentId, OpenError, type BlDocument } from './documents';
 import { loadEditorDetailed } from './editor-loader';
-import { DEFAULT_ALLOWLIST, pickClosedLoopbackPort } from './network-policy';
+import { pickClosedLoopbackPort } from './network-policy';
 import { normalizeConsoleMessage, onInterrupt, ProbeCopy, ProbeRefused, runProbe } from './probe';
 import { installDeckProtocol } from './protocol';
 import { DEFAULT_VIEWPORT, RenderView, type ConsoleError, type NavKey } from './render-service';
@@ -477,13 +480,15 @@ export async function runMapCommand(args: MapArgs, outFile: string): Promise<num
   };
 
   let doc: BlDocument;
+  let trust: CommandTrust;
   try {
-    // The document's own trust state (6.10): its internet marker decides, as for a double-click.
-    doc = await loadDocument(args.deck, { protectedRequested: false });
+    // The document's own trust state, as a double-click would open it (6.10), with the user's Trust settings.
+    trust = commandTrust();
+    doc = await loadDocument(args.deck, { protectedRequested: false, decideTrust: (rp, req) => trust.decideTrust(rp, req) });
   } catch (e) {
     return fail(e instanceof OpenError ? e.message : `could not open ${args.deck}: ${e instanceof Error ? e.message : String(e)}`);
   }
-  log(`${doc.fileName}: ${doc.utf8 ? 'UTF-8' : 'not UTF-8'}, ${doc.trust()}, ${doc.map.runs.length} parsed runs, ${doc.map.literals.length} literal runs`);
+  log(`${doc.fileName}: ${doc.utf8 ? 'UTF-8' : 'not UTF-8'}, ${trust.describe()}, ${doc.map.runs.length} parsed runs, ${doc.map.literals.length} literal runs`);
 
   const dist = __dirname;
   const editor = loadEditorDetailed(dist);
@@ -497,8 +502,8 @@ export async function runMapCommand(args: MapArgs, outFile: string): Promise<num
   const policy = installDeckSessionPolicy(ses, {
     trust: () => doc.trust(),
     networkAllowed: () => doc.networkAllowed(),
-    strict: () => false,
-    allowlist: () => DEFAULT_ALLOWLIST,
+    strict: () => trust.strict(),
+    allowlist: () => trust.allowlist(),
     blockPort,
     sourcePath: () => doc.realpath,
   });

@@ -9,6 +9,9 @@
 //   version and width waits for the one in flight and then reports from the cache.
 // - When a run completes, thumbnails and index files of other versions are deleted.
 // - At most one render window pair per document (render-service DocumentRenderer).
+// - A deck whose design size is 1600×900 gets its thumbnails at the rail's width from the slide index's own
+//   walk (slide-index.ts, decision D-5), so the window's run finds them cached; other widths and design sizes
+//   render here, with the adaptive settle the index walk learnt (slide-index SettleMemory).
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -106,6 +109,32 @@ export function staleThumbFiles(names: readonly string[], keep: string): string[
     if (m && m[1] !== keep) out.push(n);
   }
   return out;
+}
+
+/**
+ * Deletes every thumbnail of one version, at any width (review finding 15): a render depends on the trust
+ * policy, but thumbnails are keyed by (sha256, slide, width), so when the policy under which they were made no
+ * longer holds they are removed and rebuilt. Returns how many went.
+ */
+export async function removeVersionThumbs(userData: string, fileKey: string, version: string): Promise<number> {
+  const dir = thumbsDir(userData, fileKey);
+  let names: string[];
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch {
+    return 0;
+  }
+  let n = 0;
+  for (const name of names) {
+    if (parseThumbFileName(name)?.version !== version) continue;
+    try {
+      await fs.promises.unlink(path.join(dir, name));
+      n++;
+    } catch {
+      // gone already, or in use (Windows): the next run tries again
+    }
+  }
+  return n;
 }
 
 /** Deletes the thumbnails and index files of other versions (6.9 cache); returns how many went. */

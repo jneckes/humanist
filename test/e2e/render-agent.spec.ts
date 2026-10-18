@@ -117,6 +117,17 @@ const d = document.getElementById('f2').contentDocument; const p = d.createEleme
 <section id="b"><h2>Part two</h2></section>
 <section id="c"><h2>Part three</h2></section>
 </body></html>`,
+  // How each text run continues the one before it in its block (dom-walk CollectJoins; review finding 12).
+  'joins.html': `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0;font:20px/1.5 sans-serif} .ib{display:inline-block} .none{display:none}</style></head><body>
+<h2>Growth</h2><p>Plan ahead.</p>
+<p>Bold<b>er</b> moves</p>
+<p><b>Hello</b> <i>world</i></p>
+<p>Line<br>break</p>
+<p>abc<span class="ib">X</span>def</p>
+<p>x<span class="none">hidden</span>y</p>
+<p>pre<img src="data:," width="4" height="4">img</p>
+<div>Text <p>inner</p> more</div>
+</body></html>`,
   // A page three viewports tall (finding 34).
   'tall.html': `<!doctype html><html><head><meta charset="utf-8"><style>body{margin:0} div{height:900px}</style></head><body>
 <div>First screen</div><div>Second screen</div><div>Third screen</div>
@@ -230,6 +241,31 @@ test("collect sends each node's live text nodes (texts) and the block that conta
   expect(by[' / Docs'].node).toMatchObject({ stamp: 'bl-7', textIndex: 1, texts: [' / Home', ' / Docs'] });
   expect(by['Part one'].node.texts).toEqual(['Part one']);
   expect([by['Part one'].slide, by['Part two'].slide, by['Part three'].slide]).toEqual([0, 1, 2]);
+});
+
+test('collect says how each text run continues the one before it in its block, as findInPage reads the page (review finding 12)', async () => {
+  const r = await H(async (h, f) => {
+    await h.load(f);
+    await h.render({ type: 'detect' });
+    return h.render({ type: 'collect' });
+  }, page('joins.html'));
+  expect(r.ok).toBe(true);
+  const nodes = r.result.nodes as Any[];
+  const joins = r.result.joins as number[];
+  expect(joins).toHaveLength(nodes.length);
+  const of = (data: string) => joins[nodes.findIndex((n) => n.node.data === data)];
+  // A new block: never joined (findInPage never matches "growth plan" across the heading).
+  expect([of('Growth'), of('Plan ahead.')]).toEqual([0, 0]);
+  // An inline element: joined directly ("Bolder"); a space-only node between two inline elements: after a space.
+  expect([of('Bold'), of('er'), of(' moves')]).toEqual([0, 1, 1]);
+  expect([of('Hello'), of('world')]).toEqual([0, 2]);
+  // A line break, an inline-block and an inline image break the run; display: none text is not on the page.
+  expect([of('Line'), of('break')]).toEqual([0, 0]);
+  expect([of('abc'), of('X'), of('def')]).toEqual([0, 0, 0]);
+  expect([of('x'), of('y')]).toEqual([0, 1]);
+  expect([of('pre'), of('img')]).toEqual([0, 0]);
+  // The text around a nested block is two runs of the outer block.
+  expect([of('Text '), of('inner'), of(' more')]).toEqual([0, 0, 0]);
 });
 
 test('scroll-to scrolls the document and reports where it is (finding 34)', async () => {

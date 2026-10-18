@@ -12,7 +12,7 @@ import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { app, dialog, session, shell, webContents as allWebContents } from 'electron';
+import { app, BrowserWindow, dialog, session, shell, webContents as allWebContents } from 'electron';
 import type { CommandResult } from '@blueline/core/ipc';
 import { assetsDir, servedDirs } from './app-paths';
 import { parseAppArgs, parseParentArg, validateSecondInstanceData, type ParsedArgs, type SecondInstanceData } from './args';
@@ -22,7 +22,7 @@ import { AppController } from './controller';
 import { interruptDiagnostics, openDiagnostics } from './diagnostics';
 import { dropResultText, installDropHandler } from './drop';
 import { loadEditorDetailed } from './editor-loader';
-import { SAMPLE_FILE, configFirstRunSettings, installFirstRun, type FirstRunController } from './first-run';
+import { SAMPLE_FILE, configFirstRunSettings, installFirstRun, secondLaunchFocus, type FirstRunController } from './first-run';
 import { TrustSettings } from './folders';
 import { gitUserName, osUserName, resolvePerson } from './identity';
 import { runMapCommand } from './map-command';
@@ -328,7 +328,7 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
       if (a.cmd === 'open') opens = a.files.map((f) => ({ path: path.resolve(workingDirectory, f), protected: a.protected }));
     }
     if (opens.length === 0) {
-      controllerRef?.focused()?.focus();
+      bringForward();
       return;
     }
     for (const o of opens) openFiles.queue(o);
@@ -336,6 +336,69 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
 
   let controllerRef: AppController | null = null;
   let welcomeRef: FirstRunController | null = null;
+  let settingsRef: SettingsController | null = null;
+  // A test build shows the Open dialog at a launch without a file (the harness answers it), unless the test asks
+  // for the real startup windows.
+  const autoWelcome = !TEST || process.env.BLUELINE_TEST_FIRST_RUN === '1';
+
+  /**
+   * A launch without a file, or a second launch without one while no Blueline window is open (6.0 First run, as
+   * decided for Phase 1; first-run.ts startupWindow): the first-run welcome on the first launch; later the Open
+   * window on Windows and Linux, and nothing on macOS (the app stays in the Dock; File › Open works). The app
+   * quits when that window closes with no document open (window-all-closed).
+   */
+  const noFileStart = (): void => {
+    const controller = controllerRef;
+    if (!controller || controller.all().length > 0) return;
+    if (autoWelcome) {
+      welcomeRef?.showForLaunch();
+      return;
+    }
+    void controller.showOpenDialog(false).then(() => {
+      if (controller.all().length === 0 && process.platform !== 'darwin') app.quit();
+    });
+  };
+
+  /** Restored, shown and focused: a window behind another app, minimised, or hidden. */
+  const raise = (w: BrowserWindow): void => {
+    if (w.isMinimized()) w.restore();
+    w.show();
+    w.focus();
+  };
+
+  /**
+   * A second launch without a file (6.1 Mechanics; review finding 26): the Blueline window that is open comes
+   * forward, in the order secondLaunchFocus gives (a document window, the welcome or Open window, Settings, any
+   * other such as Diagnostics); with none open, noFileStart. Windows the user never sees (offscreen renders,
+   * hidden helpers) do not count.
+   */
+  const bringForward = (): void => {
+    if (!controllerRef) return;
+    const doc = controllerRef.focused();
+    const settingsWc = settingsRef?.webContentsId();
+    const settingsContents = typeof settingsWc === 'number' ? allWebContents.fromId(settingsWc) : undefined;
+    const settingsWin = settingsContents ? BrowserWindow.fromWebContents(settingsContents) : null;
+    const other =
+      BrowserWindow.getAllWindows().find(
+        (w) => !w.isDestroyed() && w !== settingsWin && !w.webContents.isOffscreen() && w.isFocusable() && (w.isVisible() || w.isMinimized()),
+      ) ?? null;
+    switch (secondLaunchFocus({ document: doc !== null, welcome: welcomeRef?.isOpen() ?? false, settings: settingsWin !== null && !settingsWin.isDestroyed(), other: other !== null })) {
+      case 'document':
+        doc?.focus();
+        return;
+      case 'welcome':
+        welcomeRef?.focus();
+        return;
+      case 'settings':
+        if (settingsWin) raise(settingsWin);
+        return;
+      case 'other':
+        if (other) raise(other);
+        return;
+      default:
+        noFileStart();
+    }
+  };
 
   // 6.1: one window per document; the app quits with its last window, except on macOS.
   app.on('window-all-closed', () => {
@@ -450,10 +513,12 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
       shellDir: paths.shellDir,
       platform: process.platform,
       devTools,
-      onTrustSettingsChanged: () => controller.trustSettingsChanged(),
+      // The setting that changed: a folder change shapes no open window's policy, so it rebuilds no render product.
+      onTrustSettingsChanged: (change) => controller.trustSettingsChanged(change),
       log,
       test: TEST,
     });
+    settingsRef = settings;
 
     // 6.1 Ways in: files dropped on a window's shell areas (or the welcome window) open as File › Open does.
     installDropHandler({
@@ -491,27 +556,10 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
 
     const queued = openFiles.start((o) => void controller.open(o.path, { protected: o.protected }));
     for (const o of queued) await controller.open(o.path, { protected: o.protected });
-    // Tests launch with files and drive the welcome window themselves, unless they ask for the real first run.
-    const autoWelcome = !TEST || process.env.BLUELINE_TEST_FIRST_RUN === '1';
 
     if (controller.all().length === 0 && queued.length === 0) {
-      // No file given. macOS may still deliver one through open-file right after launch.
-      setTimeout(
-        () => {
-          if (controller.all().length > 0) return;
-          if (autoWelcome) {
-            // 6.0 First run: on the first launch, and on every launch without a file (it replaces the Open dialog),
-            // the welcome window offers Open a file, the default app and the sample deck. The app quits when it
-            // closes with no document open (window-all-closed).
-            firstRun?.show();
-            return;
-          }
-          void controller.showOpenDialog(false).then(() => {
-            if (controller.all().length === 0 && process.platform !== 'darwin') app.quit();
-          });
-        },
-        process.platform === 'darwin' ? 600 : 0,
-      );
+      // No file given (noFileStart). macOS may still deliver one through open-file right after launch.
+      setTimeout(noFileStart, process.platform === 'darwin' ? 600 : 0);
     } else if (controller.all().length === 0 && process.platform !== 'darwin') {
       // Every file failed to open: once the user has read the errors, there is nothing left to show.
       await controller.dialogsSettled();
@@ -521,11 +569,13 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
   });
 
   app.on('activate', () => {
-    // macOS: clicking the Dock icon with no window open shows the welcome window (6.0).
-    if (controllerRef && controllerRef.all().length === 0) {
-      if (welcomeRef) welcomeRef.show();
-      else void controllerRef.showOpenDialog(false);
-    }
+    // macOS: a click on the Dock icon. With no document window, an open welcome comes forward; with no Blueline
+    // window at all, the launch rule applies (noFileStart): the first-run welcome until it has been seen, then
+    // nothing (File › Open works from the menu bar). macOS brings any other open window forward itself.
+    if (!controllerRef || controllerRef.all().length > 0) return;
+    if (welcomeRef?.focus()) return;
+    if (BrowserWindow.getAllWindows().some((w) => !w.isDestroyed() && !w.webContents.isOffscreen() && w.isFocusable() && (w.isVisible() || w.isMinimized()))) return;
+    noFileStart();
   });
 
   // Notes are written atomically; a write still in flight finishes before the process exits (at most 3 s).

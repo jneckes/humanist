@@ -9,6 +9,7 @@ vi.mock('electron', () => ({}));
 import { FIND_MAX_HITS, type SlideIndex } from '@blueline/core/ipc-render';
 import {
   findInDeck,
+  findInPageSame,
   findOnSlide,
   findResponse,
   fold,
@@ -90,8 +91,47 @@ describe('findInDeck (6.9: all slides, shown or not, listed by slide)', () => {
     expect(h.snippet).toContain('Highlights');
   });
 
-  it('matches a phrase across two text strings of a slide', () => {
-    expect(findInDeck(index, 'highlights latency').map((h) => h.slide)).toEqual([1]);
+  it('never matches across two of a slide’s strings: each is one block, and findInPage never matches across blocks (review finding 12)', () => {
+    expect(findInDeck(index, 'highlights latency')).toEqual([]);
+    // Within one block's string a phrase matches, however its inline runs were split.
+    expect(findInDeck(deck([['Bolder moves first.']]), 'bolder moves').map((h) => h.text)).toEqual(['Bolder moves']);
+  });
+
+  it('the occurrence counts only earlier hits findInPage would also match; matchIndex stays Find’s own (review finding 12)', () => {
+    // One slide spells it with an en dash and with hyphens: findInPage keeps them apart.
+    const d = deck([['Plan 2020–2021', 'Budget 2020-2021', 'Audit 2020-2021']]);
+    expect(findInDeck(d, '2020-2021').map((h) => [h.matchIndex, h.text, h.occurrence])).toEqual([
+      [0, '2020–2021', 0],
+      [1, '2020-2021', 0],
+      [2, '2020-2021', 1],
+    ]);
+    expect(findOnSlide(findInDeck(d, '2020-2021')[2])).toMatchObject({ text: '2020-2021', occurrence: 1 });
+    // Case, accents and curly quotes findInPage folds too: every earlier hit counts.
+    const r = deck([['Résumé', 'resume', 'RESUME', 'don’t', "don't"]]);
+    expect(findInDeck(r, 'resume').map((h) => h.occurrence)).toEqual([0, 1, 2]);
+    expect(findInDeck(r, "don't").map((h) => h.occurrence)).toEqual([0, 1]);
+    // A document counts across the page: a heading "Growth" and its paragraph "Plan ahead…" are two blocks,
+    // so only the two real "growth plan" paragraphs are hits, and the second is findInPage's second.
+    const doc = deck([['Growth', 'Plan ahead for the next year.'], ['The growth plan is described here.'], ['Another growth plan sentence.']], 'scroll');
+    expect(findInDeck(doc, 'growth plan').map((h) => [h.slide, h.matchIndex, h.occurrence])).toEqual([
+      [1, 0, 0],
+      [2, 1, 1],
+    ]);
+  });
+
+  it('findInPageSame: what Chromium’s find equates (checked against findInPage in Electron 44)', () => {
+    const same: [string, string][] = [
+      ['resume', 'Résumé'], ['strasse', 'Straße'], ['fine', 'ﬁne'], ['fullwidth', 'ＦＵＬＬwidth'], ['wait...', 'wait…'],
+      ['zerowidth', 'zero\u200bwidth'], ['softhyphen', 'soft\u00adhyphen'], ["don't", 'don’t'], ['"curly"', '“curly”'], ['non breaking', 'non\u00a0breaking'],
+    ];
+    const apart: [string, string][] = [['2020-2021', '2020–2021'], ['em-dash', 'em—dash'], ['-5', '−5'], ["prime's", 'prime′s'], ['"guill"', '«guill»'], ['hyph-nb', 'hyph\u2011nb']];
+    for (const [a, b] of same) expect(findInPageSame(a, b), `${a} ~ ${b}`).toBe(true);
+    for (const [a, b] of apart) expect(findInPageSame(a, b), `${a} !~ ${b}`).toBe(false);
+  });
+
+  it('folds what findInPage folds, so Find lists every match findInPage counts: ß, ligatures, full-width, base letters', () => {
+    expect(fold('Straße ﬁne ＦＵＬＬ Æsir Øre').text).toBe('strasse fine full aesir ore');
+    expect(findInDeck(deck([['Straße', 'strasse']]), 'STRASSE').map((h) => h.occurrence)).toEqual([0, 1]);
   });
 
   it('documents count matches across the whole page (findInPage sees one page)', () => {
@@ -124,6 +164,8 @@ describe('findInDeck (6.9: all slides, shown or not, listed by slide)', () => {
   it('findOnSlide: the matched text as the slide spells it, and its occurrence', () => {
     const h = findInDeck(index, 'resume')[2];
     expect(findOnSlide(h)).toEqual({ text: 'RESUME', occurrence: 1, pageWide: false, options: { matchCase: false } });
+    // A hit without an occurrence (an older caller's) falls back to its matchIndex.
+    expect(findOnSlide({ text: 'x', matchIndex: 3 }).occurrence).toBe(3);
     expect(findOnSlide(h, { kind: 'single' }).pageWide).toBe(true);
     expect(findOnSlide(h, { kind: 'reveal' }).pageWide).toBe(false);
   });

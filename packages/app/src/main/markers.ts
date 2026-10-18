@@ -289,6 +289,18 @@ export interface DerivedSource {
   protectedView: boolean;
 }
 
+export interface DerivedMarkOptions extends MarkerOptions {
+  /**
+   * Windows: a target on a volume that keeps no named streams (FAT, exFAT, a share that drops them; the write
+   * of `<target>:Zone.Identifier` fails as noStream() reads it, ENOENT for ERROR_INVALID_NAME) is left
+   * unmarked and the mark succeeds, as reads already treat such a volume and as Windows drops its own mark of
+   * the web there. Only for derived files Blueline never opens: the PDF passes it (review finding 29). An HTML
+   * copy (the probe copy, Save a copy) does not, so its save is refused there: a copy that lost the marker
+   * would open Trusted. Default false.
+   */
+  allowStreamlessVolume?: boolean;
+}
+
 /**
  * Marks a file Blueline wrote from a document (9.9 Derived files keep the marker: Save a copy for review,
  * Export clean copy, a Cmd+S to a new place, the PDF, the `blueline map` probe copy):
@@ -296,13 +308,27 @@ export interface DerivedSource {
  * - a new marker naming the document, when it opened Protected without one (`--protected`, an untrusted
  *   folder): a copy of a Protected document must not open Trusted (when unsure, refuse);
  * - otherwise whatever marker the document carries now (a Trusted file in a trusted folder may carry one).
- * Throws when the marker cannot be written.
+ * Throws when the marker cannot be written (see allowStreamlessVolume for the one exception).
  */
-export async function markDerivedFile(target: string, source: DerivedSource, opts: MarkerOptions = {}): Promise<void> {
-  const platform = opts.platform ?? process.platform;
+export async function markDerivedFile(target: string, source: DerivedSource, options: DerivedMarkOptions = {}): Promise<void> {
+  const platform = options.platform ?? process.platform;
   const p = pathFor(platform);
   if (!p.isAbsolute(target) || !p.isAbsolute(source.realpath)) throw new Error('markDerivedFile: paths must be absolute');
   if (platform !== 'darwin' && platform !== 'win32') return;
+  let opts: MarkerOptions = options;
+  if (platform === 'win32' && options.allowStreamlessVolume === true) {
+    const write = writerOf(options);
+    opts = {
+      ...options,
+      writeFile: async (file, bytes) => {
+        try {
+          await write(file, bytes);
+        } catch (err) {
+          if (!noStream(err)) throw err;
+        }
+      },
+    };
+  }
   if (source.marker !== null) {
     if (platform === 'darwin') return await helperFor(opts).setQuarantine(target, { value: source.marker });
     if (Buffer.byteLength(source.marker, 'utf8') > MAX_MARKER_BYTES) throw new Error('Could not write the file’s Zone.Identifier');

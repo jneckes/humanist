@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Find blocks</title>
+<!--
+  A document where a phrase would run from a heading into its paragraph ("Growth" / "Plan ahead…"), which
+  findInPage never matches, and two real "growth plan" paragraphs far below (review finding 12): Find lists the
+  two real ones only, and choosing each highlights its own paragraph.
+-->
+<style>
+  body { font: 18px/1.5 Arial, sans-serif; margin: 40px; max-width: 760px; color: #222; background: #fff; }
+  .gap { height: 1600px; }
+</style>
+</head>
+<body>
+<h2 id="h">Growth</h2>
+<p id="p1">Plan ahead for the next year.</p>
+<div class="gap"></div>
+<p id="p2">The growth plan is described here.</p>
+<div class="gap"></div>
+<p id="p3">Another growth plan sentence.</p>
+</body>
+</html>

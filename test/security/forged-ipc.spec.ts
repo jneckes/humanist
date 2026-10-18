@@ -63,6 +63,24 @@ function diff(before: Record<string, string>, after: Record<string, string>): st
   return changes;
 }
 
+/** Waits for the slide index, then for userData to stay the same for 1.5 s (the thumbnails follow the index). */
+async function waitProductsWritten(app: BlApp, docId: string): Promise<void> {
+  await expect
+    .poll(async () => ((await app.win(docId)) as unknown as { state: { index: { ready: boolean } | null } }).state.index?.ready ?? false, {
+      timeout: 90_000,
+    })
+    .toBe(true);
+  let prev = JSON.stringify(snapshot(app.userData));
+  const until = Date.now() + 60_000;
+  for (;;) {
+    await sleep(1500);
+    const now = JSON.stringify(snapshot(app.userData));
+    if (now === prev) return;
+    if (Date.now() > until) throw new Error('userData kept changing for 60 s after the slide index was ready');
+    prev = now;
+  }
+}
+
 const DECK_CHANNELS = {
   ready: 'bl:deck:ready',
   focus: 'bl:deck:focus',
@@ -249,6 +267,11 @@ test('forged payloads on every deck channel write no file and change no state', 
     const before = await session.app.win(session.docId);
     expect(before.trust).toBe('protected');
     expect(before.editingAllowed).toBe(false);
+    // The render products (the slide index and the rail's thumbnails, written under files/<key>/thumbs) are
+    // made in the background after the open; the index waits for script-timed content (D-5), so they can land
+    // well after the open. Take the userData snapshot only once they are written, so any later change is the
+    // forged IPC's.
+    await waitProductsWritten(session.app, session.docId);
 
     const folderSnap = snapshot(session.folder.dir);
     const userDataSnap = snapshot(session.app.userData);

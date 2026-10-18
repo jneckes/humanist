@@ -232,6 +232,17 @@ describe('navigation (6.9: the rail navigates through slide.nav; the outline scr
     expect(navPlanFor(0, index({ slides: [entry(0, { kind: 'hash', value: 'javascript:x' })] }), null)).toBeNull();
   });
 
+  it('a deck that did not follow a hash or reveal goto is moved by its keys from then on (review finding 17)', () => {
+    const hashIndex = index({ navKind: 'hash', slides: [entry(0, { kind: 'hash', value: '#1' }), entry(1, { kind: 'hash', value: '#2' })] });
+    expect(navPlanFor(1, hashIndex, null)).toEqual({ goto: { kind: 'hash', hash: '#2' } });
+    expect(navPlanFor(1, hashIndex, null, { hash: true })).toEqual({ keys: 1 });
+    expect(navPlanFor(1, null, slides({ navKind: 'hash', hashes: ['#1', '#2'] }), { hash: true })).toEqual({ keys: 1 });
+    const reveal = index({ kind: 'reveal', slides: [entry(0, { kind: 'reveal', value: [0, 0] }), entry(1, { kind: 'reveal', value: [1, 0] })] });
+    expect(navPlanFor(1, reveal, null, { reveal: true })).toEqual({ keys: 1 });
+    // A broken hash goto changes nothing else.
+    expect(navPlanFor(1, reveal, null, { hash: true })).toEqual({ goto: { kind: 'reveal', h: 1, v: 0 } });
+  });
+
   it('documents: an outline entry scrolls to its heading; the text before the first heading to the top', () => {
     const doc = index({ kind: 'scroll', slides: [entry(0, { kind: 'none', value: 0 }, { heading: null }), entry(1, { kind: 'none', value: 0 }, { heading: 4, level: 2 })] });
     expect(navPlanFor(1, doc, null)).toEqual({ goto: { kind: 'heading', index: 4 } });

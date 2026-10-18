@@ -105,6 +105,39 @@ describe('atomicWriteFile', () => {
     expect(tmpFiles()).toEqual([]);
   });
 
+  it('prepareTemp runs on the temp file, with its bytes, before the rename: for a new target and an existing one (review finding 30)', async () => {
+    const existing = file('h.pdf', 'old pdf');
+    const fresh = path.join(dir, 'h-new.pdf');
+    for (const target of [fresh, existing]) {
+      const seen: { temp: string; bytes: string; targetThen: string | null }[] = [];
+      await atomicWriteFile(target, enc('new pdf'), {
+        newFileMode: 0o644,
+        prepareTemp: (temp) => {
+          seen.push({ temp, bytes: fs.readFileSync(temp, 'utf8'), targetThen: fs.existsSync(target) ? fs.readFileSync(target, 'utf8') : null });
+        },
+      });
+      expect(seen).toHaveLength(1);
+      expect(path.dirname(seen[0].temp)).toBe(dir);
+      expect(path.basename(seen[0].temp)).toMatch(/^\.bl-write-[0-9a-f]{16}\.tmp$/);
+      expect(seen[0].bytes).toBe('new pdf');
+      // Not in place yet: the target still holds what it held (or nothing).
+      expect(seen[0].targetThen).toBe(target === existing ? 'old pdf' : null);
+      expect(fs.readFileSync(target, 'utf8')).toBe('new pdf');
+    }
+    expect(tmpFiles()).toEqual([]);
+  });
+
+  it('a prepareTemp that throws leaves the target byte-identical (or absent) and no temp file', async () => {
+    const existing = file('i.pdf', 'the PDF the user chose to replace');
+    const fresh = path.join(dir, 'i-new.pdf');
+    const failing = { prepareTemp: () => Promise.reject(new Error('marker not written')) };
+    await expect(atomicWriteFile(existing, enc('new'), failing)).rejects.toThrow('marker not written');
+    await expect(atomicWriteFile(fresh, enc('new'), failing)).rejects.toThrow('marker not written');
+    expect(fs.readFileSync(existing, 'utf8')).toBe('the PDF the user chose to replace');
+    expect(fs.existsSync(fresh)).toBe(false);
+    expect(tmpFiles()).toEqual([]);
+  });
+
   it('refuses a read-only file and a relative path', async () => {
     if (process.getuid?.() === 0) return; // root can write anything; the W_OK check is a no-op
     const p = file('ro.html', 'x', 0o444);

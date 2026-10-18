@@ -23,6 +23,18 @@
 //
 // The app's environment is built from scratch: no proxy variables (Chromium would send names to a proxy
 // instead of resolving them, and the dev container's agent proxy must never see test traffic), no tokens.
+//
+// The app's test switches (environment, read by main; LaunchOptions.env adds them):
+// - BLUELINE_TEST=1 (always set here): the test build's hooks: __blTest in main (index.ts), __blTestIpc in the
+//   deck preload's isolated world, in the main frame and in every subframe (deck.ts), and the IPC drop logs.
+// - BLUELINE_USER_DATA=<dir> (always set here): userData, before `ready`; `blueline pdf` and `map` read its
+//   config.json for Settings › Trust (command-trust.ts).
+// - BLUELINE_TEST_MARKERS=<file.json>: internet markers by realpath (markers.ts; Linux has none). Never read
+//   from app.asar.
+// - BLUELINE_TEST_DISABLE_LAYER=<layers>: turns Protected layers off in an unpackaged build (protocol.ts).
+// - BLUELINE_TEST_FIRST_RUN=1: the real startup windows at a launch without a file (the first-run welcome, then
+//   the Open window on Linux and Windows) and for a file-less second launch, as a packaged app shows them
+//   (index.ts noFileStart). Without it a test build shows the Open dialog, which the harness answers.
 
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test';
 import { spawnSync } from 'node:child_process';

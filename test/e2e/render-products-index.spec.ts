@@ -273,3 +273,24 @@ test('a new version renders anew and prunes the old version’s thumbnails and i
   expect(names).toContain(`index-${v2.version}.json`);
   await rt(app, 'close', v2.docId);
 });
+
+test('a document’s index files of older versions are deleted when its index completes (no thumbnail run prunes them; review finding 14)', async () => {
+  const file = path.join(dir, 'prune-doc.html');
+  fs.copyFileSync(path.join(dir, 'report.html'), file);
+  s.own(file);
+  const versions: string[] = [];
+  let fileKey = '';
+  for (let i = 0; i < 4; i++) {
+    if (i > 0) fs.appendFileSync(file, `\n<!-- write ${i} -->\n`);
+    const o = await rt<Opened>(app, 'open', file);
+    const index = await rt<Index>(app, 'index', o.docId);
+    expect(index.kind).toBe('scroll');
+    expect(index.version).toBe(o.version);
+    versions.push(o.version);
+    fileKey = o.fileKey;
+    await rt(app, 'close', o.docId);
+  }
+  expect(new Set(versions).size).toBe(4);
+  const names = fs.readdirSync(thumbsDir(fileKey));
+  expect(names.filter((n) => /^index-[0-9a-f]{64}\.json$/.test(n))).toEqual([`index-${versions[3]}.json`]);
+});

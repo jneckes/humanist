@@ -24,7 +24,13 @@ export interface SlideIndexEntry {
    * over the whole page (`heading` tells the outline which heading the section starts at).
    */
   nav: SlideRef['nav'];
-  /** The visible text strings of the slide or section, in document order, whitespace collapsed. */
+  /**
+   * The visible text of the slide or section, in document order, whitespace collapsed: one string per run of
+   * text within one block (the nearest ancestor whose display is not inline or contents), its inline runs
+   * joined as the page shows them ("Bold<b>er</b>" is "Bolder"). A new string starts at every block boundary,
+   * and at a line break or an inline replaced element (br, img, input…) inside a block: findInPage never
+   * matches across one, so Find never matches across two strings (main/find.ts; review finding 12).
+   */
   text: string[];
   /** Documents: the heading this section starts at, by position among the page's h1–h3 (0-based); null before the first. */
   heading?: number | null;
@@ -43,6 +49,15 @@ export interface SlideIndex {
   designSize: { w: number; h: number };
   /** Every slide was shown by the walk (decks); documents are always complete. */
   complete: boolean;
+  /**
+   * A tag of the trust policy the index (and the thumbnails of the same walk) were rendered under: whether the
+   * network was open, the strict option and the allowlist (review finding 15). The render products depend on
+   * the policy — a Protected render blocks non-allowlisted hosts and serves `connect-src 'none'`, so remote
+   * images and fetched data are missing — but the file bytes do not change with the policy, so the cache, keyed
+   * by the bytes' sha256, must also key on this. A cached index or thumbnail made under a different policy is
+   * rebuilt. Absent on indexes written before this field existed, which are treated as a mismatch.
+   */
+  policyTag?: string;
 }
 
 // ----------------------------------------------------------------------------------------- thumbnails
@@ -74,12 +89,20 @@ export interface FindHit {
   /** The match inside `snippet` (UTF-16 offsets, end exclusive). */
   snippetMatch: { start: number; end: number };
   /**
-   * Which match this is on its slide (0-based): the occurrence findInPage must reach after navigating
-   * (main/find.ts findOnSlide). Documents count across the whole page instead, since a document is one page.
+   * Which of Find's matches on its slide this is (0-based): the hit's identity, which the shell names to show
+   * it (RenderShellChannels.findShow). Documents count across the whole page instead, since a document is one
+   * page.
    */
   matchIndex: number;
   /** The matched text in its original spelling (what findInPage is asked for). */
   text: string;
+  /**
+   * The occurrence findInPage must reach after navigating (main/find.ts findOnSlide): how many earlier hits on
+   * the slide (on a document, on the page) findInPage would also match when asked for `text`. It differs from
+   * matchIndex where the slide spells the match in ways Find folds and findInPage does not ("2020–2021" and
+   * "2020-2021").
+   */
+  occurrence?: number;
 }
 
 /** The shell asks main for Find results (main/find.ts validateFindArgs). */

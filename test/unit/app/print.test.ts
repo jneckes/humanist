@@ -11,7 +11,7 @@ vi.mock('electron', () => ({
   session: { fromPartition: () => ({}) },
 }));
 
-import { escapeHtml, pageFileName, printDir, printDocumentCss, printDocumentHtml, printFileFor } from '../../../packages/app/src/main/print';
+import { captureFileName, escapeHtml, pageFileName, printDir, printDocumentCss, printDocumentHtml, printFileFor } from '../../../packages/app/src/main/print';
 
 describe('the print-only document', () => {
   it('escapes the title, so a <title> with markup characters stays text', () => {
@@ -36,7 +36,7 @@ describe('the print-only document', () => {
     expect(printFileFor('/print.html', 3)).toEqual({ name: 'print.html', type: 'text/html; charset=utf-8' });
     expect(printFileFor('/print.css', 3)?.name).toBe('print.css');
     expect(printFileFor('/page-2.png', 3)).toEqual({ name: 'page-2.png', type: 'image/png' });
-    for (const bad of ['/page-3.png', '/page-02.png', '/page-1.png/x', '/../trust.json', '/page-%31.png', '/', '/print.htm', '/index.json']) {
+    for (const bad of ['/page-3.png', '/page-02.png', '/page-1.png/x', '/../trust.json', '/page-%31.png', '/', '/print.htm', '/index.json', `/${captureFileName(0)}`]) {
       expect(printFileFor(bad, 3)).toBeNull();
     }
   });
@@ -44,6 +44,9 @@ describe('the print-only document', () => {
   it('names and folders are checked', () => {
     expect(pageFileName(4)).toBe('page-4.png');
     expect(() => pageFileName(-1)).toThrow();
+    // A slide's capture, before the pages are put in slide order (review finding 33): never served.
+    expect(captureFileName(2)).toBe('slide-2.png');
+    expect(() => captureFileName(1.5)).toThrow();
     expect(printDir('/u', '0123456789abcdef', 'fedcba9876543210')).toBe('/u/files/0123456789abcdef/print/fedcba9876543210');
     expect(() => printDir('/u', '..', 'fedcba9876543210')).toThrow();
     expect(() => printDir('/u', '0123456789abcdef', '../x')).toThrow();

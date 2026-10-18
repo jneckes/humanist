@@ -1,5 +1,6 @@
 // The exit gate's committed check (SPEC 11: "Render parity and PDF ... run nightly on the committed fixtures"):
-// test/parity/parity.spec.ts runs scripts/parity.mjs on three committed fixtures and a negative control.
+// test/parity/parity.spec.ts runs scripts/parity.mjs on three committed fixtures, the seeded-random and
+// delayed-build fixtures, and the negative controls of test/parity/fixtures (each beforeAll sets its own timeout).
 //   npm run build && npx playwright test -c test/parity/playwright.config.ts
 // Global setup starts Xvfb on Linux and checks the build (test/helpers/global-setup.ts).
 

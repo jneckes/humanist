@@ -1,8 +1,7 @@
 // Settings (6.1 Settings › General; 6.10 Settings › Trust; 9.9 the strict option and the CDN allowlist), in the
 // real app: open Settings, add and remove trusted and untrusted folders through main's folder dialog, the
 // refusal for the home folder, the strict option and the allowlist, all persisted in config.json and read back
-// after a relaunch. The Settings window is the app's own when the app wires it (__blSettings); until then the
-// harness (trust-native-harness.ts) loads the same modules into the running app, and the test says which ran.
+// after a relaunch. The Settings window is always the app's own (__blSettings): the test asserts it.
 
 import { expect, test } from '@playwright/test';
 import * as fs from 'node:fs';
@@ -35,7 +34,7 @@ test('Settings: General shows the default-app state; Trust adds and removes fold
   const userData = app.userData;
   try {
     const { page, mode } = await openSettings(app);
-    test.info().annotations.push({ type: 'settings-window', description: mode === 'app' ? "the app's own wiring" : 'loaded by trust-native-harness.ts (the app does not wire Settings yet)' });
+    expect(mode, "the app's own Settings window").toBe('app');
 
     // 9.1: the page runs under the shell CSP and has only the Settings API (named functions).
     const api = await page.evaluate(() => Object.keys((window as unknown as { blueline: Record<string, unknown> }).blueline).sort());

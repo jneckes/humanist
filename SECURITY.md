@@ -47,14 +47,52 @@ and main changes a file's trust only from the trust bar's buttons and Settings.
   file drop (no payload). From the shell: view commands, rail clicks, scroll, Find, and files dropped on the
   shell (the shell preload reads the path with `webUtils.getPathForFile` in its isolated world; main checks each
   one again: absolute, an existing regular `.html`/`.htm` file, and opens it with its own trust state). Every
-  payload is rebuilt field by field in main, as `ipc-guard.ts` does. A file dropped on the deck view is stopped
-  in the deck preload's capture phase before the page sees it (`test/e2e/views-open.spec.ts`).
+  payload is rebuilt field by field in main, as `ipc-guard.ts` does.
+- **File drops.** A file dragged onto a deck view is refused before the frame's page sees it, in both trust
+  states, in every frame the deck preload reaches (two kinds of frame a deck can build are the exception: see
+  the known limit below). The deck preload runs in every frame (`nodeIntegrationInSubFrames`) and installs only
+  the drop guard in a subframe: no overlay, no key router, no IPC (main refuses every message from a frame that
+  is not the deck view's main frame). The top frame also guards the same-origin frames the subframe preload does
+  not run in time for — an `about:blank` frame a script makes, guarded on its synchronous load event — and guards
+  them again after `document.open()`. A refused drop on the top frame tells main only that one was refused, and
+  the shell says where to drop it (a drop refused by the guard a subframe runs itself, in a `srcdoc`, `data:`,
+  `blob:` or same-origin frame, shows no notice; it simply does nothing). `test/e2e/views-open.spec.ts` checks the main frame; `test/security/drop-frames.spec.ts` drops
+  a local file onto srcdoc, `about:blank` (scripted and written), `data:`, `blob:`, same-origin, nested and
+  `-files` frames, and in Trusted view a cross-origin `http` frame: no frame sees a File, and a text drag at the
+  same point (the positive control) reaches each one. The test's drag (CDP `Input.dispatchDragEvent`) enters the
+  page through the same browser-process calls as a drag from the desktop (`RenderWidgetHostImpl`'s
+  `DragTargetDragEnter`, `DragTargetDragOver`, `DragTargetDrop`). Chromium's drag interception
+  (`Input.setInterceptDrags`) is not used: it holds only drags the page itself starts, never one from the
+  desktop, and a held drag left the deck ignoring every key and click (`test/e2e/views-drag-inpage.spec.ts`).
 - **Trust memory** (`<userData>/trust.json`, mode 0600, atomic writes): Allow network, Enable editing and
   "received" per file realpath, each stored with the whole internet marker it was made on. A decision applies
-  only while the file carries exactly that marker; a new download of the file drops it. Nothing moves trust
-  from one path to another. A malformed file or entry is ignored, never read as Trusted. A decision is not
-  stored when the marker could not be read. A file opened in Protected view on request ignores remembered
-  switches. `blueline pdf` runs with a private app-data folder, so remembered decisions never apply to it.
+  only while the file carries exactly that marker; a new download with a new marker drops it. Where the marker
+  cannot tell two files apart, the decision is also bound to the file's identity (device, file number and birth
+  time, from `fs.stat` with bigint) and applies only while the file at the path is that same file. That is the
+  case for a file with no marker (Protected because it is in an untrusted folder) and for every file on
+  Windows, where `Zone.Identifier` has no time or id, so two downloads of the same link or two Outlook
+  attachments carry the same text. When a browser, mail client or sync tool saves another file over it, that
+  file opens Protected with both switches off and the old decision is dropped. Blueline's own atomic writes
+  re-bind the decision to the file they write. On macOS the quarantine value (a time and an event id per
+  download) binds by itself. A decision is not stored when the marker or a needed identity could not be read.
+  Nothing moves trust from one path to another. A malformed file or entry is ignored, never read as Trusted. A
+  file opened in Protected view on request ignores remembered switches. trust.json is kept under 7 MiB, oldest
+  decisions dropped first, so the next launch never ignores it.
+- **A file that changes on disk is decided again.** On every external change, and when a file that went away
+  comes back, Blueline decides 6.10 again for the file as it is on disk, the same way an open does (the
+  marker, the trusted and untrusted folders, trust.json), and reads the marker once more 500 ms later, because
+  some browsers write it just after the rename. If the decision differs in any way (trust state, reason,
+  marker, whether the marker could be read, or a remembered Allow network or Enable editing), the view is never
+  reloaded in place: the window closes and the file opens again at the same place, with its view state, a
+  fresh docId and the partition its trust needs, and the trust bar states the new reason. Blueline's own writes
+  never reach this path (it knows their hash). `test/e2e/views-reload-trust.spec.ts`.
+- **`blueline pdf` and `blueline map` decide trust as the app decides an open**: `--protected`, then the
+  trusted and untrusted folders, then the internet marker. Their partition policy uses "Block all network in
+  Protected view" and the CDN allowlist from Settings › Trust. They read the user's config.json
+  (`BLUELINE_USER_DATA` when set, else the app's own userData, `<appData>/Blueline`) and never write it. They
+  never read or write trust.json, so a remembered Allow network or Enable editing never applies to them (the
+  stricter direction). The PDF of a Protected deck is marked as a derived file. Their own Chromium data stays
+  in a private folder. `test/e2e/command-trust.spec.ts`.
 - **Trusted and untrusted folders** (Settings › Trust): a marked file in a trusted folder opens Trusted; an
   unmarked file in an untrusted folder opens Protected; the deepest folder wins, and untrusted wins a tie.
   Blueline refuses to trust the home folder, Desktop, Downloads, temporary and mail folders, any folder that
@@ -65,18 +103,65 @@ and main changes a file's trust only from the trust bar's buttons and Settings.
 - **Derived files keep the marker** (9.9): a Save as PDF output and the `blueline map` probe copy get the
   document's marker (on macOS through the native helper, on Windows a copy of `Zone.Identifier`); a copy of a
   Protected document that has no marker gets a new one naming the document. A marker that cannot be written
-  fails the save.
+  fails the save and leaves whatever was at the output as it was: the PDF is marked on its temporary file,
+  before the rename, and the probe copy right after its exclusive create, before any byte of the deck is
+  written. One exception: Save as PDF to a Windows volume that keeps no named streams (FAT, exFAT, some
+  shares) saves the PDF without a `Zone.Identifier`, as Windows does for its own downloads there; HTML copies
+  (the probe copy) are still refused on such volumes. A consequence for `blueline map`: a deck that opens
+  Protected without a marker (an untrusted folder, or `--protected`) on such a stream-less Windows volume
+  cannot be given a marked probe copy, so the probe does not run and map reports its coverage as "NOT verified"
+  rather than copy an HTML deck that could then open Trusted. The probe copy would sit in the same untrusted
+  folder and open Protected anyway, so refusing it costs only the probe, not safety (decision D-3, D-14).
 - **Print** of a raster deck shows a print-only page of the slide images, served from app data to a hidden
   window in a partition of its own that runs no script and reaches no network.
 - **The macOS helper** (`native/macos`) is a long-lived child of main speaking JSON lines: absolute paths only,
   size caps on every request and line, a timeout per request; it ships in `Resources/helper` and is signed with
   the app. Without it, main uses `/usr/bin/xattr` for the marker and says so.
-- **The Windows installer** (`packages/app/build/installer.nsh`) writes the `Blueline.HTML` ProgID,
-  `OpenWithProgids` for `.html` and `.htm`, `Software\Blueline\Capabilities` and `RegisteredApplications` in
-  the install mode's hive (per user or per machine), so Blueline appears in Default Apps; an uninstall removes
-  them, an update keeps them. Not run on Windows yet.
+- **The Windows installer** (`packages/app/build/installer.nsh`) writes the `Blueline.HTML` ProgID (its
+  command quotes the executable and the file), `OpenWithProgids` for `.html` and `.htm`,
+  `Software\Blueline\Capabilities` and the `RegisteredApplications` value in the install mode's hive (per user
+  or per machine), so Blueline appears in Default Apps. It never writes or clears an extension's own default
+  value: electron-builder's NSIS file associations are not used (`fileAssociations` are macOS's only). An
+  uninstall removes exactly those keys and values; an update keeps them; a per-machine install also removes the
+  per-user copy that the installing user's earlier per-user install left (only that user's hive is reached).
+  Not run on Windows; under Wine 9, a per-user install, then a per-machine install, then the uninstall left no
+  Blueline key in either hive.
 
 Known limits added by Phase 1:
+
+- **A marker written after the change.** Some browsers write the internet marker just after the rename. When
+  the first decision after an external change finds the file unchanged in trust, the view reloads in place and
+  the marker is read **once more**, 500 ms later; a marker found then opens the file again in Protected view,
+  but the new content has run under the old trust until then (measured: about 1.2 s after the rename, with 2
+  requests to a test server first). A marker written **later than that** (a slow antivirus or Zone.Identifier
+  write) is not seen while the window stays open: the file is decided again only on the next external change or
+  the next open. The two reads cover the common case; Blueline does not poll the marker indefinitely.
+- **A window opened Protected on request keeps its session switches on an in-place reload.** When a window was
+  opened in Protected view on request (`--protected`, File › Open in Protected View), its Allow network and
+  Enable editing are the user's choice for this session only (a file opened Protected on request neither uses
+  nor stores remembered switches). An external change that does not alter the file's trust state, reason or
+  marker reloads in place and keeps those switches; only a real trust change (a marker appears, the file becomes Trusted, a new identity for a remembered
+  decision) reopens the window, which turns them off. An ordinary agent save of an unmarked file is the former,
+  so the switches survive it.
+- **A file written in place keeps its decision.** A program that writes new content into the existing file,
+  instead of saving a new file, keeps the file's identity, and on Windows it can keep the same
+  `Zone.Identifier` text (on macOS the quarantine value stays the same in that case too), so the file keeps a
+  remembered Allow network or Enable editing.
+- **A file dropped onto a frame a deck rewrites with `document.open()`, or onto a frame a deck makes
+  `about:blank` inside a shadow root, can be read by the deck.** Neither frame can be reached by a renderer-side
+  guard before the deck's own capture listener. For `document.open()` the guard's listeners are erased and
+  re-added only from a MutationObserver callback, after the scripts the deck wrote in have run. For a
+  shadow-nested `about:blank` frame, `window.frames` does not list it, its load event does not cross the closed
+  shadow boundary, and the subframe preload does not run in an initial `about:blank` document (PHASE0-FINDINGS
+  F11), so no code runs in it before the deck's own script. In both cases a capture listener the deck registers
+  comes first, can accept the drop and can read the dropped file, in both trust states. This holds for a real
+  drag from the desktop: it reaches the page through the same browser-process calls as the security suite's
+  `Input.dispatchDragEvent`, and Electron 44 gives main no event to cancel a drop before the renderer sees it.
+  So a deck built for it can read a file the user drops on it, although Blueline asks for files on the toolbar
+  and rails. In Protected view such a deck has no network to send it on beyond what Protected view always
+  allows: `GET` requests to the CDN allowlist (unless "Block all network in Protected view" is on) and the two
+  DNS channels below. Do not drop files onto a document's page. Both cases are tracked as expected failures in
+  `test/security/drop-frames.spec.ts`.
 
 - Render windows (thumbnails, the slide index, PDF pages) use the document's own partition and origin, as 9.1
   says, so they share its storage: a deck that keeps its current slide in `localStorage` sees the background

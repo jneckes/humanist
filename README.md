@@ -21,21 +21,32 @@ Status: **Phase 1 (Reader) built.** Its exit gate is measured in
 - **Opening files:** File › Open, Open Recent, Open in Protected View, Open in Browser, Reveal in Finder; drop a
   file on a window's toolbar or rails; `open-file`, the command line and a second launch all go to the running
   app, one window per file. A file that changes on disk reloads in place on the same slide (it waits while you
-  type in a note card); a file that disappears leaves its window read-only until it comes back.
+  type in a note card); when the new file's trust differs (say, a new download saved over it), it opens again
+  in its new trust state instead, and the trust bar says why. A file that disappears leaves its window
+  read-only until it comes back.
 - **Views:** decks (reveal.js and other slide engines) render at their design size and Fit the window
   (Cmd+9), or show at 100% (Cmd+0) or Fill width, with a thumbnail rail; documents render at the window width,
   with an outline from `h1`–`h3` and View › Reading Width. The status bar shows the slide, the zoom, the trust
   state and the current task. PageUp and PageDown step any deck.
-- **Present** (Cmd+Option+P): full screen, chrome hidden, every key but Esc to the deck.
+- **Present** (Cmd+Option+P): full screen, chrome hidden, every key but Esc to the deck; it closes Find.
 - **Find** (Cmd+F) across every slide, shown or not, then the match highlighted on its slide.
-- **Save as PDF** (Cmd+Shift+E, Share › Save as PDF, or `blueline pdf`) and **Print** (Cmd+P): print CSS when the
-  deck has it, otherwise one lossless page per slide at the slide's aspect; documents on Letter or A4.
+- **Save as PDF** (Cmd+Shift+E, Share › Save as PDF, or `blueline pdf`) and **Print** (Cmd+P): the deck's print
+  CSS when Chromium's print of it gives one page per slide at the slide's aspect, otherwise one lossless page per
+  slide at the slide's aspect, in slide order; documents on Letter or A4. Both wait for what the page's scripts
+  draw first.
 - **Protected view and trust:** the trust bar's Allow network and Enable editing are remembered per file until
-  the file's internet marker changes; Settings › Trust holds trusted and untrusted folders, "Block all network
+  the file's internet marker changes (and, for a file with no marker and on Windows, until another file is
+  saved at its path); Settings › Trust holds trusted and untrusted folders, "Block all network
   in Protected view" and the CDN allowlist; Help › About Protected View says what it does and what it cannot.
-- **First run:** a welcome window (Open a file, Make Blueline your HTML app, Try the sample deck, your name);
-  Settings › General shows the default HTML app and offers the same button. Help › Install Command Line Tool
+- **First run:** on the first launch without a file, a welcome window (Open a file, Make Blueline your HTML app,
+  Try the sample deck, your name, the crash-report question); later launches without a file show a small Open
+  window on Linux and Windows and nothing on macOS (the app stays in the Dock), and a second launch brings the
+  open Blueline window forward. Settings › General shows the default HTML app and offers the same button. Help › Install Command Line Tool
   links the `blueline` command.
+- **Default app on Windows:** the installer registers Blueline for `.html` and `.htm` (Open With and Default
+  Apps) in the install mode's hive, never changes the extensions' own default (you choose Blueline in Default
+  Apps), and removes exactly that on uninstall; a per-machine install also removes the per-user registration an
+  earlier per-user install left. On macOS the app declares the file types itself.
 
 Licensing is proposed and pending confirmation: see [LICENSING.md](LICENSING.md).
 Never install or run Blueline through `npx blueline` (SPEC 9.5): that npm name belongs to an unrelated package.
@@ -58,7 +69,7 @@ the Edit capability at startup by loading `dist/editor.cjs`, and nothing else im
 ## Run
 
 ```sh
-npm start                                     # no file: the welcome window (open a file, the sample deck)
+npm start                                     # no file: the welcome window on the first run, then the Open window
 npm start -- path/to/deck.html               # open a file
 npm start -- --protected path/to/deck.html   # open it in Protected view
 npm run dev                                   # rebuild on change and restart the app
@@ -74,8 +85,10 @@ In development the command is `node packages/cli/dist/blueline.cjs`. In the app,
 Tool…** installs it as `blueline`: a link to the shim shipped inside the app (`Resources/cli/blueline`) in
 `~/.local/bin`, or on macOS in `/usr/local/bin` when your login shell's PATH lacks `~/.local/bin` (with an
 administrator prompt when that folder is not writable); on Windows a `blueline.cmd` in
-`%LOCALAPPDATA%\Blueline\bin`, with the steps to put that folder on PATH. The shim needs Node 22 or later
-(it looks in `BLUELINE_NODE`, PATH, Homebrew, nvm, Volta and fnm, and says how to get Node when there is none).
+`%LOCALAPPDATA%\Blueline\bin`, with the steps to put that folder on PATH. On Linux, a `~/.local/bin` that the
+install creates is on PATH after you log in again (the login shell adds it once it exists), and the install
+says so. The shim needs Node 22 or later (it looks in `BLUELINE_NODE`, PATH, Homebrew, nvm, Volta and fnm, and
+says how to get Node when there is none).
 Never `npx blueline`.
 
 ```sh
@@ -91,14 +104,16 @@ blueline pdf deck.html                  # deck.pdf next to it, without opening a
 blueline pdf deck.html -o handout.pdf   # or a name (or a folder) of your choice; --json for the result
 ```
 
-**`blueline pdf`** saves the file as Save as PDF does (6.9), headless, under the file's own trust state (its
-marker decides, or `--protected`), and never over the file itself. It exits 0 when every slide has its page, 1
+**`blueline pdf`** saves the file as Save as PDF does (6.9), headless, under the trust state the app would open
+the file in (Settings › Trust: the trusted and untrusted folders, "Block all network in Protected view" and the
+CDN allowlist; then its marker, or `--protected`; a decision remembered in the app never applies), and never over
+the file itself. It exits 0 when every slide has its page, 1
 when some slide could not be shown (they are named), the file does not exist or the run failed, 2 for a usage
 error, a file the app cannot open or an output it refuses, and 130/143/129 on Ctrl+C, SIGTERM and SIGHUP (no
 PDF is left behind).
 
-**`blueline map`** launches the app headless, loads the deck in an offscreen view at 1600×900 under its own
-trust state, walks every slide (reveal.js, generic key-driven decks, and scrolling documents and single pages
+**`blueline map`** launches the app headless, loads the deck in an offscreen view at 1600×900 under the trust
+state the app would open it in (as for `blueline pdf`), walks every slide (reveal.js, generic key-driven decks, and scrolling documents and single pages
 down their whole height), and maps each visible text node to the source as `exact`, `ambiguous` or `none`.
 For every `exact` node it runs the **mutation probe**: it writes a sentinel into a hidden copy next to the
 deck (`.<name>.bl-probe.html`) through the real patcher, reloads, checks the sentinel shows up in that node
@@ -145,7 +160,8 @@ npm run dist                 # → release/Blueline-0.0.0-arm64.dmg and release/
    quarantine, so it opens normally. A build copied from elsewhere (a download, AirDrop) does: Finder then
    refuses it; run `xattr -dr com.apple.quarantine /Applications/Blueline.app` once, or Control-click › Open.
 2. **Make Blueline the default HTML app:** on the first launch without a file the welcome window offers
-   **Make Blueline your HTML app** (also in Help › Welcome to Blueline, and in Settings › General, Cmd+,).
+   **Make Blueline your HTML app** (also in Help › Welcome to Blueline, and in Settings › General, Cmd+,). Later
+   launches without a file show nothing on a Mac: use Help › Welcome to Blueline.
    From **macOS 26.4** the system asks you to confirm with *Use "Blueline"* or *Keep*; choose Use. Then
    double-click an `.html` file in Finder: it should open in Blueline. Without the helper: Finder › Get Info on
    an `.html` file › Open with › Blueline › Change All.
@@ -160,7 +176,11 @@ npm run dist                 # → release/Blueline-0.0.0-arm64.dmg and release/
    - **The default-app prompt** on macOS 26.4 or later: Use makes Blueline the default; Keep leaves the old one
      and the welcome window says "Not now".
    - **Retina capture:** thumbnails in the rail and Save as PDF pages should be sharp at 2x.
-   - **First paint:** `npm run build && npm run first-paint` (the gate: a 2 MB deck paints in under 1 s), and
+   - **First paint:** `npm run build && npm run first-paint` (the gate: the generated 2 MB deck, made like your
+     decks with fonts, inline library code, text and images (`fixtures/perf/README.md`), paints in under 1 s warm
+     and cold, and every counted run paints), then `node scripts/first-paint.mjs --deck <a real deck> --trust
+     trusted --no-profile` on two or three of your own decks (it prints each case's run count and main's share
+     in ms per MB), and
      `npm run parity -- --committed --local --trust both --pdf` (needs `brew install poppler` for the printed
      pages); results in `test-results/parity/`. See docs/PHASE1-RESULTS.md, "What to recheck on Josh's Mac".
    - Present (Cmd+Option+P) on the real display, and Print to a real printer.
@@ -171,7 +191,7 @@ npm run dist                 # → release/Blueline-0.0.0-arm64.dmg and release/
 npm test                 # vitest: unit and fuzz tests (test/unit)
 npm run test:e2e         # builds, then Playwright's Electron launcher (test/e2e)
 npm run test:security    # builds, then the security suite in both trust states (test/security)
-npm run test:parity      # builds, then the exit gate's committed check (test/parity: 3 fixtures, a control, the delayed build)
+npm run test:parity      # builds, then the exit gate's committed check (test/parity: 3 fixtures, the seeded-random and delayed-build fixtures, the negative controls)
 npm run parity -- --committed --perf --trust both --pdf   # render and PDF parity on every committed fixture (about 35 min)
 npm run first-paint      # first paint of the generated 2 MB deck, warm and cold
 npm run package:smoke    # builds, packs an unpacked test build (local Electron), checks the shell, trust bar and check --auto on it
@@ -187,14 +207,17 @@ it as root with `--no-sandbox`.
 `fixtures/decks/<name>.expect.json`, and fails when a deck's coverage drops more than 1 point below its
 baseline in `fixtures/expected/`.
 
-Phase 1 results (2026-10-17, Linux, Electron 44.7.2, from a clean build): 1,527 unit tests pass (78 files; the
-exit-gate harness adds 27 more); 136 of 136 E2E tests pass, of which 1 is an expected failure for the note-card
-ordering limit described in SECURITY.md; the security suite passes 49 of 49, of which 2 are expected failures
-for the two DNS channels described in SECURITY.md; `blueline check --auto` passes all 6 checks;
-`npm run package:smoke` passes 17 of 17. The exit gate (docs/PHASE1-RESULTS.md): render parity is exact on all
-296 slide renders of the committed fixtures and passes on 11 of Josh's 12 decks (D2 draws a random decoration);
-PDFs pass on 41 of 42 decks (83 of 84 in both trust states); a 2 MB deck paints in 500 ms with the app running
-and 854 ms from a cold start (Linux; the gate is 1 s on the Mac). Across the 18 committed fixtures every `exact`
+Phase 1 results (2026-10-18, Linux, Electron 44.7.2, from a clean build): 1,643 unit tests pass (85 files; the
+exit-gate parity harness adds 37 more); 192 of 192 E2E tests pass, of which 1 is an expected failure for the
+note-card ordering limit described in SECURITY.md; the security suite passes 59 of 59, of which 6 are expected
+failures (the two DNS channels and the drop-guard limits for a frame rewritten with `document.open()` or made
+`about:blank` inside a shadow root, all described in SECURITY.md); `blueline check --auto` passes all 6 checks;
+`npm run package:smoke` passes 17 of 17. The exit gate (docs/PHASE1-RESULTS.md), with the seeded `Math.random`
+and a per-channel tolerance of 2: render parity is exact on all 324 slide renders of the committed fixtures (42
+decks) and passes on all 12 of Josh's decks (D12 identical, D2 within the gate, D11 0.343%); every deck's PDF
+passes under the amended criterion (raster pages against Blueline's slide render, pages Chromium prints against
+its own print); a real-shaped 2 MB deck paints in 437 ms with the app running and 820 ms from a cold start
+(Linux; the gate is 1 s on the Mac). Across the 18 committed fixtures every `exact`
 node (411 of 411) passes the mutation probe, and coverage equals the baselines; on Josh's 12 decks every slide
 is reached and coverage holds against their local baselines (90.7% of all text, 94.5% of the wording).
 
@@ -211,7 +234,8 @@ Phase 0 results are in docs/PHASE0-FINDINGS.md (and this file's history).
   tests are named in [fixtures/README.md](fixtures/README.md)).
 - `fixtures/render/`: the render products' decks (print CSS, documents, vertical keys, builds, titles;
   [fixtures/render/README.md](fixtures/render/README.md)); `fixtures/perf/`: the generator of the 2 MB first-paint
-  deck; `test/parity/fixtures/`: the exit gate's negative control and the delayed-build repro.
+  deck; `test/parity/fixtures/`: the exit gate's negative controls, the seeded-random fixture and the delayed-build
+  repro.
 - `packages/app/assets/sample/`: the sample deck the welcome window opens.
 - `fixtures/local/`: your own decks and their baselines; gitignored.
 

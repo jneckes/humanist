@@ -57,8 +57,16 @@ interface Run {
   stderr: string;
 }
 
+/**
+ * The command reads the app's config.json for Settings › Trust (command-trust.ts): each run gets an empty app-data
+ * folder of its own (BLUELINE_USER_DATA), so the runner's own Blueline settings never change what is tested.
+ */
+function isolated(): Record<string, string> {
+  return { BLUELINE_USER_DATA: tmp('bl-map-ud-') };
+}
+
 function map(args: string[], env: Record<string, string> = {}): Run {
-  const r = spawnSync(process.execPath, [CLI, 'map', ...args], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 600_000, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnSync(process.execPath, [CLI, 'map', ...args], { encoding: 'utf8', env: { ...process.env, ...isolated(), ...env }, timeout: 600_000, maxBuffer: 64 * 1024 * 1024 });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }
 
@@ -141,7 +149,7 @@ test('Ctrl+C during the probe removes the probe copy and leaves the original unt
   const before = sha256(deck);
   // Its own process group, as a terminal's foreground job: Ctrl+C reaches the command, which passes it on to
   // the app (the app runs in its own process group).
-  const child = spawn(process.execPath, [CLI, 'map', deck, '--report'], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: process.env });
+  const child = spawn(process.execPath, [CLI, 'map', deck, '--report'], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, ...isolated() } });
   let out = '';
   child.stdout.on('data', (b: Buffer) => (out += b.toString('utf8')));
   const exited = new Promise<number | null>((r) => child.once('close', (code) => r(code)));

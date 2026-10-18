@@ -2,7 +2,9 @@
 // wait; the per-document pool of render windows; the cache file) and the slide visits against a fake render
 // view. Real-Electron runs: test/e2e/render-products-index.spec.ts.
 import { describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
 import * as os from 'node:os';
+import * as path from 'node:path';
 
 vi.mock('electron', () => ({
   app: { getName: () => 'Blueline', getPath: () => os.tmpdir(), getLocale: () => 'en-US', getSystemLocale: () => 'en-US', getLocaleCountryCode: () => '', on() {}, once() {}, removeListener() {}, isPackaged: false },
@@ -40,14 +42,23 @@ import {
   documentEntries,
   indexFileName,
   parseSlideIndex,
+  indexWalkTakesThumbs,
+  noteJoins,
   pressPatiently,
+  pruneOtherIndexFiles,
+  QUIET_SETTLE,
+  RAIL_THUMB_WIDTH,
   replayKeys,
   SCRIPTED_SETTLE,
+  SettleMemory,
+  settleMemoryFor,
   slideTitleFor,
   textBySlide,
   thumbsDir,
   trimLine,
   visitSlides,
+  waitAdaptive,
+  type NodeJoins,
   type ScriptedSettle,
 } from '../../../packages/app/src/main/slide-index';
 
@@ -135,6 +146,40 @@ describe('titles and text', () => {
       { w: { node: { stamp: null, textIndex: 0, data: 'lost' } }, slide: 7 },
     ];
     expect(textBySlide(nodes, 2)).toEqual([['one', 'three'], ['two']]);
+  });
+
+  it('one string per block: a block’s inline runs are joined as the page shows them, never across blocks or line breaks (review finding 12)', () => {
+    const n = (key: number, data: string, slide = 0) => ({ w: { key, node: { stamp: null, textIndex: 0, data } }, slide });
+    // <h2>Growth</h2><p>Plan ahead.</p> · <p>Bold<b>er</b> moves <i>first</i>.</p> · <p>Hello<br>world</p>
+    const res = {
+      nodes: [1, 2, 3, 4, 5, 6, 7, 8].map((key) => ({ key })),
+      blocks: [
+        { key: 100, nodeKeys: [1] },
+        { key: 101, nodeKeys: [2] },
+        { key: 102, nodeKeys: [3, 4, 5, 6] },
+        { key: 103, nodeKeys: [7, 8] },
+      ],
+      // joins[i] for nodes[i]: 4 continues 3 directly ("Bold|er"), 5 continues 4 (" moves " is its own data),
+      // 6 after a space-only node the walk skipped, 8 after a <br> (0: not joined).
+      joins: [0, 0, 0, 1, 1, 2, 0, 0] as (0 | 1 | 2)[],
+    };
+    const joins: NodeJoins = new Map();
+    noteJoins(res as never, joins);
+    expect([...joins.entries()].sort((a, b) => a[0] - b[0])).toEqual([
+      [4, { prev: 3, sep: 1 }],
+      [5, { prev: 4, sep: 1 }],
+      [6, { prev: 5, sep: 2 }],
+    ]);
+    const nodes = [n(1, 'Growth'), n(2, 'Plan ahead.'), n(3, 'Bold'), n(4, 'er'), n(5, ' moves'), n(6, 'first.'), n(7, 'Hello'), n(8, 'world')];
+    expect(textBySlide(nodes, 1, joins)).toEqual([['Growth', 'Plan ahead.', 'Bolder moves first.', 'Hello', 'world']]);
+    // A node only joins the string that ends with the node it continues: here 5 arrives after another slide's
+    // node, and 4 was never collected, so nothing joins.
+    expect(textBySlide([n(3, 'Bold'), n(9, 'other', 1), n(5, ' moves')], 2, joins)).toEqual([['Bold', ' moves'], ['other']]);
+    // Without joins, as before: one string per node.
+    expect(textBySlide(nodes.slice(2, 4), 1)).toEqual([['Bold', 'er']]);
+    // A later collect that sees no join for a node forgets the earlier one.
+    noteJoins({ nodes: [{ key: 4 }], blocks: [{ key: 102, nodeKeys: [4] }], joins: [0] } as never, joins);
+    expect(joins.has(4)).toBe(false);
   });
 
   it('deck entries carry the SlideRef nav of each kind (9.4)', () => {
@@ -462,6 +507,7 @@ function target(deckNav: RenderTarget['deckNav'] = null): RenderTarget {
     marker: null,
     isProtected: () => false,
     networkOpen: () => true,
+    renderPolicyTag: () => 'test-policy',
     reducedMotion: true,
     deckNav,
   };
@@ -505,7 +551,8 @@ describe('visitSlides (6.7 step 2: replay slide.nav)', () => {
 
   it('waits for what the slide’s scripts reveal before each still image, then settles and pauses (6.7 step 3)', async () => {
     const { view, log } = fakeDeck(2, 'ArrowRight');
-    await visitSlides(view, target(), genericIndex(2), async (i) => void log.push(`visit:${i}`));
+    // A version no walk has seen: every slide gets the full wait.
+    await visitSlides(view, { ...target(), version: 'e'.repeat(64) }, { ...genericIndex(2), version: 'e'.repeat(64) }, async (i) => void log.push(`visit:${i}`));
     const firstVisit = log.indexOf('visit:0');
     const w = `scripted:${SCRIPTED_SETTLE.minMs}/${SCRIPTED_SETTLE.quietMs}/${SCRIPTED_SETTLE.maxMs}`;
     expect(log.slice(firstVisit - 4, firstVisit)).toEqual(['stable', w, 'stable', 'pause']);
@@ -519,5 +566,153 @@ describe('visitSlides (6.7 step 2: replay slide.nav)', () => {
   it('refuses a view that shows the overlay (render mode has no UI)', async () => {
     const { view } = fakeDeck(3, 'ArrowRight', { overlay: true });
     await expect(visitSlides(view, target(), genericIndex(3), async () => undefined)).rejects.toThrow(/overlay/);
+  });
+});
+
+describe('the adaptive settle (SettleMemory; decision D-5)', () => {
+  const late = { quiet: true, late: true };
+  const still = { quiet: true, late: false };
+  const ticker = { quiet: false, late: false };
+
+  it('a slide gets the full wait until a full wait showed it still; then the quiet-only wait', () => {
+    const m = new SettleMemory();
+    expect(m.waitFor(0)).toBe(SCRIPTED_SETTLE);
+    m.learn(0, SCRIPTED_SETTLE, still);
+    expect(m.waitFor(0)).toBe(QUIET_SETTLE);
+    expect(QUIET_SETTLE).toEqual({ minMs: 0, quietMs: 400, maxMs: 3000 });
+    // Other slides are not decided by slide 0: D5 reveals by timer on its fifth slide only.
+    expect(m.waitFor(4)).toBe(SCRIPTED_SETTLE);
+    // A quiet-only wait proves nothing more, so it never makes a slide quiet.
+    m.learn(5, QUIET_SETTLE, still);
+    expect(m.waitFor(5)).toBe(SCRIPTED_SETTLE);
+  });
+
+  it('a slide whose DOM changed after a pause (a timer) keeps the full wait, for good', () => {
+    const m = new SettleMemory();
+    m.learn(1, SCRIPTED_SETTLE, late);
+    expect(m.waitFor(1)).toBe(SCRIPTED_SETTLE);
+    m.learn(1, SCRIPTED_SETTLE, still);
+    expect(m.waitFor(1)).toBe(SCRIPTED_SETTLE);
+    // A slide that never went quiet (a ticker) waits to the cap either way.
+    m.learn(2, SCRIPTED_SETTLE, ticker);
+    expect(m.waitFor(2)).toBe(SCRIPTED_SETTLE);
+  });
+
+  it('a late change during or after a quiet-only wait restores the full wait for every slide', () => {
+    const m = new SettleMemory();
+    for (const i of [0, 1, 2]) m.learn(i, SCRIPTED_SETTLE, still);
+    expect([0, 1, 2].map((i) => m.isQuiet(i))).toEqual([true, true, true]);
+    m.learn(1, QUIET_SETTLE, late);
+    expect([0, 1, 2].map((i) => m.waitFor(i))).toEqual([SCRIPTED_SETTLE, SCRIPTED_SETTLE, SCRIPTED_SETTLE]);
+    const n = new SettleMemory();
+    n.learn(0, SCRIPTED_SETTLE, still);
+    n.changedAfterQuiet();
+    expect(n.waitFor(0)).toBe(SCRIPTED_SETTLE);
+  });
+
+  it('a document’s page always keeps the full wait, even after it looked still (review finding 10)', () => {
+    // A canvas a script animates below the first screen (no DOM mutation, outside the viewport the picture check
+    // samples) looked "quiet", and the no-minimum wait then printed it mid-animation. A document's page is one
+    // page printed once, so it keeps the full wait regardless of what a walk observed.
+    const m = new SettleMemory();
+    m.learn(null, SCRIPTED_SETTLE, still);
+    expect(m.waitFor(null)).toBe(SCRIPTED_SETTLE);
+    expect(m.isQuiet(null)).toBe(false);
+  });
+
+  it('waitAdaptive: a quiet-only wait that saw a late change goes on with the full wait, for that slide and every other', async () => {
+    const m = new SettleMemory();
+    for (const i of [0, 1]) m.learn(i, SCRIPTED_SETTLE, still);
+    const seen: number[] = [];
+    const view = {
+      waitScripted: async (o: ScriptedSettle) => {
+        seen.push(o.minMs);
+        // The quiet-only wait sees a canvas still moving (late); the full wait after it sees the slide still.
+        return { waitedMs: o.minMs || 300, quiet: true, late: o.minMs === 0, stamp: 1 };
+      },
+    };
+    const w = await waitAdaptive(view, m, 1, null);
+    expect(seen).toEqual([0, 1500]);
+    expect(w).toMatchObject({ settle: SCRIPTED_SETTLE, waitedMs: 1800, late: false });
+    expect([m.waitFor(0), m.waitFor(1)]).toEqual([SCRIPTED_SETTLE, SCRIPTED_SETTLE]);
+  });
+
+  it('is kept per (fileKey, version) and shared by every walk of that version', () => {
+    const a = settleMemoryFor('00000000000000aa', 'b'.repeat(64));
+    expect(settleMemoryFor('00000000000000aa', 'b'.repeat(64))).toBe(a);
+    expect(settleMemoryFor('00000000000000aa', 'c'.repeat(64))).not.toBe(a);
+  });
+
+  it('visitSlides: the first walk of a version waits in full and learns; the next waits quiet-only where it may (delayed-build keeps the full wait)', async () => {
+    const version = 'd'.repeat(64);
+    const doc = { ...target(), fileKey: '00000000000000dd', version };
+    const index = { ...genericIndex(3), version };
+    // Slide 1 reveals a panel by timer after the slide arrives (test/parity/fixtures/delayed-build.html).
+    const timed = new Set([1]);
+    const run = async () => {
+      const { view, log } = fakeDeck(3, 'ArrowRight');
+      let cur = 0;
+      const v = view as unknown as Record<string, unknown>;
+      const press = v.pressKey as (k: NavKey) => Promise<KeyPress>;
+      v.pressKey = async (k: NavKey) => {
+        const p = await press(k);
+        cur = p.to;
+        return p;
+      };
+      v.waitScripted = async (o: ScriptedSettle) => {
+        log.push(`scripted:${cur}:${o.minMs}`);
+        return { waitedMs: o.minMs, quiet: true, late: timed.has(cur), stamp: 1 };
+      };
+      v.mutationStamp = async () => 1;
+      await visitSlides(view, doc, index, async () => undefined);
+      return log.filter((l) => l.startsWith('scripted:'));
+    };
+    expect(await run()).toEqual(['scripted:0:1500', 'scripted:1:1500', 'scripted:2:1500']);
+    expect(await run()).toEqual(['scripted:0:0', 'scripted:1:1500', 'scripted:2:0']);
+  });
+
+  it('visitSlides: a change after a quiet-only wait (the page’s mutation stamp moved) gives every slide the full wait again', async () => {
+    const version = 'f'.repeat(64);
+    const doc = { ...target(), fileKey: '00000000000000ee', version };
+    const index = { ...genericIndex(3), version };
+    const m = settleMemoryFor(doc.fileKey, version);
+    for (const i of [0, 1, 2]) m.learn(i, SCRIPTED_SETTLE, still);
+    const { view, log } = fakeDeck(3, 'ArrowRight');
+    const v = view as unknown as Record<string, unknown>;
+    v.waitScripted = async (o: ScriptedSettle) => (log.push(`scripted:${o.minMs}`), { waitedMs: 0, quiet: true, late: false, stamp: 1 });
+    // The DOM changed after slide 1's quiet-only wait ended.
+    let stamp = 1;
+    v.mutationStamp = async () => stamp;
+    await visitSlides(view, doc, index, async (i) => void (i === 0 ? (stamp = 2) : undefined));
+    expect(log.filter((l) => l.startsWith('scripted:'))).toEqual(['scripted:0', 'scripted:1500', 'scripted:1500']);
+  });
+});
+
+describe('index walk thumbnails and index files', () => {
+  it('the index walk takes the rail’s thumbnails only where they render at its own viewport (1600×900 at 2x)', () => {
+    expect(RAIL_THUMB_WIDTH).toBe(152);
+    expect(indexWalkTakesThumbs('generic', { w: 1600, h: 900 }, RAIL_THUMB_WIDTH)).toBe(true);
+    expect(indexWalkTakesThumbs('reveal', { w: 1600, h: 900 }, RAIL_THUMB_WIDTH)).toBe(true);
+    expect(indexWalkTakesThumbs('reveal', { w: 960, h: 700 }, RAIL_THUMB_WIDTH)).toBe(false);
+    expect(indexWalkTakesThumbs('generic', { w: 1280, h: 720 }, RAIL_THUMB_WIDTH)).toBe(false);
+    expect(indexWalkTakesThumbs('scroll', { w: 1600, h: 900 }, RAIL_THUMB_WIDTH)).toBe(false);
+    expect(indexWalkTakesThumbs('generic', { w: 1600, h: 900 }, null)).toBe(false);
+    expect(indexWalkTakesThumbs('generic', { w: 1600, h: 900 }, 4)).toBe(false);
+  });
+
+  it('pruneOtherIndexFiles deletes the other versions’ index files and nothing else (review finding 14)', async () => {
+    const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-index-prune-'));
+    try {
+      const dir = thumbsDir(userData, '00000000000000ab');
+      fs.mkdirSync(dir, { recursive: true });
+      const keep = 'a'.repeat(64);
+      const names = [indexFileName(keep), indexFileName('b'.repeat(64)), indexFileName('c'.repeat(64)), `${'b'.repeat(64)}-0-152.png`, 'notes.txt'];
+      for (const n of names) fs.writeFileSync(path.join(dir, n), 'x');
+      expect(await pruneOtherIndexFiles(userData, '00000000000000ab', keep)).toBe(2);
+      expect(fs.readdirSync(dir).sort()).toEqual([indexFileName(keep), `${'b'.repeat(64)}-0-152.png`, 'notes.txt'].sort());
+      expect(await pruneOtherIndexFiles(userData, '00000000000000ff', keep)).toBe(0);
+    } finally {
+      fs.rmSync(userData, { recursive: true, force: true });
+    }
   });
 });

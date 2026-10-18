@@ -5,7 +5,8 @@
 // atomicWriteFile(realpath, bytes, {expectHash}):
 //   1. the caller resolved realpath at open and always writes to that path (9.2 step 4.1);
 //   2. a temp file in the same directory gets the bytes, the original's mode bits and extended attributes
-//      (macOS: com.apple.quarantine; Windows: the Zone.Identifier stream), then fsync (step 4.2, 9.9);
+//      (macOS: com.apple.quarantine; Windows: the Zone.Identifier stream), and a derived file its marker
+//      (prepareTemp), then fsync (step 4.2, 9.9);
 //   3. the file on disk is re-hashed; a hash other than expectHash aborts with a WriteConflictError, so the
 //      caller re-queues (step 4.3);
 //   4. rename over the file, then fsync the directory where the platform supports it (step 4.4).
@@ -126,6 +127,13 @@ export interface AtomicWriteOptions {
   newFileMode?: number;
   /** Default xattrCopierFor(platform). */
   xattrs?: XattrCopier;
+  /**
+   * Runs on the temp file once its bytes and the original's attributes are in, before fsync and the rename,
+   * whether or not the target exists yet (the xattrs copier runs only for an existing one). A derived file is
+   * marked here (9.9 Derived files keep the marker; pdf.ts saveAsPdf): a marker belongs to the inode, so the
+   * renamed file has it, and a mark that fails leaves the target as it was (review finding 30).
+   */
+  prepareTemp?: (temp: string) => Promise<void> | void;
   /** Tests: runs right before the rename (to simulate a concurrent writer). */
   beforeRename?: () => Promise<void> | void;
 }
@@ -213,6 +221,7 @@ export async function atomicWriteFile(realpath: string, bytes: Uint8Array, opts:
       }
     }
     if (st) await (opts.xattrs ?? xattrCopierFor(platform)).copy(realpath, tmp);
+    await opts.prepareTemp?.(tmp);
     await fh.sync();
     await fh.close();
     closed = true;

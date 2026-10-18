@@ -6,16 +6,18 @@
 // - From a Protected deck view and from a render-mode view of the same document (same preload, mode, partition and
 //   origin as the render service's views; built here because the app's own render views never get the test
 //   switch that puts ipcRenderer on their isolated world), every SettingsToMain channel is invoked with the
-//   arguments the Settings page would send, while the Settings window is open. Every call is refused, and
-//   config.json, trust.json and the document's trust state do not change. Positive control: the same calls from
-//   the Settings page succeed and change config.json.
+//   arguments the Settings page would send, while the app's own Settings window is open (the app wires it; this
+//   suite never installs one of its own). Every call is refused, and config.json, trust.json and the document's
+//   trust state do not change. Positive control: the same calls from the Settings page succeed and change
+//   config.json.
 // - The Settings page's world has only the named Settings functions, no require or ipcRenderer, runs no inline
 //   script (the 9.1 CSP) and cannot navigate.
 // - A remembered decision does not survive a marker change: with markers injected through the test-only switch
 //   BLUELINE_TEST_MARKERS (markers.ts; BLUELINE_TEST=1, unpackaged only), a Protected file's Allow network is
-//   remembered for its marker and dropped when the marker changes. This needs the app's opening to go through
-//   trust.json (folders.ts resolveOpenTrust, wired by the views item); until it does, that part is skipped with
-//   the reason, after checking what already holds (an injected marker opens the file Protected).
+//   remembered for its marker and dropped when the marker changes.
+// - A trusted folder opens a marked file Trusted, and an untrusted folder an unmarked file Protected (6.10).
+// Every test runs its assertions: none skips itself when the behaviour it checks is missing (review finding 32),
+// so a regression in how the app opens files fails the suite.
 
 import { expect, test } from '@playwright/test';
 import * as fs from 'node:fs';
@@ -116,9 +118,9 @@ test('every Settings channel invoked from a Protected deck view and from a rende
   try {
     const { app, deck } = session;
     const folder = trustableFolder('forged', (p) => s.own(p));
-    // The Settings window is open (its channels have a window to act on) and the dialog would answer.
+    // The app's own Settings window is open (its channels have a window to act on) and the dialog would answer.
     const { page, mode } = await openSettings(app, 'trust');
-    test.info().annotations.push({ type: 'settings-window', description: mode });
+    expect(mode, "the channels under test must be the app's own").toBe('app');
     await answerFolderDialog(app, folder);
     await sleep(500);
     const configFile = path.join(app.userData, 'config.json');
@@ -172,7 +174,8 @@ test('the Settings page has only the named Settings functions, runs no inline sc
   const s = new Scratch(resolveRunAs());
   const session = await openFixture({ scratch: s, fixture: 'ipc.html', trust: 'protected' });
   try {
-    const { page } = await openSettings(session.app);
+    const { page, mode } = await openSettings(session.app);
+    expect(mode).toBe('app');
     const world = await page.evaluate(() => {
       const w = window as unknown as Record<string, unknown>;
       const b = w.blueline as Record<string, unknown>;
@@ -256,8 +259,13 @@ test('a remembered decision does not survive a marker change (6.10)', async () =
     expect(w.trustReason).toBe('Came from the internet');
     await sleep(500);
     const trustFile = path.join(userData, 'trust.json');
-    const wired = fs.existsSync(trustFile) && snapshotFile(trustFile).includes(JSON.stringify(fs.realpathSync.native(file)));
-    test.skip(!wired, 'the app does not open files through trust.json yet (views item: folders.ts resolveOpenTrust and TrustStore.remember on Allow network)');
+    // 6.8: the first Protected open is remembered (received) in trust.json, with its marker.
+    const recorded = fs.existsSync(trustFile) ? (JSON.parse(snapshotFile(trustFile)) as { files?: Record<string, unknown> }).files?.[fs.realpathSync.native(file)] : undefined;
+    expect(recorded, 'the first Protected open is recorded in trust.json').toMatchObject({
+      marker: '0083;65f1c2a3;Safari;6E1F6E7C-1C1B-4B8E-9D2E-111111111111',
+      received: true,
+      allowNetwork: false,
+    });
 
     // Allow network, remembered for this marker.
     await app.electronApp.evaluate(async ({ webContents }, id) => {
@@ -306,7 +314,8 @@ test('a trusted folder opens a marked file Trusted; an untrusted folder opens an
   const userData = app.userData;
   try {
     await app.waitForDeck('plain.html');
-    const { page } = await openSettings(app, 'trust');
+    const { page, mode } = await openSettings(app, 'trust');
+    expect(mode).toBe('app');
     await answerFolderDialog(app, trusted);
     await page.locator('#add-trusted').click();
     await answerFolderDialog(app, untrustedDir);
@@ -318,8 +327,6 @@ test('a trusted folder opens a marked file Trusted; an untrusted folder opens an
     app = await launchApp({ files: [marked, plain], scratch: s, env, userData });
     const m = await app.win((await app.waitForDeck('marked.html')).docId);
     const p = await app.win((await app.waitForDeck('plain.html')).docId);
-    const wired = m.trust === 'trusted' || p.trust === 'protected';
-    test.skip(!wired, 'the app does not open files through the trusted and untrusted folders yet (views item: folders.ts resolveOpenTrust)');
     expect(m.trust, 'a marked file in a trusted folder opens Trusted').toBe('trusted');
     expect(p.trust, 'an unmarked file in an untrusted folder opens Protected').toBe('protected');
     expect(p.trustReason).toBe('In a folder you marked as untrusted');

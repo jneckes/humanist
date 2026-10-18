@@ -14,8 +14,9 @@
 //   Review and Edit the key router keeps them from the deck (6.2 step 5), so main steps at once.
 // - The wheel (100%, Fill width): a deck view larger than the window pans with a wheel the page did not use.
 // - View state (6.6): captured on request (MainToDeckFiles.captureViewState → FilesDeckToMain.viewState) and
-//   applied after the reloaded page's init, once its layout has settled. The busy state (an edit, a card with
-//   unsaved input) is sent whenever it changes and once after each init (FilesDeckToMain.busy).
+//   applied after the reloaded page's init, once its layout has settled; FilesDeckToMain.viewStateApplied says
+//   when that is done. The busy state (an edit, a card with unsaved input) is sent whenever it changes and once
+//   after each init (FilesDeckToMain.busy).
 //
 // Every listener is registered through listen() (listeners.ts), so it survives document.open().
 
@@ -175,6 +176,18 @@ export class ViewHooks {
       }
       case 'hash': {
         const hash = typeof r.hash === 'string' ? r.hash : '';
+        if (r.replace === true) {
+          // Puts the hash back without a hashchange (a deck that did not follow the goto, review finding 17);
+          // '' takes it off.
+          if ((hash !== '' && !hash.startsWith('#')) || utf8Bytes(hash) > VIEWS_LIMITS.hash) return;
+          try {
+            const loc = this.win.location;
+            if (loc.hash !== hash) this.win.history.replaceState(this.win.history.state, '', hash === '' ? loc.pathname + loc.search : hash);
+          } catch {
+            // a page that broke history: the hash stays
+          }
+          return;
+        }
         if (!hash.startsWith('#') || utf8Bytes(hash) > VIEWS_LIMITS.hash) return;
         if (this.win.location.hash !== hash) this.win.location.hash = hash;
         return;
@@ -296,6 +309,15 @@ export class ViewHooks {
   }
 
   private async applyNow(s: DeckViewState): Promise<void> {
+    try {
+      await this.restore(s);
+    } finally {
+      // Main reuses this state for a reload that starts before now (review finding 20).
+      this.deps.send(FilesDeckToMain.viewStateApplied);
+    }
+  }
+
+  private async restore(s: DeckViewState): Promise<void> {
     await this.settled();
     const m = this.model();
     // The slide (6.6): reveal.js and hash decks are shown here (the reload URL already carries the hash); index

@@ -12,6 +12,18 @@ const SKIP_TAGS = new Set(['script', 'style', 'noscript', 'template']);
 
 /** Inline elements that split a block's text into runs (6.3 Inline markup; section 10 step 5). */
 const INLINE_TAGS = new Set(['b', 'strong', 'i', 'em', 'a', 'code', 'span', 'br']);
+/** Elements findInPage treats as a break between the text around them (checked in Electron 44; <wbr> is not one). */
+const BREAK_TAGS = new Set(['br', 'img', 'input', 'select', 'textarea', 'button', 'svg', 'canvas', 'video', 'audio', 'iframe', 'frame', 'object', 'embed', 'picture', 'meter', 'progress', 'math']);
+
+/**
+ * Added to a collect's result (DomWalker.collect): joins[i] says how nodes[i] continues the previous visible
+ * text node of its block (that block's nodeKeys order): 1 directly, 2 after white space, 0 not (the first of
+ * its block, or a line break, an inline replaced element or an inline-block between them). The slide index
+ * joins a block's runs into one string with it (ipc-render SlideIndexEntry.text); `blueline map` ignores it.
+ */
+export interface CollectJoins {
+  joins?: (0 | 1 | 2)[];
+}
 
 /** A stamp is `bl-<n>` (9.2 Strategy 1 step 2). Anything else on a page element is the page's own doing. */
 const STAMP_RE = /^bl-[0-9]{1,9}$/;
@@ -306,6 +318,13 @@ function styleOf(el: Element, fallback: Window): CSSStyleDeclaration {
   return w.getComputedStyle(el);
 }
 
+/** True when a `white-space` value preserves line breaks (so a newline is a forced break, review finding 12). */
+export function whiteSpacePreservesBreaks(ws: string | undefined | null): boolean {
+  if (!ws) return false;
+  const v = ws.trim().toLowerCase();
+  return v === 'pre' || v === 'pre-wrap' || v === 'pre-line' || v === 'break-spaces';
+}
+
 /**
  * The section 10 step 4 walk, and `find` / `locate` over the same rules. Keys are given once per node per
  * page load (a WeakMap), so the walker can count each node once across slides.
@@ -590,6 +609,10 @@ export class DomWalker {
     const w: WalkNode = { key: this.keyOf(node), locator, node: this.describe(node), rect: this.nodeRect(node, scope) };
     if (scope.tree !== 'document') w.tree = scope.tree;
     if (slideOf) w.slide = slideOf(scope.anchor ?? node);
+    // A newline in a node whose white-space preserves breaks is a forced break (review finding 12): the index
+    // text splits the run there, so Find does not list a phrase that findInPage cannot match across it.
+    const parent = ownerElement(node);
+    if (parent && node.data.indexOf('\n') >= 0 && whiteSpacePreservesBreaks(styleOf(parent, this.win).whiteSpace)) w.pre = true;
     return w;
   }
 
@@ -617,13 +640,47 @@ export class DomWalker {
   }
 
   /**
-   * Visible text nodes and their blocks right now (RenderCmd collect; section 10 steps 4-5). `slideOf` gives
-   * each node the slide or block that contains it (review finding 35).
+   * How text node `t` continues `prev`, the previous visible text node of its block, as the page reads it
+   * (CollectJoins): 1 directly ("Bold<b>er</b>"), 2 after white space (a space-only node between two inline
+   * elements, which the walk itself skips), 0 not at all: a line break, an inline replaced element, an
+   * inline-block or another block lies between them, and findInPage never matches across one.
    */
-  collect(slideOf?: (n: Node) => number | null): CollectResult {
+  private joinOf(prev: Text, t: Text, block: Element): 0 | 1 | 2 {
+    const doc = t.ownerDocument ?? this.doc;
+    const win = this.win;
+    const walker = doc.createTreeWalker(block, 0x1 | 0x4 /* SHOW_ELEMENT | SHOW_TEXT */, {
+      acceptNode(n: Node): number {
+        // What display: none hides is not on the page (findInPage joins "x<span hidden>…</span>y" as "xy").
+        return n.nodeType === ELEMENT_NODE && styleOf(n as Element, win).display === 'none' ? 2 /* FILTER_REJECT */ : 1;
+      },
+    });
+    walker.currentNode = prev;
+    // White space in the two runs' own data stays in their data; only a node between them counts here.
+    let space = false;
+    for (let n = walker.nextNode(), steps = 0; n; n = walker.nextNode(), steps++) {
+      if (n === t) return space ? 2 : 1;
+      if (steps >= 64) return 0;
+      if (n.nodeType === ELEMENT_NODE) {
+        const el = n as Element;
+        if (BREAK_TAGS.has(el.localName)) return 0;
+        const d = styleOf(el, win).display;
+        if (d !== 'inline' && d !== 'contents') return 0;
+      } else if (/\s/.test((n as Text).data)) space = true;
+    }
+    return 0;
+  }
+
+  /**
+   * Visible text nodes and their blocks right now (RenderCmd collect; section 10 steps 4-5). `slideOf` gives
+   * each node the slide or block that contains it (review finding 35). `joins` says how each node continues
+   * the one before it in its block (joinOf; the slide index's text, review finding 12).
+   */
+  collect(slideOf?: (n: Node) => number | null): CollectResult & CollectJoins {
     this.begin();
     const nodes: WalkNode[] = [];
+    const joins: (0 | 1 | 2)[] = [];
     const byBlock = new Map<Element, number[]>();
+    const lastInBlock = new Map<Element, Text>();
     for (const { t, scope } of this.textNodes()) {
       if (!this.visibleIn(t, scope)) continue;
       const w = this.walkNode(t, scope, slideOf);
@@ -633,12 +690,15 @@ export class DomWalker {
       let keys = byBlock.get(block);
       if (!keys) byBlock.set(block, (keys = []));
       keys.push(w.key);
+      const prev = lastInBlock.get(block);
+      joins.push(prev && scope.tree === 'document' ? this.joinOf(prev, t, block) : 0);
+      lastInBlock.set(block, t);
     }
     const blocks: WalkBlock[] = [];
     for (const [block, nodeKeys] of byBlock) {
       blocks.push({ key: this.keyOf(block), hasInline: this.hasInline(block), nodeKeys });
     }
-    const out: CollectResult = { nodes, blocks };
+    const out: CollectResult & CollectJoins = { nodes, blocks, joins };
     // Visible frames whose text the page cannot read: their content is visible but uncounted.
     const opaque: number[] = [];
     for (const { frame, scope } of this.opaqueFrames) {

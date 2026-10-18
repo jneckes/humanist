@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Find dashes</title>
+<!--
+  Spellings Find folds and findInPage does not (review finding 12). Slide 1: "2020–2021" with an en dash, then
+  "2020-2021" twice with a hyphen; Find lists all three for "2020-2021", and each highlights its own place.
+  Slide 2: "Bold<b>er</b> moves first." then "Then bolder moves win.": findInPage matches across the inline
+  <b>, so Find lists both for "bolder moves". Slide 3: a heading and its paragraph, which no phrase spans.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #fafafa; overflow: hidden; font: 40px/1.3 Arial, sans-serif; color: #222; }
+  .slide { position: absolute; inset: 0; padding: 80px; box-sizing: border-box; display: none; }
+  .slide.active { display: block; }
+  p { margin: 0 0 24px; }
+</style>
+</head>
+<body>
+<section class="slide active">
+  <h1>Dates</h1>
+  <p id="a">Plan 2020–2021 first.</p>
+  <p id="b">Budget 2020-2021 next.</p>
+  <p id="c">Audit 2020-2021 last.</p>
+</section>
+<section class="slide">
+  <h1>Moves</h1>
+  <p id="d">Bold<b>er</b> moves first.</p>
+  <p id="e">Then bolder moves win.</p>
+</section>
+<section class="slide">
+  <h1>Growth</h1>
+  <p id="f">Plan for the year.</p>
+  <p id="g">Our growth plan works.</p>
+</section>
+<script>
+  (function () {
+    var slides = [].slice.call(document.querySelectorAll('.slide'));
+    var cur = 0;
+    addEventListener('keydown', function (e) {
+      var n = e.key === 'ArrowRight' || e.key === 'PageDown' ? cur + 1 : e.key === 'ArrowLeft' || e.key === 'PageUp' ? cur - 1 : cur;
+      if (n === cur || n < 0 || n >= slides.length) return;
+      slides[cur].classList.remove('active');
+      cur = n;
+      slides[cur].classList.add('active');
+    });
+  })();
+</script>
+</body>
+</html>

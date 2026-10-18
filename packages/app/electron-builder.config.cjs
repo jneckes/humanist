@@ -8,7 +8,11 @@
 //   synthetic stats there), so main resolves them to the unpacked copy when packaged (src/main/app-paths.ts).
 // - The `blueline` command ships outside app.asar, in Resources/cli, because the system's Node cannot read
 //   app.asar (6.1). blueline-editor.cjs is left out of reader-only builds by the build itself.
-// - fileAssociations declare html and htm with role Editor, so Blueline appears in Open With (6.1).
+// - mac.fileAssociations declare html and htm with role Editor, so Blueline appears in Open With (6.1). They are
+//   macOS's only: a top-level list reaches every platform, and electron-builder's NSIS template then sets .html's
+//   and .htm's own default value to its "HTML Document" class (HKLM for a per-machine install), which an app must
+//   not do (6.1: the user chooses in Default Apps), with an unquoted command. Windows is registered only by
+//   build/installer.nsh (review finding 22).
 // - macOS: hardened runtime with entitlements; the microphone entitlement is in both entitlements files,
 //   because Electron's helper processes take the inherited set (9.10).
 // - afterPack flips the Electron fuses (scripts/fuses.cjs, 9.9).
@@ -16,7 +20,8 @@
 //   notarized with the app, only when native/macos/build.sh has built it, so this config still works on
 //   Linux and in CI without it (main then falls back to /usr/bin/xattr and cannot set the default app).
 // - Windows: the NSIS include (build/installer.nsh) writes the ProgID, OpenWithProgids, Capabilities and the
-//   RegisteredApplications value in the install mode's hive, and removes them on uninstall (6.1).
+//   RegisteredApplications value in the install mode's hive, and removes them on uninstall (6.1); a per-machine
+//   install also removes the copy a per-user install wrote.
 // - Local unsigned builds for dogfooding (SPEC 10 Phase 1, Builds): without a configured signing identity,
 //   `npm run dist` on a Mac makes an ad-hoc signed, unnotarized build (scripts/mac-signing.cjs; README.md,
 //   Dogfooding on a Mac). Developer ID signing and notarization (9.10) are Phase 6, from CI.
@@ -59,9 +64,10 @@ module.exports = {
   ],
   asar: true,
   npmRebuild: false,
-  fileAssociations: [{ ext: ['html', 'htm'], name: 'HTML Document', role: 'Editor', rank: 'Default' }],
   mac: {
     category: 'public.app-category.productivity',
+    // Open With (6.1, 9.10 File associations); macOS only, see the header.
+    fileAssociations: [{ ext: ['html', 'htm'], name: 'HTML Document', role: 'Editor', rank: 'Default' }],
     target: ['dmg', 'zip'],
     // Release: hardened runtime, Developer ID, notarization; local: ad hoc, no hardened runtime (macSigningFor).
     ...signing.mac,

@@ -1,13 +1,14 @@
 // Print (6.9, Cmd+P): "Uses the same pipeline [as Save as PDF], then the system print dialog."
 //
 // - Decks with print CSS and documents: webContents.print() on the render view, with Save as PDF's settings
-//   (backgrounds; a document's Letter or A4 page from the locale).
-// - Other decks: the raster pages, at the design size and 2x, printed from a print-only document: one image
-//   per page, written to <userData>/files/<fileKey>/print/<run>/ and served from there to a hidden window in
-//   a partition of its own (no script, no network, nothing but those files), then removed. The composed PDF
-//   itself cannot be printed this way in Electron 44: with webPreferences.plugins off, a PDF response renders
-//   as an empty page; only with plugins on does Chromium's PDF viewer extension (chrome-extension://mhjf…)
-//   show it (Phase 1 finding), and no Blueline window enables that extension renderer.
+//   (backgrounds; a document's Letter or A4 page from the locale), after Save as PDF's scripted settle, and for
+//   a deck only when Save as PDF would print its CSS too (one page per slide, each the slide's aspect).
+// - Other decks: the raster pages, at the design size and 2x, in slide order, printed from a print-only
+//   document: one image per page, written to <userData>/files/<fileKey>/print/<run>/ and served from there to
+//   a hidden window in a partition of its own (no script, no network, nothing but those files), then removed.
+//   The composed PDF itself cannot be printed this way in Electron 44: with webPreferences.plugins off, a PDF
+//   response renders as an empty page; only with plugins on does Chromium's PDF viewer extension
+//   (chrome-extension://mhjf…) show it (Phase 1 finding), and no Blueline window enables that extension renderer.
 // - Notes are never included, and render views have no overlay (checked before anything is printed).
 // The system dialog cannot be driven in tests; `printWith` lets a test print to PDF in its place.
 
@@ -19,8 +20,8 @@ import { readRegularFile } from './atomic-write';
 import { newDocumentId } from './documents';
 import { DECK_SCHEME } from './protocol';
 import { RenderError, rendererFor, renderHost, throwIfCancelled, untilQuiet, type RenderHost, type RenderTarget, type RenderView } from './render-service';
-import { INDEX_VIEWPORT, buildSlideIndex, designViewport, isDeck, visitSlides } from './slide-index';
-import { RASTER_SCALE, decidePdfMode, documentPageSize, pdfPageCount, pdfTitleOf, printCssOf, type PdfOptions } from './pdf';
+import { INDEX_VIEWPORT, buildSlideIndex, designViewport, isDeck, settleMemoryFor, settleScripted, visitSlides } from './slide-index';
+import { RASTER_SCALE, documentPageSize, pdfTitleOf, printCssOf, printedMode, type PdfOptions } from './pdf';
 
 /** How a print job is sent: webContents.print by default (the system dialog unless `silent`). */
 export type PrintFn = (wc: WebContents, options: Electron.WebContentsPrintOptions) => Promise<{ ok: boolean; why: string }>;
@@ -61,6 +62,12 @@ export function escapeHtml(s: string): string {
 export function pageFileName(i: number): string {
   if (!Number.isInteger(i) || i < 0 || i > 99_999) throw new RenderError('invalid page number');
   return `page-${i}.png`;
+}
+
+/** A slide's capture before the pages are put in slide order (never served: printFileFor serves page-N only). */
+export function captureFileName(slide: number): string {
+  if (!Number.isInteger(slide) || slide < 0 || slide > 99_999) throw new RenderError('invalid slide number');
+  return `slide-${slide}.png`;
 }
 
 /** The print-only document: one image per page, each filling its page; the stylesheet is print.css. */
@@ -172,7 +179,8 @@ export async function printDocument(doc: RenderTarget, opts: PrintOptions = {}):
   if (index.version !== doc.version) throw new RenderError('the slide index is of another version');
   await untilQuiet(doc.fileKey, signal);
 
-  // Print CSS and documents: the render view itself.
+  // Print CSS and documents: the render view itself, printed once what its scripts reveal has been shown
+  // (the scripted settle, once per document; decision D-5).
   const direct = await rendererFor(doc, host).use(
     INDEX_VIEWPORT,
     async (view): Promise<PrintResult | null> => {
@@ -181,17 +189,26 @@ export async function printDocument(doc: RenderTarget, opts: PrintOptions = {}):
       await view.waitStable();
       await assertNoOverlay(view);
       if (!isDeck(index.kind)) {
+        await settleScripted(view, signal, host.log, { memory: settleMemoryFor(doc.fileKey, doc.version), slot: null });
+        await assertNoOverlay(view);
+        throwIfCancelled(signal);
         const r = await print(view.wc, { silent, printBackground: true, pageSize: documentPageSize(opts.locale) });
         return { ...r, mode: 'document', pages: null, missed: [] };
       }
       const scan = await printCssOf(view, host.log);
       if (!scan.pageRule && !scan.printBreaks) return null;
-      // "A @media print that lays out each slide as a page" is checked as Save as PDF checks it.
-      const pages = scan.pageRule ? null : await pdfPageCount(await view.printToPDF({ preferCSSPageSize: true, printBackground: true }));
-      if (decidePdfMode(index.kind, scan, pages, index.slides.length) !== 'print-css') return null;
+      await settleScripted(view, signal, host.log);
+      await assertNoOverlay(view);
+      // The deck's print CSS is printed only when Chromium's print of it is the deck as slide pages, checked
+      // as Save as PDF checks it: one page per slide, each the slide's aspect (decision D-6).
+      const decided = await printedMode(index.kind, scan, await view.printToPDF({ preferCSSPageSize: true, printBackground: true }), index);
+      if (decided.mode !== 'print-css') {
+        host.log(`print: ${doc.fileName}: ${decided.why}; printing the slides instead`);
+        return null;
+      }
       throwIfCancelled(signal);
       const r = await print(view.wc, { silent, printBackground: true });
-      return { ...r, mode: 'print-css', pages, missed: [] };
+      return { ...r, mode: 'print-css', pages: decided.pages, missed: [] };
     },
     signal,
   );
@@ -202,7 +219,7 @@ export async function printDocument(doc: RenderTarget, opts: PrintOptions = {}):
   await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
   try {
     let title: string | null = null;
-    let pages = 0;
+    const captured = new Set<number>();
     const visit = await rendererFor(doc, host).use(
       designViewport(index, RASTER_SCALE),
       (view) =>
@@ -210,19 +227,23 @@ export async function printDocument(doc: RenderTarget, opts: PrintOptions = {}):
           view,
           doc,
           index,
-          async () => {
-            if (pages === 0) title = pdfTitleOf(await view.documentTitle(), doc.title);
+          async (slide) => {
+            if (captured.size === 0) title = pdfTitleOf(await view.documentTitle(), doc.title);
             const cap = await view.capture();
             if (cap.empty) throw new RenderError('a slide captured empty');
-            await fs.promises.writeFile(path.join(dir, pageFileName(pages)), cap.image.toPNG(), { mode: 0o600 });
-            pages++;
+            await fs.promises.writeFile(path.join(dir, captureFileName(slide)), cap.image.toPNG(), { mode: 0o600 });
+            captured.add(slide);
           },
           { signal, log: host.log },
         ),
       signal,
     );
     throwIfCancelled(signal);
+    const pages = captured.size;
     if (pages === 0) throw new RenderError(`${doc.fileName}: no slide could be shown`);
+    // The pages in slide order, whatever order the walk reached the slides in (review finding 33).
+    const order = [...captured].sort((a, b) => a - b);
+    for (let k = 0; k < order.length; k++) await fs.promises.rename(path.join(dir, captureFileName(order[k])), path.join(dir, pageFileName(k)));
     await fs.promises.writeFile(path.join(dir, 'print.html'), printDocumentHtml(title, pages), { mode: 0o600 });
     await fs.promises.writeFile(path.join(dir, 'print.css'), printDocumentCss(index.designSize), { mode: 0o600 });
     const r = await printFolder(dir, pages, index.designSize, print, silent, host.log);

@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Timer document</title>
+<!--
+  A document whose two paragraphs a script fills 600 ms after load (decision D-5): the slide index of a
+  document (Find's text) must hold them (review finding 11).
+-->
+<style>
+  body { font: 18px/1.5 Arial, sans-serif; margin: 40px; max-width: 760px; color: #222; background: #fff; }
+</style>
+</head>
+<body>
+<h1>Alpha</h1>
+<p>Intro text here.</p>
+<p id="one"></p>
+<h2>Beta</h2>
+<p>Beta body.</p>
+<p id="two"></p>
+<script>
+  setTimeout(function () {
+    document.getElementById('one').textContent = 'Quokka paragraph one';
+    document.getElementById('two').textContent = 'Quokka paragraph two';
+  }, 600);
+</script>
+</body>
+</html>

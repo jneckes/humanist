@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chart report</title>
+<!--
+  A document whose content scripts draw and fill in after load (SPEC 6.9 Save as PDF and Print of documents;
+  decision D-5): a canvas bar grown by requestAnimationFrame over 1000 ms (easeOutQuart, the timing of a
+  chart library's default animation; reduced motion does not stop it) that writes BAR COMPLETE when done,
+  and two paragraphs a timer fills at 300 and 800 ms. A print taken a few frames after load showed the bar as
+  a thin strip and neither paragraph (review finding 10).
+-->
+<style>
+  body { font: 16px/1.4 Arial, sans-serif; margin: 40px; max-width: 800px; color: #222; background: #fff; }
+  canvas { display: block; border: 1px solid #888; }
+</style>
+</head>
+<body>
+<h1>Revenue chart</h1>
+<p>The chart below animates when the page opens.</p>
+<canvas id="chart" width="400" height="300"></canvas>
+<p id="state">BAR ANIMATING</p>
+<h2>Results</h2>
+<p id="early">LOADING RESULTS</p>
+<h2>Summary</h2>
+<p id="late">LOADING SUMMARY</p>
+<script>
+  (function () {
+    var c = document.getElementById('chart'), x = c.getContext('2d'), t0 = null;
+    function ease(t) { return 1 - Math.pow(1 - t, 4); }
+    function frame(ts) {
+      if (t0 === null) t0 = ts;
+      var t = Math.min(1, (ts - t0) / 1000), h = Math.round(280 * ease(t));
+      x.clearRect(0, 0, 400, 300);
+      x.fillStyle = '#2d6cdf';
+      x.fillRect(150, 300 - h, 100, h);
+      if (t < 1) requestAnimationFrame(frame);
+      else document.getElementById('state').textContent = 'BAR COMPLETE';
+    }
+    requestAnimationFrame(frame);
+    setTimeout(function () { document.getElementById('early').textContent = 'RESULTS FILLED AT 300 MS'; }, 300);
+    setTimeout(function () { document.getElementById('late').textContent = 'SUMMARY FILLED AT 800 MS'; }, 800);
+  })();
+</script>
+</body>
+</html>

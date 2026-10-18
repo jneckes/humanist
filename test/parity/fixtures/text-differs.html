@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Parity text differs</title>
+<!--
+  The render-parity harness's record of slides whose visible text differs (test/parity/parity.spec.ts): slide 2
+  writes location.protocol in a small label, so it reads "blueline:" in Blueline's render and "file:" in the plain
+  one. The pixels differ by far less than the gate, and the visible-text signatures differ: the harness must list
+  slide 2 under the deck's textDiffers (recorded, not part of the verdict) and slides 1 and 3 nowhere.
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #fff; overflow: hidden; font: 48px/1.2 Arial, sans-serif; }
+  [data-slide] { position: absolute; inset: 0; padding: 80px; visibility: hidden; }
+  [data-slide].on { visibility: visible; }
+  #proto { font-size: 14px; }
+</style>
+</head>
+<body>
+<section data-slide class="on"><h1>First slide</h1><p>The same in both renders.</p></section>
+<section data-slide><h1>Second slide</h1><p id="proto"></p></section>
+<section data-slide><h1>Third slide</h1><p>The same in both renders.</p></section>
+<script>
+  document.getElementById('proto').textContent = location.protocol;
+  var slides = document.querySelectorAll('[data-slide]'), cur = 0;
+  document.addEventListener('keydown', function (e) {
+    var next = e.key === 'ArrowRight' ? cur + 1 : e.key === 'ArrowLeft' ? cur - 1 : cur;
+    if (next < 0 || next >= slides.length || next === cur) return;
+    slides[cur].classList.remove('on');
+    slides[next].classList.add('on');
+    cur = next;
+  });
+</script>
+</body>
+</html>

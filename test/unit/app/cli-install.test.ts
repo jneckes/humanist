@@ -167,13 +167,31 @@ describe('Linux (and macOS with ~/.local/bin on PATH): ~/.local/bin', () => {
   it('not on the login shell’s PATH: installed, and the result says how to add it for that shell', async () => {
     const r = await installCommandLineTool(env({ loginPathValue: '/usr/bin:/bin' }));
     expect(r).toMatchObject({ ok: true, onPath: false });
-    if (r.ok) expect(r.pathHint).toBe('Add it to your PATH: add the line export PATH="$HOME/.local/bin:$PATH" to ~/.profile, then open a new terminal.');
+    // Linux terminals start non-login shells, which do not read ~/.profile: the next login is what applies it.
+    if (r.ok) expect(r.pathHint).toBe('Add it to your PATH: add the line export PATH="$HOME/.local/bin:$PATH" to ~/.profile, then log out and log back in.');
     const z = await installCommandLineTool(env({ loginPathValue: '/usr/bin', loginShell: () => '/bin/zsh' }));
     if (z.ok) expect(z.pathHint).toContain('~/.zprofile');
     const unknown = await installCommandLineTool(env({ loginPathValue: null }));
     expect(unknown).toMatchObject({ ok: true, onPath: null, pathHint: null });
     const m = cliInstallMessage(unknown);
     expect(m.detail).toMatch(/could not read your PATH/);
+  });
+
+  it('Ubuntu’s ~/.profile adds ~/.local/bin only once it exists: the folder is made first, and the result says it is on PATH after the next login, with no line to add', async () => {
+    // Review finding 25: the login PATH was read before ~/.local/bin was made, so the first install on a stock
+    // Ubuntu account said "not on your PATH" and asked for a duplicate export line.
+    const userDir = path.join(home, '.local', 'bin');
+    const ubuntuLogin = async () => (fs.existsSync(userDir) ? `${userDir}:/usr/bin:/bin` : '/usr/bin:/bin');
+    const r = await installCommandLineTool(env({ loginPath: ubuntuLogin, env: { PATH: '/usr/bin:/bin' } }));
+    expect(r).toMatchObject({ ok: true, link: userLink(), onPath: true, pathHint: null, loginNeeded: true });
+    const m = cliInstallMessage(r);
+    expect(m.type).toBe('info');
+    expect(m.detail).toMatch(/after you log in again/);
+    expect(m.detail).not.toMatch(/export PATH|not on your PATH/);
+    // Once this session's PATH has it (after that login), nothing more is said.
+    const later = await installCommandLineTool(env({ loginPath: ubuntuLogin, env: { PATH: `${userDir}:/usr/bin:/bin` } }));
+    expect(later).toMatchObject({ ok: true, upToDate: true, onPath: true, pathHint: null, loginNeeded: false });
+    expect(cliInstallMessage(later).detail).not.toMatch(/log in again/);
   });
 
   it('Linux never asks for an administrator: /usr/local/bin is used only to update a writable Blueline link there', async () => {
@@ -206,12 +224,14 @@ describe('Linux (and macOS with ~/.local/bin on PATH): ~/.local/bin', () => {
 describe('macOS decisions (platform injected, real files)', () => {
   const mac = (o: Parameters<typeof env>[0] = {}) => env({ platform: 'darwin', loginPathValue: '/usr/bin:/bin:/usr/sbin:/sbin', loginShell: () => '/bin/zsh', ...o });
 
-  it('~/.local/bin not on PATH and /usr/local/bin writable (Homebrew on Intel): links there, no prompt', async () => {
+  it('~/.local/bin not on PATH and /usr/local/bin writable (Homebrew on Intel): links there, no prompt, and leaves no empty ~/.local/bin (review finding 25 side effect)', async () => {
     const calls: string[] = [];
     const r = await installCommandLineTool(mac({ calls, loginPathValue: `/usr/bin:${sys}` }));
     expect(r).toMatchObject({ ok: true, link: path.join(sys, 'blueline'), admin: false, onPath: true });
     expect(calls).toEqual([]);
     expect(fs.readlinkSync(path.join(sys, 'blueline'))).toBe(target());
+    // The install went to the system folder, so ~/.local/bin is never created (it would be left empty).
+    expect(fs.existsSync(path.join(home, '.local', 'bin'))).toBe(false);
   });
 
   it('/usr/local/bin not writable: asks where; the system folder goes through the administrator prompt', async () => {

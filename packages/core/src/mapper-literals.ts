@@ -506,11 +506,15 @@ function templateShadows(node: AnyNode, kind: ShadowKind, out: FoundShadow[]): v
   }
 }
 
-/** acorn parse + walk of one script's raw text (9.2 Strategy 2 step 1). Null when either fails. */
+/**
+ * acorn parse + walk of one script's raw text (9.2 Strategy 2 step 1). Null when either fails. Offsets only
+ * (node.start/end; lines come from the LineIndex): acorn's line/column objects on every node cost a fifth of
+ * the parse and were never read (review finding 31).
+ */
 function scanJs(content: string, sourceType: 'script' | 'module'): Scanned | null {
   let ast: Program;
   try {
-    ast = acornParse(content, { ecmaVersion: 'latest', sourceType, locations: true });
+    ast = acornParse(content, { ecmaVersion: 'latest', sourceType });
   } catch {
     return null;
   }

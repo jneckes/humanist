@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Page size deck</title>
+<!--
+  A 1280x720 deck that shows one slide at a time, with only "@page { size: 1280px 720px; margin: 0 }" (the slide size), and no print layout (decision D-6).
+  Chromium's print of it is the screen layout, slide 1 alone, so it is not the deck as slide pages: Save as PDF
+  and Print render the slides instead, 4 pages in slide order (review finding 9).
+-->
+<style>
+  html, body { margin: 0; height: 100%; background: #111; overflow: hidden; }
+  .deck { position: relative; width: 1280px; height: 720px; }
+  .slide { position: absolute; inset: 0; width: 1280px; height: 720px; box-sizing: border-box; padding: 80px; color: #fff; font: 48px/1.3 sans-serif; display: none; }
+  .slide.active { display: block; }
+  h1 { font-size: 80px; margin: 0 0 24px; }
+  @page { size: 1280px 720px; margin: 0; }
+</style>
+</head>
+<body>
+<div class="deck">
+  <section class="slide active" style="background: #c83232"><h1>Alpha one</h1><p>First slide words.</p></section>
+  <section class="slide" style="background: #32c832"><h1>Beta two</h1><p>Second slide words.</p></section>
+  <section class="slide" style="background: #3232c8"><h1>Gamma three</h1><p>Third slide words.</p></section>
+  <section class="slide" style="background: #c8c832"><h1>Delta four</h1><p>Fourth slide words.</p></section>
+</div>
+<script>
+  (function () {
+    var slides = [].slice.call(document.querySelectorAll('.slide'));
+    var cur = 0;
+    function show(n) {
+      if (n < 0 || n >= slides.length) return;
+      slides[cur].classList.remove('active');
+      cur = n;
+      slides[cur].classList.add('active');
+    }
+    addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') show(cur + 1);
+      else if (e.key === 'ArrowLeft' || e.key === 'PageUp') show(cur - 1);
+    });
+  })();
+</script>
+</body>
+</html>

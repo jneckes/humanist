@@ -1,10 +1,13 @@
 // `blueline pdf deck.html [-o out.pdf]` (6.1; 6.9 Save as PDF "without opening a window"), the app side:
 // `--bl-cmd=pdf --bl-args=<base64url JSON PdfArgs> --bl-out=<result file>`, as `map` is run. Headless: no
-// window is shown; the document renders in hidden offscreen render windows under its own trust state (its
-// marker decides, or `--protected`), in its own partition with the protocol and session policy a document
-// window would install. The PDF goes to `out`, by default `<deck basename>.pdf` next to the deck, never over
-// the deck itself. The result (a PdfCommandResult) is written to --bl-out; exit 0 when every slide has its
-// page, 1 when some could not be shown or the run failed, 2 for usage and open errors, 128+n on a signal.
+// window is shown; the document renders in hidden offscreen render windows under its own trust state, decided
+// as the app decides an open (command-trust.ts: `--protected`, the trusted and untrusted folders, the marker;
+// never a remembered decision), in its own partition with the protocol and session policy a document window
+// would install (the user's strict option and CDN allowlist). A Protected document's PDF is marked as a
+// derived file (9.9; pdf.ts saveAsPdf). The PDF goes to `out`, by default `<deck basename>.pdf` next to the
+// deck, never over the deck itself. The result (a PdfCommandResult) is written to --bl-out; exit 0 when every
+// slide has its page, 1 when some could not be shown or the run failed, 2 for usage and open errors, 128+n on
+// a signal.
 //
 // In test builds (BLUELINE_TEST=1, not packaged) this module also exposes `globalThis.__blRenderTest`, a
 // main-process harness the E2E tests drive the render products through (index, thumbnails, Find, PDF, Print).
@@ -13,6 +16,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { app, session } from 'electron';
 import type { FindResponse, PdfArgs, PdfCommandResult, PdfResult, SlideIndex, ThumbReady } from '@blueline/core/ipc-render';
+import { commandTrust, type CommandTrust } from './command-trust';
 import { loadDocument, OpenError, type BlDocument } from './documents';
 import { findResponse, highlightMatch } from './find';
 import { DEFAULT_ALLOWLIST, pickClosedLoopbackPort } from './network-policy';
@@ -56,15 +60,19 @@ export function resultText(r: PdfResult): string {
   return t;
 }
 
-/** The document's partition set up as a document window sets it up: session policy (9.9) and protocol (9.1). */
-async function servePartition(doc: BlDocument): Promise<DeckSessionHandle> {
+/**
+ * The document's partition set up as a document window sets it up: session policy (9.9) and protocol (9.1).
+ * `settings` gives the strict option and the allowlist (the command's: the user's Settings › Trust); without it
+ * (the test harness) strict is off and the allowlist is the 9.9 default.
+ */
+async function servePartition(doc: BlDocument, settings?: Pick<CommandTrust, 'strict' | 'allowlist'>): Promise<DeckSessionHandle> {
   const ses = session.fromPartition(doc.partition);
   const blockPort = await pickClosedLoopbackPort();
   const policy = installDeckSessionPolicy(ses, {
     trust: () => doc.trust(),
     networkAllowed: () => doc.networkAllowed(),
-    strict: () => false,
-    allowlist: () => DEFAULT_ALLOWLIST,
+    strict: settings ? () => settings.strict() : () => false,
+    allowlist: settings ? () => settings.allowlist() : () => DEFAULT_ALLOWLIST,
     blockPort,
     sourcePath: () => doc.realpath,
   });
@@ -138,9 +146,10 @@ export async function runPdfCommand(p: PdfCommandInput, opts: { parent: number |
   let doc: BlDocument | null = null;
   let policy: DeckSessionHandle | null = null;
   try {
+    // The document's own trust state, as the app would open it (6.10), with the user's Trust settings.
+    const trust = commandTrust();
     try {
-      // The document's own trust state (6.10): its internet marker decides, or --protected.
-      doc = await loadDocument(args.file, { protectedRequested: args.protected === true });
+      doc = await loadDocument(args.file, { protectedRequested: args.protected === true, decideTrust: (rp, req) => trust.decideTrust(rp, req) });
     } catch (e) {
       return fail(2, 'usage', e instanceof OpenError ? e.message : `could not open ${path.basename(args.file)}`);
     }
@@ -148,9 +157,9 @@ export async function runPdfCommand(p: PdfCommandInput, opts: { parent: number |
     const out = args.out ?? defaultPdfPath(path.resolve(args.file));
     const refused = await refusePdfOut(out, { realpath: doc.realpath, path: doc.path });
     if (refused) return fail(2, 'usage', refused);
-    log(`${doc.fileName}: ${doc.trust()}, writing ${out}`);
+    log(`${doc.fileName}: ${trust.describe()}, writing ${out}`);
     try {
-      policy = await servePartition(doc);
+      policy = await servePartition(doc, trust);
     } catch (e) {
       return fail(1, 'failed', `Protected view could not block the network, so ${doc.fileName} was not rendered (${e instanceof Error ? e.message : String(e)})`);
     }

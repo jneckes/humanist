@@ -5,6 +5,7 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { FileKeyMap, fileKeys, windowKey } from '../../../packages/app/src/main/window-key';
+import { protectedRequestNotice } from '../../../packages/app/src/main/controller';
 
 let dir: string;
 const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
@@ -114,5 +115,25 @@ describe('fileKeys and FileKeyMap', () => {
       },
     );
     expect(m.values()).toEqual(files);
+  });
+});
+
+describe('Open in Protected View on a file that is already open (review finding 6; 6.1, 6.10)', () => {
+  it('a Trusted window: the request is not dropped without a word', () => {
+    expect(protectedRequestNotice('a.html', { trust: 'trusted', networkAllowed: false, editingAllowed: true })).toBe(
+      'a.html is already open in Trusted view. Close it to open it in Protected view.',
+    );
+  });
+
+  it('a Protected window with a switch on says which', () => {
+    expect(protectedRequestNotice('a.html', { trust: 'protected', networkAllowed: true, editingAllowed: false })).toBe(
+      'a.html is already open in Protected view with network on. Close it to open it with both off.',
+    );
+    expect(protectedRequestNotice('a.html', { trust: 'protected', networkAllowed: true, editingAllowed: true })).toContain('network and editing on');
+    expect(protectedRequestNotice('a.html', { trust: 'protected', networkAllowed: false, editingAllowed: true })).toContain('with editing on');
+  });
+
+  it('a Protected window with both off is what was asked for: no message', () => {
+    expect(protectedRequestNotice('a.html', { trust: 'protected', networkAllowed: false, editingAllowed: false })).toBeNull();
   });
 });

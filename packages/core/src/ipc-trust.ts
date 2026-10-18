@@ -150,7 +150,7 @@ export const PROTECTED_VIEW_HELP: ProtectedViewHelp = Object.freeze({
     'WebRTC uses only proxied connections, so no UDP packet leaves.',
     'Storage the document keeps (localStorage, IndexedDB) is cleared when its window closes.',
     'Downloads are blocked.',
-    'Editing is off until you press Enable editing. Allow network turns on the Trusted network policy for this file. Both are remembered for this file until it changes where it came from (a new download).',
+    'Editing is off until you press Enable editing. Allow network turns on the Trusted network policy for this file. Both are remembered for this file until another file takes its place, such as a new download saved over it. They stay on when a program writes new content into the same file instead of saving a new one. On Windows that includes a download or mail attachment written into the existing file, because Windows marks every copy the same way.',
   ]),
   alwaysHeading: 'In every document, Protected or not',
   always: Object.freeze([

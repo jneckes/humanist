@@ -1,8 +1,14 @@
-// First run (6.0 First run; 9.9 Telemetry). On first launch (config.json `seen.welcome` not set) a welcome
-// window offers three things: Open a file, Make Blueline your HTML app, and Try the sample deck, with a short
-// tour. It also asks for the user's name, used on their notes (6.8), and asks once whether to send crash
-// reports (9.9: "None by default. Crash reports are opt-in, asked once at first run"; v1 has no crash server,
-// so the answer is stored and nothing is sent). Nothing else is asked, and no account is created.
+// First run (6.0 First run; 9.9 Telemetry). On the first launch without a file (config.json `seen.welcome` not
+// set) a welcome window offers three things: Open a file, Make Blueline your HTML app, and Try the sample deck,
+// with a short tour. It also asks for the user's name, used on their notes (6.8), and asks once whether to send
+// crash reports (9.9: "None by default. Crash reports are opt-in, asked once at first run"; v1 has no crash
+// server, so the answer is stored and nothing is sent). Nothing else is asked, and no account is created.
+//
+// Later launches without a file (startupWindow; review findings 24 and 34): macOS shows nothing (the app stays
+// in the Dock and File › Open works from the menu bar); Windows and Linux, where the app has no other UI, show
+// the Open window: the same page in `open` mode (app://shell/welcome.html?mode=open), with Open a file, the
+// default app and the sample deck, and without the name, the crash-report question and the tour. Main refuses
+// the first-run answers from that window. Help › Welcome to Blueline always shows the whole welcome.
 //
 // The welcome window is a shell (9.1 Shell view): its own BrowserWindow (one at a time; showing it again
 // focuses it), sandboxed and context-isolated in the shared `shell` session, loading app://shell/welcome.html
@@ -40,9 +46,39 @@ import { installShellPolicy } from './trust-hooks';
 
 export const WELCOME_KEY = WELCOME_WINDOW_KEY;
 export const WELCOME_URL = `${SHELL_ORIGIN}/welcome.html`;
+/** The Open window: the welcome page without the first-run questions (welcome.ts reads the mode). */
+export const OPEN_URL = `${WELCOME_URL}?mode=open`;
 /** The sample deck's file name, in dist/assets/sample and in <userData>/sample. */
 export const SAMPLE_FILE = 'blueline-tour.html';
 const SHELL_PARTITION = 'shell';
+
+// ------------------------------------------------------------------------------------------- which window
+
+/** The first-run welcome, or the Open window (the welcome without the first-run questions). */
+export type WelcomeMode = 'welcome' | 'open';
+
+/**
+ * What a launch without a file shows (6.0 First run, as decided for Phase 1). The first-run welcome on the first
+ * launch (`seen.welcome` not set), on every platform. After that: nothing on macOS, where the app stays in the
+ * Dock and File › Open works from the menu bar; the Open window on Windows and Linux, where the app has no other
+ * UI. A click on the Dock icon with no window open (macOS `activate`) follows the same rule.
+ */
+export function startupWindow(o: { platform: NodeJS.Platform; welcomeSeen: boolean }): WelcomeMode | null {
+  if (!o.welcomeSeen) return 'welcome';
+  return o.platform === 'darwin' ? null : 'open';
+}
+
+/**
+ * The Blueline window a second launch without a file brings forward (6.1 Mechanics; review finding 26): a
+ * document window, else the welcome or Open window, else Settings, else any other (Diagnostics). Null when none
+ * is open: startupWindow decides then.
+ */
+export function secondLaunchFocus(open: { document: boolean; welcome: boolean; settings: boolean; other: boolean }): 'document' | 'welcome' | 'settings' | 'other' | null {
+  if (open.document) return 'document';
+  if (open.welcome) return 'welcome';
+  if (open.settings) return 'settings';
+  return open.other ? 'other' : null;
+}
 
 // ------------------------------------------------------------------------------------------- settings
 
@@ -176,8 +212,20 @@ export interface FirstRunDeps {
 export interface FirstRunController {
   /** First launch (`seen.welcome` not set): shows the welcome window. Returns whether it did. */
   maybeShow(): boolean;
-  /** Shows the welcome window, or focuses it (Help › Welcome to Blueline; macOS `activate` with no window). */
-  show(): BrowserWindow;
+  /**
+   * A launch without a file (startupWindow): the first-run welcome on the first launch, then the Open window on
+   * Windows and Linux and nothing on macOS. Returns what it showed.
+   */
+  showForLaunch(): WelcomeMode | null;
+  /**
+   * Shows the welcome window (Help › Welcome to Blueline), or the Open window, or focuses the one that is open.
+   * The open welcome serves for the Open window; an open Open window is replaced by the whole welcome.
+   */
+  show(mode?: WelcomeMode): BrowserWindow;
+  /** Brings the open welcome or Open window forward (restored, shown, focused); false when none is open. */
+  focus(): boolean;
+  /** The open window's mode, or null when none is open. */
+  mode(): WelcomeMode | null;
   close(): void;
   isOpen(): boolean;
   /** The open window's shell webContents id (tests), or null. */
@@ -205,6 +253,12 @@ export function installFirstRun(deps: FirstRunDeps): FirstRunController {
     // Only the welcome window's own shell: document shells, Settings and Diagnostics are refused.
     if (from.windowKey !== WELCOME_KEY || !current || current.wcId !== from.webContentsId) throw new Error('Refused');
     return current;
+  };
+  /** The first-run answers (the name, crash reports) come only from the first-run welcome, never the Open window. */
+  const welcomeOnly = (from: ShellSender): WelcomeWindow => {
+    const w = win(from);
+    if (w.mode !== 'welcome') throw new Error('Refused');
+    return w;
   };
 
   const state = (w: WelcomeWindow): WelcomeState => ({
@@ -248,7 +302,7 @@ export function installFirstRun(deps: FirstRunDeps): FirstRunController {
     return res;
   });
   r.handle(WelcomeToMain.openSample, validateNoArgs, async (from): Promise<WelcomeOpenResult> => {
-    win(from);
+    const w = win(from);
     let p: string;
     try {
       p = await ensureSampleCopy(deps.sampleSource, deps.userData);
@@ -262,10 +316,12 @@ export function installFirstRun(deps: FirstRunDeps): FirstRunController {
     // It opens in Read: the tour's first step is done by opening it.
     tour.modesSeen.add('read');
     push();
+    // The Open window has no tour to follow: like Open a file, it has done its job.
+    if (w.mode === 'open' && !w.win.isDestroyed()) w.win.close();
     return { ok: true };
   });
   r.handle(WelcomeToMain.setName, validateSetName, async (from, raw): Promise<NameResult> => {
-    win(from);
+    welcomeOnly(from);
     const name = cleanName(raw);
     if (name === null) return { ok: false, name: deps.settings.name(), reason: `A name is 1 to ${WELCOME_LIMITS.name} characters, on one line.` };
     if (name !== deps.settings.name()) {
@@ -280,7 +336,7 @@ export function installFirstRun(deps: FirstRunDeps): FirstRunController {
     return { ok: true, name };
   });
   r.handle(WelcomeToMain.setCrashReports, validateCrashReports, async (from, on) => {
-    win(from);
+    welcomeOnly(from);
     // 9.9 Telemetry: stored; v1 has no crash server, so nothing is sent whatever the answer.
     await deps.settings.setCrashReports(on);
     push();
@@ -292,20 +348,37 @@ export function installFirstRun(deps: FirstRunDeps): FirstRunController {
   const controller: FirstRunController = {
     maybeShow() {
       if (deps.settings.welcomeSeen()) return false;
-      controller.show();
+      controller.show('welcome');
       return true;
     },
-    show() {
-      if (current && !current.win.isDestroyed()) {
-        current.focus();
-        return current.win;
+    showForLaunch() {
+      const mode = startupWindow({ platform: deps.platform, welcomeSeen: deps.settings.welcomeSeen() });
+      if (mode) controller.show(mode);
+      return mode;
+    },
+    show(mode: WelcomeMode = 'welcome') {
+      const open = current && !current.win.isDestroyed() ? current : null;
+      // The welcome has everything the Open window has: it serves for either.
+      if (open && (open.mode === mode || open.mode === 'welcome')) {
+        open.focus();
+        return open.win;
       }
-      const w = new WelcomeWindow(deps, r, push, () => {
+      const w = new WelcomeWindow(deps, r, push, mode, () => {
         if (current === w) current = null;
       });
       current = w;
+      // Help › Welcome to Blueline over the Open window: the new window first, so the app never has none open
+      // (window-all-closed would quit it on Windows and Linux), then the Open window goes. Its channels already
+      // refuse it: it is no longer the current window.
+      if (open) open.win.close();
       return w.win;
     },
+    focus() {
+      if (!current || current.win.isDestroyed()) return false;
+      current.focus();
+      return true;
+    },
+    mode: () => (current && !current.win.isDestroyed() ? current.mode : null),
     close() {
       if (current && !current.win.isDestroyed()) current.win.close();
     },
@@ -320,7 +393,8 @@ export function installFirstRun(deps: FirstRunDeps): FirstRunController {
   };
   if (deps.test) {
     (globalThis as Record<string, unknown>).__blWelcome = {
-      show: () => controller.show().webContents.id,
+      show: (mode?: WelcomeMode) => controller.show(mode).webContents.id,
+      mode: () => controller.mode(),
       maybeShow: () => controller.maybeShow(),
       close: () => controller.close(),
       webContentsId: () => controller.webContentsId(),
@@ -342,17 +416,20 @@ class WelcomeWindow {
     private readonly deps: FirstRunDeps,
     router: ShellIpc,
     private readonly pushState: () => void,
+    readonly mode: WelcomeMode,
     onClosed: () => void,
   ) {
     const ses = session.fromPartition(SHELL_PARTITION);
     if (!ses.protocol.isProtocolHandled(SHELL_SCHEME)) installShellProtocol(ses, deps.shellDir);
+    const welcome = mode === 'welcome';
     this.win = new BrowserWindow({
-      width: 640,
-      height: 760,
-      minWidth: 520,
-      minHeight: 520,
+      // The Open window is small: three buttons, no questions.
+      width: welcome ? 640 : 560,
+      height: welcome ? 760 : 470,
+      minWidth: welcome ? 520 : 460,
+      minHeight: welcome ? 520 : 400,
       show: false,
-      title: 'Welcome to Blueline',
+      title: welcome ? 'Welcome to Blueline' : 'Blueline',
       backgroundColor: nativeTheme.shouldUseDarkColors ? '#1f2024' : '#f5f6f8',
       autoHideMenuBar: true,
       webPreferences: {
@@ -378,14 +455,15 @@ class WelcomeWindow {
     this.win.once('ready-to-show', () => {
       this.win.show();
       // Offered once (6.0 "On first launch"): recorded as soon as it is on screen, so a quit right away still
-      // counts. Its answers are saved as they are given.
-      void deps.settings.markWelcomeSeen().catch((e) => deps.log(`welcome: seen not saved: ${e instanceof Error ? e.message : String(e)}`));
+      // counts, and later launches show the Open window or nothing (startupWindow). Its answers are saved as they
+      // are given.
+      if (welcome) void deps.settings.markWelcomeSeen().catch((e) => deps.log(`welcome: seen not saved: ${e instanceof Error ? e.message : String(e)}`));
     });
     wc.on('did-finish-load', () => this.pushState());
     // Windows: the user chooses the default in Default Apps settings and comes back; look again.
     this.win.on('focus', () => void this.checkDefault(this.pushState));
     this.win.on('closed', onClosed);
-    void wc.loadURL(WELCOME_URL).catch((e) => deps.log(`welcome: the page failed to load: ${e instanceof Error ? e.message : String(e)}`));
+    void wc.loadURL(welcome ? WELCOME_URL : OPEN_URL).catch((e) => deps.log(`welcome: the page failed to load: ${e instanceof Error ? e.message : String(e)}`));
     void this.checkDefault(this.pushState);
   }
 

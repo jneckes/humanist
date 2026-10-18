@@ -14,14 +14,28 @@
 ; with --updated before the new installer: the registration is kept then, because deleting the ProgID would
 ; make Windows reset the user's choice of Blueline for .html.
 ;
+; A per-machine install over a per-user one also runs the per-user uninstaller with --updated
+; (installSection.nsh: uninstallOldVersion HKEY_CURRENT_USER), which deletes the per-user Blueline.exe but keeps
+; its registration. HKCU wins over HKLM in HKEY_CLASSES_ROOT, so that copy would shadow the new one with a
+; command naming the deleted exe, and nothing would ever remove it: a per-machine install therefore removes the
+; per-user copy itself, with the uninstaller's own lines, in the current user's hive (review finding 23). Only
+; the user who runs the installer is reached; another account's per-user copy stays with that account.
+;
+; electron-builder writes no association of its own on Windows: fileAssociations are macOS's only
+; (electron-builder.config.cjs), so its NSIS template never sets the extensions' default value (review finding
+; 22), and nothing here reads or clears it.
+;
 ; Macro names and variables are electron-builder 26's (app-builder-lib/templates/nsis): customInstall runs at
 ; the end of the install section (installSection.nsh), customUnInstall at the start of the uninstall section
 ; (uninstaller.nsh); $appExe is the installed executable; ${isUpdated} is set for an update's uninstall.
 ;
-; NOT RUN HERE: the dev container is Linux. test/unit/app/settings.test.ts checks statically that every key
-; and value written below is removed on uninstall. Check on Windows (per-user and per-machine): install,
+; NOT RUN ON WINDOWS: the dev container is Linux. test/unit/app/settings.test.ts and packaging.test.ts check
+; statically that uninstall removes exactly the keys and values written below, and that a per-machine install
+; removes the same set from the current user's hive. Check on Windows (per-user and per-machine): install,
 ; `reg query HKCU\Software\RegisteredApplications /v Blueline` (HKLM for per-machine), Settings › Apps ›
-; Default apps lists Blueline, choose it for .html, update over it (the choice stays), uninstall (the keys go).
+; Default apps lists Blueline, choose it for .html, update over it (the choice stays), install per machine over a
+; per-user install (the HKCU keys go), uninstall (the keys go). Under Wine 9 that sequence (per user, then per
+; machine, then uninstall) left no Blueline key in either hive, and .html's own default value untouched.
 
 !ifndef BLUELINE_PROGID
   ; The names are also in native-helper.ts (WINDOWS_PROG_ID, REGISTERED_APP_NAME): keep them equal.
@@ -40,7 +54,8 @@
   ; Both paths quoted: an install folder under Program Files has spaces.
   WriteRegStr SHELL_CONTEXT "Software\Classes\${BLUELINE_PROGID}\shell\open\command" "" '"$appExe" "%1"'
 
-  ; Open With lists the ProgID for each extension. The extensions' own default value is never touched.
+  ; Open With lists the ProgID for each extension. The extensions' own default value is never touched (6.1: an
+  ; app does not set the default; the user chooses it in Default Apps).
   WriteRegNone SHELL_CONTEXT "Software\Classes\.html\OpenWithProgids" "${BLUELINE_PROGID}"
   WriteRegNone SHELL_CONTEXT "Software\Classes\.htm\OpenWithProgids" "${BLUELINE_PROGID}"
 
@@ -51,6 +66,22 @@
   WriteRegStr SHELL_CONTEXT "${BLUELINE_CAPABILITIES_KEY}\FileAssociations" ".html" "${BLUELINE_PROGID}"
   WriteRegStr SHELL_CONTEXT "${BLUELINE_CAPABILITIES_KEY}\FileAssociations" ".htm" "${BLUELINE_PROGID}"
   WriteRegStr SHELL_CONTEXT "Software\RegisteredApplications" "${BLUELINE_REGISTERED_APP}" "${BLUELINE_CAPABILITIES_KEY}"
+
+  ; A per-machine install: the per-user copy goes (see the header). The same lines as customUnInstall, with
+  ; SHELL_CONTEXT set to the current user's hive, then back to the machine's for the rest of the install (as
+  ; electron-builder's own templates switch it).
+  ${if} $installMode == "all"
+    SetShellVarContext current
+    DeleteRegValue SHELL_CONTEXT "Software\RegisteredApplications" "${BLUELINE_REGISTERED_APP}"
+    DeleteRegKey SHELL_CONTEXT "${BLUELINE_CAPABILITIES_KEY}"
+    DeleteRegKey /ifempty SHELL_CONTEXT "${BLUELINE_VENDOR_KEY}"
+    DeleteRegValue SHELL_CONTEXT "Software\Classes\.html\OpenWithProgids" "${BLUELINE_PROGID}"
+    DeleteRegValue SHELL_CONTEXT "Software\Classes\.htm\OpenWithProgids" "${BLUELINE_PROGID}"
+    DeleteRegKey /ifempty SHELL_CONTEXT "Software\Classes\.html\OpenWithProgids"
+    DeleteRegKey /ifempty SHELL_CONTEXT "Software\Classes\.htm\OpenWithProgids"
+    DeleteRegKey SHELL_CONTEXT "Software\Classes\${BLUELINE_PROGID}"
+    SetShellVarContext all
+  ${endIf}
 
   ; SHCNE_ASSOCCHANGED, SHCNF_FLUSH: Explorer and Settings re-read the associations now.
   System::Call 'shell32::SHChangeNotify(i, i, i, i) v (0x08000000, 0x1000, 0, 0)'
@@ -68,18 +99,6 @@
     DeleteRegKey /ifempty SHELL_CONTEXT "Software\Classes\.htm\OpenWithProgids"
 
     DeleteRegKey SHELL_CONTEXT "Software\Classes\${BLUELINE_PROGID}"
-
-    ; electron-builder's own fileAssociations (electron-builder.config.cjs) set the extensions' default value to
-    ; its class "HTML Document" and delete that class on uninstall, leaving the default pointing at nothing.
-    ; Clear the default only while it is still that class.
-    ReadRegStr $0 SHELL_CONTEXT "Software\Classes\.html" ""
-    ${if} $0 == "HTML Document"
-      DeleteRegValue SHELL_CONTEXT "Software\Classes\.html" ""
-    ${endIf}
-    ReadRegStr $0 SHELL_CONTEXT "Software\Classes\.htm" ""
-    ${if} $0 == "HTML Document"
-      DeleteRegValue SHELL_CONTEXT "Software\Classes\.htm" ""
-    ${endIf}
 
     System::Call 'shell32::SHChangeNotify(i, i, i, i) v (0x08000000, 0x1000, 0, 0)'
   ${endIf}

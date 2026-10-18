@@ -1,0 +1,13 @@
+{
+  "deck": "generic-hash-writeonly.html",
+  "kind": "generic",
+  "slides": 6,
+  "navKind": "hash",
+  "titles": ["Garden plan", "Soil", "Seeds", "Water", "Pests", "Harvest"],
+  "expect": [
+    { "text": "Garden plan", "confidence": "exact", "strategy": "html-text", "why": "the engine writes #1 … #6 with history.replaceState, so 9.4 detects hash navigation, though it reads the hash only at load; the walk reaches every slide, and every heading is parsed text" },
+    { "text": "Mix compost with juniper bark.", "confidence": "exact", "strategy": "html-text", "why": "parsed text on slide 2" },
+    { "text": "Cut clover in the autumn.", "confidence": "exact", "strategy": "html-text", "why": "last slide, reached" },
+    { "text": "1 / 6", "confidence": "none", "strategy": null, "reason": "computed", "why": "the pager the engine writes: digits and number punctuation only (section 7)" }
+  ]
+}

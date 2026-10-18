@@ -63,8 +63,15 @@ interface Run {
 }
 
 function map(args: string[]): Run {
-  const r = spawnSync(process.execPath, [CLI, 'map', ...args], { encoding: 'utf8', env: { ...process.env, ...appEnv() }, timeout: 600_000, maxBuffer: 64 * 1024 * 1024 });
-  return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  // An empty app-data folder per run: the command reads config.json for Settings › Trust (command-trust.ts), and
+  // the runner's own Blueline settings must not change what is tested.
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), 'bl-map-walk-ud-'));
+  try {
+    const r = spawnSync(process.execPath, [CLI, 'map', ...args], { encoding: 'utf8', env: { ...process.env, ...appEnv(), BLUELINE_USER_DATA: userData }, timeout: 600_000, maxBuffer: 64 * 1024 * 1024 });
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  } finally {
+    fs.rmSync(userData, { recursive: true, force: true });
+  }
 }
 
 interface MapJson {

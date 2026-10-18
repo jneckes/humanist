@@ -7,18 +7,26 @@
 //   (a) Blueline's: the render service exactly as the render products use it (render-service rendererFor and
 //       slide-index visitSlides): the document opened by documents.ts loadDocument in its own trust state and
 //       partition, with the session policy and the blueline:// handler a document window installs (9.1, 9.9),
-//       the served stamped copy, the deck preload in render mode (no overlay: checked before every render),
-//       reduced motion (Josh's decision 1: background renders);
+//       the served stamped copy, the deck preload in render mode (no overlay: visitSlides checks once per walk,
+//       right after the load, and render mode creates no UI that could mount one later), reduced motion (Josh's
+//       decision 1: background renders);
 //   (b) the plain render of the original file (plain-view.ts): file://, no preload, no protocol, a partition of
-//       its own, the same viewport, scale, reduced motion, navigation and settle steps.
-// Both then get the freeze step (plain-view FREEZE_JS) and a stable-frame wait (two consecutive captures
-// identical, up to 3 s), and the bitmaps (nativeImage.toBitmap) are compared pixel by pixel (compare.ts): the
-// share that differs at all, and the share over the per-channel tolerance, which is the gate (0.5%).
+//       its own, the same viewport, scale, reduced motion, navigation and settle steps (6.7 step 3 and the
+//       scripted settle, slide-index settleScripted).
+// Every frame of both gets the same seeded Math.random before any page script (decision D-10: SEEDED_RANDOM_JS,
+// installSeededRandom); Date, performance.now and crypto are left alone. A third render, the control, is a
+// second plain render walked the same way: a slide whose control differs from the plain render is listed as
+// nondeterministic (compare.ts slideVerdict). Both renders then get the freeze step (plain-view FREEZE_JS) and a
+// stable-frame wait (two consecutive captures identical, up to 3 s), and the bitmaps (nativeImage.toBitmap) are
+// compared pixel by pixel (compare.ts): the share that differs at all, and the share over the per-channel
+// tolerance (2: rounding noise), which is the gate (0.5%). The visible-text signature and the scroll position
+// of both are recorded and listed per deck where they differ; they are not part of the verdict.
 //
 // PDF (SPEC 10 Phase 1: "the right page count, and each page within 1% of its slide render"): saveAsPdf (pdf.ts)
-// as Save as PDF runs it. Raster pages' images are read back from the PDF (pdf-pages.ts) and compared with the
-// slide renders of the same walk; printToPDF pages (print CSS, documents) are compared with the plain window's
-// printToPDF of the original with the same options, page count and (with pdftoppm) pixels.
+// as Save as PDF runs it, in whatever mode it picks. Raster pages' images are read back from the PDF
+// (pdf-pages.ts) and compared with Blueline's slide renders of the parity walk; printToPDF pages (print CSS,
+// documents) are compared with the plain window's printToPDF of the original with the same options, after the
+// same scripted settle: page count, every page's size, and (with pdftoppm) pixels (pdf-pages printedVerdict).
 //
 // Bench (scripts/first-paint.mjs): the main-process share of opening a document (read, hash, decode, map,
 // served copy, protocol response), timed with the app's own functions.
@@ -37,13 +45,13 @@ import { loadDocument, type BlDocument } from '../../../packages/app/src/main/do
 import { DEFAULT_ALLOWLIST, pickClosedLoopbackPort } from '../../../packages/app/src/main/network-policy';
 import { bgraToRgb, documentPageSize, saveAsPdf } from '../../../packages/app/src/main/pdf';
 import { deckUrl, handleDeckRequest, installDeckProtocol, registerPrivilegedSchemes } from '../../../packages/app/src/main/protocol';
-import { disposeRenderer, rendererFor, renderTargetFor, type RenderHost, type RenderView, type RenderTarget } from '../../../packages/app/src/main/render-service';
-import { INDEX_VIEWPORT, buildSlideIndex, designViewport, replayKeys, visitSlides } from '../../../packages/app/src/main/slide-index';
+import { RenderView, disposeRenderer, rendererFor, renderTargetFor, type RenderHost, type RenderTarget } from '../../../packages/app/src/main/render-service';
+import { INDEX_VIEWPORT, SCRIPTED_SETTLE, buildSlideIndex, designViewport, replayKeys, settleScripted, visitSlides } from '../../../packages/app/src/main/slide-index';
 import { installDeckSessionPolicy, type DeckSessionHandle } from '../../../packages/app/src/main/trust-hooks';
-import { HISTOGRAM_BINS, addHistograms, comparePixels, diffImage, median, sameBitmap, type PixelStats } from './compare';
+import { HISTOGRAM_BINS, addHistograms, comparePixels, deckTallies, diffImage, median, sameBitmap, slideVerdict, type PixelStats } from './compare';
 import { redactor } from './decks';
 import type { BenchJob, BenchResult, BenchRun, DeckParity, HarnessJob, ParityJob, ParityResult, PdfParity, SlideParity, SlideStats, TrustChoice } from './job';
-import { decodePageImage, findPdftoppm, pdfPages, rasterisePage, type PdfPages } from './pdf-pages';
+import { PAGE_SIZE_TOLERANCE_PT, decodePageImage, findPdftoppm, pdfPages, printedVerdict, rasterisePage, type PdfPages } from './pdf-pages';
 import { PlainView, SEEDED_RANDOM_JS, addInitScript, charsetOf, freezeAnimations, scrollYOf } from './plain-view';
 
 // ------------------------------------------------------------------------------------------- startup
@@ -148,13 +156,48 @@ async function stableShot(v: Pick<RenderView, 'capture'>, timeoutMs = 3000): Pro
   return { image: cap.image, bitmap: bmp, width: cap.width, height: cap.height, sizeOk: cap.sizeOk, stable: false, tries };
 }
 
-const seeded = new WeakSet<RenderView>();
+const seeded = new WeakSet<Electron.WebContents>();
 
-/** --seed-random: the seeded Math.random on a render view of the pool, once (it lasts across its loads). */
-async function seedView(view: RenderView): Promise<void> {
-  if (seeded.has(view)) return;
-  await addInitScript(view.wc, SEEDED_RANDOM_JS);
-  seeded.add(view);
+/**
+ * The seeded Math.random (plain-view SEEDED_RANDOM_JS) on every render view this run makes, however the render
+ * pool makes it: the index walk's and the PDF's views, the parity walk's, and one the pool replaced or reopened
+ * after its idle close (render-service ViewSlots). RenderView.load is wrapped, in this harness process only, to
+ * register the script through the view's own debugger before the view's first load; it lasts across later
+ * loads while the debugger stays attached, as reduced motion does. The app is unchanged: its own process never
+ * runs this, and in the harness the deck preload, the served copy and the session are as the app makes them.
+ */
+function installSeededRandom(): void {
+  const load = RenderView.prototype.load;
+  RenderView.prototype.load = async function seededLoad(this: RenderView, ...args: Parameters<RenderView['load']>): Promise<void> {
+    if (!seeded.has(this.wc)) {
+      await addInitScript(this.wc, SEEDED_RANDOM_JS);
+      seeded.add(this.wc);
+    }
+    return load.apply(this, args);
+  };
+}
+
+/** What the result says about randomness, the control and the checks (decision D-10; finding 39), in words. */
+function methodFacts(job: ParityJob, pdftoppm: boolean): Pick<ParityResult, 'determinism' | 'method'> {
+  const seededRandom = job.seedRandom !== false;
+  return {
+    determinism: {
+      seededRandom,
+      randomness: seededRandom
+        ? 'Math.random is a seeded mulberry32 (seed 0x2f6b1d35), the same in every frame of every render (Blueline\'s render views, the plain render, its control, the plain print), installed before any page script by Page.addScriptToEvaluateOnNewDocument through each window\'s own debugger; Date, performance.now and crypto.getRandomValues are left alone (no committed fixture needs them fixed)'
+        : 'DIAGNOSIS (--unseeded): Math.random is the page\'s own in every render; Date, performance.now and crypto.getRandomValues are left alone',
+      control:
+        'a second plain render of the same file per slide, navigated, settled, frozen and captured like the plain render; a slide whose control differs from the plain render at all is listed as nondeterministic and judged like any other slide (over the gate it fails, within it it passes, listed)',
+    },
+    method: {
+      overlay:
+        'checked once per walk, by visitSlides (slide-index.ts), right after the document loads and before the first slide: a render view that shows the overlay is refused; in render mode the deck preload creates no UI (preload/deck.ts), so nothing mounts the overlay after that check',
+      sameSlide:
+        'decks: the plain render reaches each slide by the means Blueline\'s walk used (Reveal.slide, the same keys, the hash) and confirms it with the render agent\'s 9.4 detection, and a slide it cannot reach fails; documents: both renders scroll the section\'s heading to the top, and nothing more is confirmed; for both, the visible-text signatures and the scroll positions of the two renders are recorded per slide and listed per deck where they differ (textDiffers, scrollDiffers), not part of the verdict',
+      tolerance: `a pixel counts as different when one channel differs by more than ${job.tolerance} of 255; a slide passes with at most ${job.gate * 100}% of its pixels so; the slides identical to the byte are counted beside it`,
+      pdf: `raster pages: page count against the slide count, each page's image against Blueline's render of its slide (at most ${job.pdfGate * 100}% of pixels over the tolerance); pages Chromium prints (print CSS, documents): page count and every page's size (within ${PAGE_SIZE_TOLERANCE_PT} pt) against Chromium's own print of the original file, and ${pdftoppm ? 'each page rasterised by pdftoppm and compared with the plain print\'s page' : 'no pixels (pdftoppm not available)'}`,
+    },
+  };
 }
 
 function slim(s: PixelStats): SlideStats {
@@ -222,6 +265,9 @@ async function makePdf(job: ParityJob, deckLabel: string, trust: TrustChoice, ta
     missed: r.missed,
     ms,
     pageCountOk: false,
+    sizes: { blueline: pages.sizes, plain: null },
+    sizesOk: null,
+    sizeMismatches: [],
     pageStats: [],
     compared: '',
     pass: false,
@@ -230,39 +276,60 @@ async function makePdf(job: ParityJob, deckLabel: string, trust: TrustChoice, ta
   return { result, pages, pageOf, bytes };
 }
 
+/** pdftoppm, unless the job turned it off (--no-pdftoppm: compare as a machine without poppler does). */
+function pdftoppmFor(job: ParityJob): string | null {
+  return job.pdftoppm === false ? null : findPdftoppm();
+}
+
 /**
- * printToPDF decks and documents: the plain window prints the original file with Blueline's options, and each
- * page of both PDFs is rasterised by pdftoppm at the same size (the page in CSS px at 2x) and compared.
+ * printToPDF decks and documents: the plain window prints the original file with Blueline's options, after the
+ * same scripted settle; the page counts and every page's size are compared, and with pdftoppm each page of both
+ * PDFs is rasterised at the same size (the page in CSS px at 2x) and compared (pdf-pages printedVerdict).
  */
 async function comparePrinted(job: ParityJob, deck: { label: string; file: string }, trust: TrustChoice, state: PdfState): Promise<void> {
   const r = state.result;
+  if (r.mode === 'raster') throw new Error('comparePrinted: a raster PDF');
+  const mode = r.mode;
   const plain = new PlainView(deck.file, { ...INDEX_VIEWPORT }, `parity-print-${Date.now()}-${Math.random().toString(16).slice(2)}`, '', replayKeys(null), log, {
-    seedRandom: job.seedRandom === true,
+    seedRandom: job.seedRandom !== false,
   });
   let plainFile: string;
+  let plainPdf: PdfPages;
   try {
-    // pdf.ts printedPdf: the deck loaded at 1600×900, settled, printed.
+    // pdf.ts printedPdf: the deck loaded at 1600×900, settled (6.7 step 3 and what scripts reveal, decision
+    // D-5: the full wait, as Blueline gives a print-CSS deck; never shorter than the adaptive wait it gives a
+    // document), printed.
     await plain.loadPlain();
-    const opts: Electron.PrintToPDFOptions = r.mode === 'document' ? { printBackground: true, pageSize: documentPageSize(null) } : { preferCSSPageSize: true, printBackground: true };
+    await settleScripted(plain.probe, null, log, SCRIPTED_SETTLE);
+    const opts: Electron.PrintToPDFOptions = mode === 'document' ? { printBackground: true, pageSize: documentPageSize(null) } : { preferCSSPageSize: true, printBackground: true };
     const bytes = await plain.printToPDF(opts);
     plainFile = path.join(job.workDir, 'pdf', `${safeName(deck.label)}-${trust}-plain.pdf`);
     fs.writeFileSync(plainFile, bytes);
-    r.plainPages = (await pdfPages(bytes)).pageCount;
+    plainPdf = await pdfPages(bytes);
   } finally {
     plain.close();
   }
-  if (r.mode === 'document') r.expectedPages = r.plainPages;
-  r.pageCountOk = r.pages === r.expectedPages && r.pages === r.plainPages;
-  if (!findPdftoppm()) {
-    r.compared = 'page count and page sizes only: pdftoppm is not installed, so printed pages were not rasterised';
-    r.pass = r.pageCountOk;
+  r.plainPages = plainPdf.pageCount;
+  r.sizes.plain = plainPdf.sizes;
+  if (mode === 'document') r.expectedPages = r.plainPages;
+  const judge = (pageStats: PdfParity['pageStats'] | null) => {
+    const v = printedVerdict({ mode, pages: r.pages, expectedPages: r.expectedPages, plainPages: plainPdf.pageCount, sizes: { blueline: state.pages.sizes, plain: plainPdf.sizes }, pageStats });
+    r.pageCountOk = v.pageCountOk;
+    r.sizesOk = v.sizesOk;
+    r.sizeMismatches = v.sizeMismatches;
+    r.compared = v.compared;
+    r.pass = v.pass;
+    for (const m of v.sizeMismatches) log(`${deck.label}: PDF page ${m.page + 1} is ${m.blueline.w} × ${m.blueline.h} pt, the plain print's ${m.plain.w} × ${m.plain.h} pt`);
+  };
+  if (!pdftoppmFor(job)) {
+    judge(null);
     return;
   }
   const blFile = path.join(job.workDir, state.result.file);
   const tmp = path.join(job.workDir, 'tmp');
   fs.mkdirSync(tmp, { recursive: true });
   let saved = 0;
-  for (let k = 0; k < Math.min(r.pages, r.plainPages ?? 0); k++) {
+  for (let k = 0; k < Math.min(r.pages, r.plainPages); k++) {
     const size = state.pages.sizes[k];
     // A page of w pt is w / 0.75 CSS px; at 2x, w × 8/3 device pixels.
     const w = Math.max(1, Math.round((size.w * 8) / 3));
@@ -277,13 +344,34 @@ async function comparePrinted(job: ParityJob, deck: { label: string; file: strin
       writeDiff(path.join(job.workDir, 'diff', safeName(deck.label), `${trust}-pdf-page-${k + 1}-diff.png`), a.rgb, b.rgb, w, h, 3, job.tolerance);
     }
   }
-  r.compared = `page count against ${r.mode === 'document' ? 'the plain print of the original' : 'the slide count and the plain print of the original'}; every page rasterised by pdftoppm at 2x and compared with the plain print's page`;
-  r.pass = r.pageCountOk && r.pageStats.length === r.pages && r.pageStats.every((p) => p.pass);
+  judge(r.pageStats);
 }
 
 // ------------------------------------------------------------------------------------------- one deck
 
 let plainSeq = 0;
+
+function emptyTallies(): Pick<DeckParity, 'compared' | 'identical' | 'nondeterministic' | 'textDiffers' | 'scrollDiffers'> {
+  return { compared: 0, identical: 0, nondeterministic: [], textDiffers: [], scrollDiffers: [] };
+}
+
+/**
+ * Brings a plain window (the plain render, or its control) to slide `i` and settles it as visitSlides settled
+ * Blueline's render before handing it the slide: 6.7 step 3, what the slide's scripts reveal (the full scripted
+ * settle, never shorter than Blueline's adaptive one), step 3 again, running animations paused. Then the dwell:
+ * it stays on the slide at least `dwellMs` from its arrival before anything is frozen or captured. Blueline's
+ * render arrived first (the plain render is navigated once it has), so without the dwell a reveal timed by
+ * script (setTimeout, a typewriter) would be further along in Blueline's capture than in the plain one.
+ */
+async function plainAt(pv: PlainView, i: number, index: SlideIndex, dwellMs: number): Promise<{ ok: boolean; how: string; arrived: number }> {
+  const nav = await pv.goTo(i, index);
+  const arrived = Date.now();
+  await settleScripted(pv.probe, null, (m) => log(`plain ${m}`), SCRIPTED_SETTLE);
+  await pv.probe.pauseAnimations();
+  // (A timer may fire a millisecond early on the wall clock: loop until the dwell has really passed.)
+  while (Date.now() < arrived + dwellMs) await sleep(arrived + dwellMs - Date.now());
+  return { ...nav, arrived };
+}
 
 async function parityDeck(job: ParityJob, deck: ParityJob['decks'][number], trustAsked: TrustChoice, host: RenderHost, probeSrc: string, total: number[]): Promise<DeckParity> {
   const t0 = Date.now();
@@ -299,7 +387,7 @@ async function parityDeck(job: ParityJob, deck: ParityJob['decks'][number], trus
     indexMs: 0,
     charset: { blueline: '', plain: '' },
     missed: [],
-    compared: 0,
+    ...emptyTallies(),
     failures: 0,
     worstOver: 0,
     worstExact: 0,
@@ -317,8 +405,6 @@ async function parityDeck(job: ParityJob, deck: ParityJob['decks'][number], trus
   try {
     policy = await servePartition(doc);
     const target = renderTargetFor(doc, { deckNav: deck.deckNav ?? null });
-    // --seed-random: the pool's 1600×900 view (the index walk, printed PDFs) gets the seeded Math.random first.
-    if (job.seedRandom) await rendererFor(target, host).use(INDEX_VIEWPORT, seedView);
     const ti = Date.now();
     const index = await buildSlideIndex(target, { host, force: true });
     res.indexMs = Date.now() - ti;
@@ -329,8 +415,6 @@ async function parityDeck(job: ParityJob, deck: ParityJob['decks'][number], trus
     res.indexComplete = index.complete;
     log(`${deck.label} (${res.trust}): ${index.kind}, ${index.slides.length} slides, design ${index.designSize.w}×${index.designSize.h}, index ${res.indexMs} ms`);
 
-    // ... and the design-size view (raster PDF pages, the parity walk).
-    if (job.seedRandom) await rendererFor(target, host).use(designViewport(index), seedView);
     let pdf: PdfState | null = null;
     if (job.pdf) {
       try {
@@ -346,51 +430,52 @@ async function parityDeck(job: ParityJob, deck: ParityJob['decks'][number], trus
 
     const vp = designViewport(index);
     const keys = replayKeys(target.deckNav);
-    plain = new PlainView(deck.file, vp, `parity-plain-${process.pid}-${++plainSeq}`, probeSrc, keys, log, {
-      seedRandom: job.seedRandom === true,
-    });
+    const seedRandom = job.seedRandom !== false;
+    plain = new PlainView(deck.file, vp, `parity-plain-${process.pid}-${++plainSeq}`, probeSrc, keys, log, { seedRandom });
     await plain.load();
     res.charset.plain = await charsetOf(plain.wc);
-    // --self-check: a second plain render, walked the same way, for the deck's own variance between loads.
-    if (job.selfCheck) {
-      plain2 = new PlainView(deck.file, vp, `parity-plain-${process.pid}-${++plainSeq}`, probeSrc, keys, log, { seedRandom: job.seedRandom === true });
-      await plain2.load();
-    }
+    // The control (decision D-10): a second plain render, walked the same way, for the deck's own variance
+    // between two loads with the same seeded Math.random.
+    plain2 = new PlainView(deck.file, vp, `parity-plain-${process.pid}-${++plainSeq}`, probeSrc, keys, log, { seedRandom });
+    await plain2.load();
     const pv2 = plain2;
     const pv = plain;
     let saved = 0;
+    let controlSaved = 0;
     let pdfSaved = 0;
     const screenStats: { page: number; stats: SlideStats }[] = [];
     const tmp = path.join(job.workDir, 'tmp');
     fs.mkdirSync(tmp, { recursive: true });
-    const walk = await rendererFor(target, host).use(vp, async (view) => {
-      // The view may be new (an idle view is closed after 20 s): seeded again before visitSlides loads it.
-      if (job.seedRandom) await seedView(view);
-      return visitSlides(
+    const walk = await rendererFor(target, host).use(vp, async (view) =>
+      visitSlides(
         view,
         target,
         index,
         async (i) => {
-          const r: SlideParity = { slide: i, plainNav: '', sameText: false, dwell: { blueline: 0, plain: 0 }, stable: { blueline: false, plain: false }, frozen: { blueline: 0, plain: 0 }, scrollY: { blueline: 0, plain: 0 }, stats: null, pass: false, notes: [] };
+          const r: SlideParity = {
+            slide: i,
+            plainNav: '',
+            sameText: false,
+            dwell: { blueline: 0, plain: 0 },
+            stable: { blueline: false, plain: false },
+            frozen: { blueline: 0, plain: 0 },
+            scrollY: { blueline: 0, plain: 0 },
+            stats: null,
+            pass: false,
+            control: null,
+            nondeterministic: false,
+            notes: [],
+          };
           res.results.push(r);
           if (!res.charset.blueline) res.charset.blueline = await charsetOf(view.wc);
           // Blueline's render arrived and settled when visitSlides called here; the plain render arrives below.
+          // Blueline's dwell is the longer of the two by the plain render's navigation time.
           const arrivedB = Date.now();
           try {
-            const nav = await pv.goTo(i, index);
+            const nav = await plainAt(pv, i, index, job.dwellMs);
             r.plainNav = nav.how;
             if (!nav.ok) r.notes.push('the plain render could not be brought to this slide');
-            // 6.7 step 3 for the plain render, as visitSlides did for Blueline's before calling here.
-            await pv.probe.waitStable();
-            await pv.probe.pauseAnimations();
-            // The dwell: both renders stay on the slide at least job.dwellMs before the freeze and the capture.
-            // Blueline's arrived first (the plain render is navigated from here), so without it a reveal timed
-            // by script (setTimeout, a typewriter) would be further along in Blueline's capture than in the
-            // plain one. Blueline's dwell is the longer of the two by the plain render's navigation time.
-            const arrivedP = Date.now();
-            // (A timer may fire a millisecond early on the wall clock: loop until the dwell has really passed.)
-            while (Date.now() < arrivedP + job.dwellMs) await sleep(arrivedP + job.dwellMs - Date.now());
-            r.dwell = { blueline: Date.now() - arrivedB, plain: Date.now() - arrivedP };
+            r.dwell = { blueline: Date.now() - arrivedB, plain: Date.now() - nav.arrived };
             try {
               r.frozen.blueline = await freezeAnimations(view.wc);
               r.frozen.plain = await freezeAnimations(pv.wc);
@@ -406,29 +491,41 @@ async function parityDeck(job: ParityJob, deck: ParityJob['decks'][number], trus
                 const s = comparePixels(a.bitmap, b.bitmap, a.width, a.height, { channels: 4, tolerance: job.tolerance });
                 r.stats = slim(s);
                 addHistograms(total, s.histogram);
-                r.pass = nav.ok && s.overShare <= job.gate;
-                if ((!r.pass && saved < job.maxSaved) || job.saveAll) {
-                  if (!r.pass) saved++;
-                  const base = path.join('diff', safeName(deck.label), `${res.trust}-slide-${String(i + 1).padStart(2, '0')}`);
-                  writeDiff(path.join(job.workDir, `${base}-diff.png`), a.bitmap, b.bitmap, a.width, a.height, 4, job.tolerance);
-                  writePng(path.join(job.workDir, `${base}-blueline.png`), a.image);
-                  writePng(path.join(job.workDir, `${base}-plain.png`), b.image);
-                  r.saved = { diff: `${base}-diff.png`, blueline: `${base}-blueline.png`, plain: `${base}-plain.png` };
-                }
               }
-              if (pv2) {
-                const n2 = await pv2.goTo(i, index);
-                await pv2.probe.waitStable();
-                await pv2.probe.pauseAnimations();
-                const arrived2 = Date.now();
-                while (Date.now() < arrived2 + job.dwellMs) await sleep(arrived2 + job.dwellMs - Date.now());
+              // The control: the second plain render brought to the same slide the same way, against the first.
+              const base = path.join('diff', safeName(deck.label), `${res.trust}-slide-${String(i + 1).padStart(2, '0')}`);
+              try {
+                const n2 = await plainAt(pv2, i, index, job.dwellMs);
                 try {
                   await freezeAnimations(pv2.wc);
                   const c = await stableShot(pv2.probe);
-                  r.self = n2.ok && c.width === b.width && c.height === b.height ? slim(comparePixels(b.bitmap, c.bitmap, b.width, b.height, { channels: 4, tolerance: job.tolerance })) : null;
+                  if (!n2.ok) r.notes.push(`the control render could not be brought to this slide (${n2.how})`);
+                  else if (!c.sizeOk || c.width !== b.width || c.height !== b.height) r.notes.push(`control capture is ${c.width}×${c.height}, the plain one ${b.width}×${b.height}`);
+                  else {
+                    r.control = slim(comparePixels(b.bitmap, c.bitmap, b.width, b.height, { channels: 4, tolerance: job.tolerance }));
+                    // What differed between two plain loads, for the diagnosis (the plain render is saved below).
+                    if (r.control.exact > 0 && (controlSaved < job.maxSaved || job.saveAll)) {
+                      controlSaved++;
+                      writeDiff(path.join(job.workDir, `${base}-control-diff.png`), b.bitmap, c.bitmap, b.width, b.height, 4, job.tolerance);
+                      writePng(path.join(job.workDir, `${base}-control.png`), c.image);
+                      r.savedControl = { diff: `${base}-control-diff.png`, control: `${base}-control.png` };
+                    }
+                  }
                 } finally {
                   await pv2.probe.resumeAnimations();
                 }
+              } catch (e) {
+                r.notes.push(`control: ${e instanceof Error ? e.message : String(e)}`);
+              }
+              const verdict = slideVerdict({ navOk: nav.ok, stats: r.stats, control: r.control }, job.gate);
+              r.pass = verdict.pass;
+              r.nondeterministic = verdict.nondeterministic;
+              if (r.stats && ((!r.pass && saved < job.maxSaved) || job.saveAll || r.savedControl)) {
+                if (!r.pass) saved++;
+                writeDiff(path.join(job.workDir, `${base}-diff.png`), a.bitmap, b.bitmap, a.width, a.height, 4, job.tolerance);
+                writePng(path.join(job.workDir, `${base}-blueline.png`), a.image);
+                writePng(path.join(job.workDir, `${base}-plain.png`), b.image);
+                r.saved = { diff: `${base}-diff.png`, blueline: `${base}-blueline.png`, plain: `${base}-plain.png` };
               }
               // The PDF page of this slide, against both renders.
               const page = pdf?.pageOf.get(i);
@@ -450,7 +547,7 @@ async function parityDeck(job: ParityJob, deck: ParityJob['decks'][number], trus
                       pdfSaved++;
                       writeDiff(path.join(job.workDir, 'diff', safeName(deck.label), `${res.trust}-pdf-page-${page + 1}-diff.png`), rgb, ra, a.width, a.height, 3, job.tolerance);
                     }
-                  } else if (pdf.result.mode === 'print-css' && findPdftoppm()) {
+                  } else if (pdf.result.mode === 'print-css' && pdftoppmFor(job)) {
                     // Information only: the printed page against the slide's screen render.
                     const pr = await rasterisePage(path.join(job.workDir, pdf.result.file), page + 1, a.width, a.height, tmp);
                     screenStats.push({ page, stats: slim(comparePixels(pr.rgb, bgraToRgb(a.bitmap, a.width * a.height), a.width, a.height, { channels: 3, tolerance: job.tolerance })) });
@@ -469,15 +566,21 @@ async function parityDeck(job: ParityJob, deck: ParityJob['decks'][number], trus
             r.notes.push(`error: ${e instanceof Error ? e.message : String(e)}`);
           }
           const s = r.stats;
-          log(`${deck.label} slide ${i + 1}/${index.slides.length}: ${s ? `${(s.overShare * 100).toFixed(3)}% over tol, ${(s.exactShare * 100).toFixed(3)}% exact-diff, max Δ ${s.maxDelta}` : 'not compared'}${r.plainNav ? ` [${r.plainNav}]` : ''}${r.sameText ? '' : ' (text differs)'}${r.self ? ` self ${(r.self.overShare * 100).toFixed(3)}%` : ''}${r.pdf ? ` pdf ${'error' in r.pdf ? r.pdf.error : `${(r.pdf.vsBlueline.overShare * 100).toFixed(3)}%`}` : ''}`);
+          const c = r.control;
+          log(
+            `${deck.label} slide ${i + 1}/${index.slides.length}: ${s ? `${(s.overShare * 100).toFixed(3)}% over tol, ${(s.exactShare * 100).toFixed(3)}% exact-diff, max Δ ${s.maxDelta}` : 'not compared'}` +
+              `${r.plainNav ? ` [${r.plainNav}]` : ''}${r.sameText ? '' : ' (text differs)'}${r.scrollY.blueline !== r.scrollY.plain ? ` (scroll ${r.scrollY.blueline} and ${r.scrollY.plain})` : ''}` +
+              `${c ? ` control ${(c.exactShare * 100).toFixed(3)}% exact-diff${r.nondeterministic ? ' NONDETERMINISTIC' : ''}` : ' control not compared'}` +
+              `${r.pdf ? ` pdf ${'error' in r.pdf ? r.pdf.error : `${(r.pdf.vsBlueline.overShare * 100).toFixed(3)}%`}` : ''}${r.pass ? '' : ' FAIL'}`,
+          );
         },
         { log },
-      );
-    });
+      ),
+    );
     res.missed = walk.missed;
     if (pdf) {
       if (pdf.result.mode === 'raster') {
-        pdf.result.compared = "page count against the slide count; each page's image XObject decoded from the PDF and compared with Blueline's render of its slide (and, for information, the plain render)";
+        pdf.result.compared = "page count against the slide count; each page's image XObject decoded from the PDF and compared with Blueline's render of its slide in the parity walk (the gate) and, for information, with the plain render";
         pdf.result.pageStats.sort((x, y) => x.page - y.page);
         pdf.result.pass = pdf.result.pageCountOk && pdf.result.pageStats.length === pdf.result.pages && pdf.result.pageStats.every((p) => p.pass);
       } else if (screenStats.length) pdf.result.screenStats = screenStats;
@@ -494,7 +597,7 @@ async function parityDeck(job: ParityJob, deck: ParityJob['decks'][number], trus
     doc.release();
   }
   res.results.sort((a, b) => a.slide - b.slide);
-  res.compared = res.results.filter((r) => r.stats).length;
+  Object.assign(res, deckTallies(res.results));
   res.failures = res.results.filter((r) => !r.pass).length + res.missed.length;
   for (const r of res.results) {
     if (!r.stats) continue;
@@ -507,6 +610,13 @@ async function parityDeck(job: ParityJob, deck: ParityJob['decks'][number], trus
   res.pass = res.errors.length === 0 && res.slides > 0 && res.missed.length === 0 && res.compared === res.slides && res.results.every((r) => r.pass);
   res.ms = Date.now() - t0;
   if (res.charset.blueline && res.charset.plain && res.charset.blueline !== res.charset.plain) log(`${deck.label}: decoded as ${res.charset.blueline} by Blueline, ${res.charset.plain} by the plain render`);
+  const list = (xs: number[]) => xs.map((x) => x + 1).join(', ');
+  log(
+    `${deck.label} (${res.trust}): ${res.pass ? 'pass' : 'FAIL'}; ${res.identical} of ${res.compared} slides identical to the byte` +
+      `${res.nondeterministic.length ? `; nondeterministic (control differs): slides ${list(res.nondeterministic)}` : ''}` +
+      `${res.textDiffers.length ? `; visible text differs (recorded): slides ${list(res.textDiffers)}` : ''}` +
+      `${res.scrollDiffers.length ? `; scroll position differs (recorded): slides ${list(res.scrollDiffers)}` : ''}`,
+  );
   return res;
 }
 
@@ -522,6 +632,8 @@ async function withDeckTimeout<T>(p: Promise<T>, ms: number, what: string): Prom
 async function runParity(job: ParityJob): Promise<number> {
   const probeSrc = fs.readFileSync(job.probeFile, 'utf8');
   const host: RenderHost = { preload: job.preload, userData: app.getPath('userData'), log, devTools: false };
+  if (job.seedRandom !== false) installSeededRandom();
+  const pdftoppm = pdftoppmFor(job) !== null;
   const result: ParityResult = {
     kind: 'parity',
     started: new Date().toISOString(),
@@ -540,12 +652,16 @@ async function runParity(job: ParityJob): Promise<number> {
     gate: job.gate,
     pdfGate: job.pdfGate,
     dwellMs: job.dwellMs,
-    pdftoppm: findPdftoppm() !== null,
-    diagnosis: { seedRandom: job.seedRandom === true, selfCheck: job.selfCheck === true },
+    pdftoppm,
+    ...methodFacts(job, pdftoppm),
+    diagnosis: { unseeded: job.seedRandom === false, noPdftoppm: job.pdftoppm === false },
     decks: [],
     histogram: new Array<number>(HISTOGRAM_BINS.length).fill(0),
   };
   const save = () => fs.writeFileSync(job.out, JSON.stringify(result, null, 1) + '\n');
+  log(`randomness: ${result.determinism.randomness}`);
+  log(`control: ${result.determinism.control}`);
+  log(`overlay: ${result.method.overlay}`);
   for (const deck of job.decks) {
     for (const trust of job.trust) {
       try {
@@ -565,7 +681,7 @@ async function runParity(job: ParityJob): Promise<number> {
           indexMs: 0,
           charset: { blueline: '', plain: '' },
           missed: [],
-          compared: 0,
+          ...emptyTallies(),
           failures: 0,
           worstOver: 0,
           worstExact: 0,

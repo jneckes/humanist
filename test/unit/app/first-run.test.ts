@@ -109,6 +109,7 @@ import { MainToWelcome, WelcomeToMain, tourSteps, type WelcomeState } from '../.
 import type { DefaultAppResult, DefaultAppStatus } from '../../../packages/core/src/ipc-trust';
 import { sanitizeConfig } from '../../../packages/app/src/main/config';
 import {
+  OPEN_URL,
   SAMPLE_FILE,
   WELCOME_KEY,
   WELCOME_URL,
@@ -427,5 +428,70 @@ describe('the welcome window: only its own shell is answered', () => {
     expect(controller.isOpen()).toBe(true);
     await call(WelcomeToMain.close, eventFrom((w2 as unknown as Win).webContents));
     expect(controller.isOpen()).toBe(false);
+  });
+
+  // Later launches without a file (startupWindow; review findings 24 and 34).
+  it('a later launch: nothing on macOS (this controller is darwin’s); the first-run welcome only while seen.welcome is unset', () => {
+    expect(store.seen).toBe(true);
+    expect(controller.showForLaunch()).toBeNull();
+    expect(controller.isOpen()).toBe(false);
+    store.seen = false;
+    try {
+      expect(controller.showForLaunch()).toBe('welcome');
+      expect(controller.mode()).toBe('welcome');
+    } finally {
+      controller.close();
+      store.seen = true;
+    }
+  });
+
+  it('the Open window: the page in open mode, small, never marks seen.welcome, and refuses the first-run answers', async () => {
+    const before = store.writes.length;
+    const win = controller.show('open') as unknown as Win;
+    expect(controller.mode()).toBe('open');
+    expect(win.webContents.urls).toEqual([OPEN_URL]);
+    expect(OPEN_URL).toBe('app://shell/welcome.html?mode=open');
+    expect(win.options).toMatchObject({ title: 'Blueline', width: 560 });
+    win.emit('ready-to-show');
+    await new Promise((r) => setTimeout(r, 0));
+    expect(win.shown).toBe(1);
+    expect(store.writes.length).toBe(before);
+    // What the page shows is answered: its state, the default app.
+    expect(((await call(WelcomeToMain.getState, eventFrom(win.webContents))) as WelcomeState).platform).toBe('darwin');
+    // The first-run answers are refused from it, whatever its page sends.
+    await expect(call(WelcomeToMain.setName, eventFrom(win.webContents), 'Mallory')).rejects.toThrow('Refused');
+    await expect(call(WelcomeToMain.setCrashReports, eventFrom(win.webContents), true)).rejects.toThrow('Refused');
+    expect(store.name).toBe('Josh');
+    expect(store.crash).toBe(false);
+    // Showing the Open window again focuses it.
+    expect(controller.show('open')).toBe(win as unknown as ReturnType<typeof controller.show>);
+    expect(controller.focus()).toBe(true);
+    expect(win.focused).toBe(2);
+  });
+
+  it('the Open window closes once the sample deck is open (it has no tour)', async () => {
+    const win = fake.windows.find((x) => (x as Win).webContents.id === controller.webContentsId()) as Win;
+    expect(controller.mode()).toBe('open');
+    expect(await call(WelcomeToMain.openSample, eventFrom(win.webContents))).toEqual({ ok: true });
+    expect(win.destroyed).toBe(true);
+    expect(controller.isOpen()).toBe(false);
+    expect(controller.focus()).toBe(false);
+  });
+
+  it('Help › Welcome to Blueline over the Open window: the whole welcome replaces it, made before the Open window closes', () => {
+    const open = controller.show('open') as unknown as Win;
+    let welcomeExisted = false;
+    open.on('closed', () => {
+      welcomeExisted = fake.windows.some((x) => x !== open && !(x as Win).destroyed && (x as Win).webContents.urls[0] === 'app://shell/welcome.html');
+    });
+    const welcome = controller.show('welcome') as unknown as Win;
+    expect(welcome).not.toBe(open);
+    expect(open.destroyed).toBe(true);
+    expect(welcomeExisted).toBe(true);
+    expect(controller.mode()).toBe('welcome');
+    expect(controller.webContentsId()).toBe(welcome.webContents.id);
+    // The welcome serves for the Open window: asking for the Open window focuses it.
+    expect(controller.show('open')).toBe(welcome as unknown as ReturnType<typeof controller.show>);
+    controller.close();
   });
 });

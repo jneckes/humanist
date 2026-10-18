@@ -10,10 +10,12 @@
 <script src="welcome.js" defer></script>
 </head>
 <body>
+<!-- Two modes (welcome.ts reads ?mode=open): the first-run welcome, and the Open window later launches show on
+     Windows and Linux. The first run's parts (data-first-run) stay hidden unless this is the welcome. -->
 <main class="content">
   <header class="intro">
-    <h1>Welcome to Blueline</h1>
-    <p class="lede">Read, review and edit HTML decks and documents. Drop an .html file anywhere on this window to open it.</p>
+    <h1 id="title">Welcome to Blueline</h1>
+    <p id="lede" class="lede">Read, review and edit HTML decks and documents. Drop an .html file anywhere on this window to open it.</p>
   </header>
 
   <section aria-labelledby="start-title">
@@ -41,7 +43,7 @@
     <ol id="tour-steps" class="steps"></ol>
   </section>
 
-  <section aria-labelledby="name-title">
+  <section aria-labelledby="name-title" data-first-run hidden>
     <h2 id="name-title" class="heading">Your name</h2>
     <p class="note">Shown on the notes you make, so the people you send them to know they are yours.</p>
     <form id="name-form" class="row" autocomplete="off">
@@ -52,7 +54,7 @@
     <p id="name-result" class="result" role="status" aria-live="polite"></p>
   </section>
 
-  <section aria-labelledby="crash-title">
+  <section aria-labelledby="crash-title" data-first-run hidden>
     <h2 id="crash-title" class="heading">Crash reports</h2>
     <p class="note">Blueline sends nothing unless you say so. Choose whether it may send a report when it crashes. This version has no report server yet, so nothing is sent either way.</p>
     <div class="choices" role="radiogroup" aria-labelledby="crash-title">
@@ -61,7 +63,7 @@
     </div>
   </section>
 
-  <footer class="footer">
+  <footer class="footer" data-first-run hidden>
     <p class="note">Nothing else is asked, and no account is created.</p>
     <button id="done" class="primary" type="button">Done</button>
   </footer>
