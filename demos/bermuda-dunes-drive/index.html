@@ -146,6 +146,7 @@ body.ready .intro{background:radial-gradient(ellipse 44% 40% at 50% 54%,rgba(14,
 body.ready .loader{opacity:0}
 .keys{margin-top:18px;font-size:9px;letter-spacing:.2em;text-transform:uppercase;color:rgba(244,241,233,.6)}
 .fallback .crest{opacity:1}
+.noscript{position:fixed;left:50%;bottom:6vh;transform:translateX(-50%);z-index:10;width:min(560px,calc(100% - 32px));text-align:center;font-size:14px;line-height:1.6;display:grid;gap:12px}
 
 .hint{position:fixed;z-index:5;left:50%;top:calc(92px + env(safe-area-inset-top));transform:translate(-50%,-6px);padding:9px 16px;border:1px solid var(--hair);border-radius:40px;background:rgba(20,28,22,.3);-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);font-size:9px;letter-spacing:.2em;text-transform:uppercase;opacity:0;pointer-events:none;transition:opacity .8s,transform .8s}
 .hint.on{opacity:1;transform:translate(-50%,0)}
@@ -245,6 +246,14 @@ body.ready .loader{opacity:0}
   </div>
 </section>
 
+<noscript>
+  <style>#start,#introFilm,.loader,.keys,.lede{display:none!important}.intro{background:rgba(14,20,16,.6)!important}</style>
+  <div class="noscript">
+    <p>This viewer can’t run the 3D tour; phone file previews don’t run web pages.</p>
+    <p><b>Android:</b> open the file with Chrome. <b>iPhone:</b> open the tour from a link instead; the Files app can’t run it.</p>
+    <p><a class="btn btn-clay" href="https://www.nestvillas.com/villas">Book at Nest Villas ↗</a> <a class="btn" href="https://www.youtube.com/watch?v=z86pMY77Dsc">Watch the video ↗</a></p>
+  </div>
+</noscript>
 <div class="pop" id="pop" role="dialog" aria-label="Details" hidden></div>
 
 <dialog class="film" id="film" aria-label="Bermuda Dunes Racquet Club video">
@@ -345,7 +354,7 @@ const QUALITIES = {
   balanced: { dpr: 2, cap: 4.2e6, adaptive: true, msaa: 4, csm: null, shadow: 2048, tex: 512, texSmall: 512, canvas: 1, geo: 1, env: 256, a2c: false, oct: 5, ca: 0.012, grain: 0.016 },
   low: { dpr: 1.25, cap: 2.1e6, adaptive: true, msaa: 0, csm: null, shadow: 1024, tex: 256, texSmall: 256, canvas: 1, geo: 0.7, env: 256, a2c: false, oct: 4, ca: 0.012, grain: 0.016 },
 };
-const QUALITY = QUALITIES[Q.get('quality')] ? Q.get('quality') : COARSE ? 'high' : 'ultra';
+const QUALITY = QUALITIES[Q.get('quality')] ? Q.get('quality') : COARSE ? 'balanced' : 'ultra';
 const QL = QUALITIES[QUALITY];
 const SCALE = clamp(parseFloat(Q.get('scale')) || 1, 0.5, 2);
 const G = QL.geo;
@@ -366,6 +375,14 @@ try {
   window.__driveFail();
   throw err;
 }
+// If the GPU drops the context (usually memory) or the build fails, reload one preset lower.
+const LOWER = { ultra: 'high', high: 'balanced', balanced: 'low' };
+function stepDown() {
+  const next = LOWER[QUALITY];
+  if (!next) return false;
+  try { const u = new URL(location.href); u.searchParams.set('quality', next); location.replace(u.href); return true; } catch (err) { return false; }
+}
+canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); if (!stepDown()) window.__driveFail(); });
 const ANISO = renderer.capabilities.getMaxAnisotropy();
 const MAXTEX = renderer.capabilities.maxTextureSize;
 const dprCap = () => Math.min((window.devicePixelRatio || 1) * SCALE, QL.dpr * SCALE, Math.max(1, Math.sqrt(QL.cap / (innerWidth * innerHeight))), MAXTEX / Math.max(innerWidth, innerHeight));
@@ -2325,7 +2342,7 @@ async function build() {
   kick();
   window.__drive = { tour, go, CH, setTod: (v) => { tod.manual = v; syncTodUI(); }, place: (s, mode = 'park') => { fades.length = 0; tour.introW = 0; tour.s = s; tour.v = 0; tour.mode = mode; snapCam = true; }, view: (pos, tgt) => { camOverride = pos ? [pos, tgt] : null; snapCam = true; }, debug: () => ({ s: tour.s, mode: tour.mode, introW: tour.introW, k: activeK, w: activeW, car: car.root.position.toArray().map((v) => +v.toFixed(2)), cam: camera.position.toArray().map((v) => +v.toFixed(2)), tgt: cam.tgt.toArray().map((v) => +v.toFixed(2)) }), ready: true };
 }
-build().catch((err) => { console.error(err); window.__driveFail(); });
+build().catch((err) => { console.error(err); if (!stepDown()) window.__driveFail(); });
 </script>
 </body>
 </html>

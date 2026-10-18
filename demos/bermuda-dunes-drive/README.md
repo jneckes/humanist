@@ -72,7 +72,7 @@ into a section with an iframe:
 | `chapter=arrive\|estate\|stay\|courts\|pool\|gather\|book` | Opens parked at that stop, for deep links such as `?chapter=pool` next to the Play section |
 | `time=golden\|sunset\|dusk\|night` or `0`–`1` | Locks the time of day |
 | `paused` | Starts with auto-drive off, so the car waits at each stop |
-| `quality=ultra\|high\|balanced\|low` | Picks a rendering preset (see below). Ultra is the default on desktop, high on phones and tablets |
+| `quality=ultra\|high\|balanced\|low` | Picks a rendering preset (see below). Ultra is the default on desktop, balanced on phones and tablets |
 | `scale=1.5` | Renders above the screen's pixel density (0.5–2), for extra-sharp stills and screen recordings |
 | `debug` | Shows the preset, frame rate, resolution, MSAA and position |
 
@@ -97,7 +97,7 @@ one where the CDN is blocked, gets a still frame with the video and booking butt
 
 Everything runs at the highest resolution by default. Performance tuning comes next. The presets:
 
-| | Ultra (desktop default) | High (phone default) | Balanced | Low |
+| | Ultra (desktop default) | High | Balanced (phone default) | Low |
 | --- | --- | --- | --- | --- |
 | Pixel density | Screen density, up to 3× | Up to 2×, 8.3 MP cap | Up to 2×, 4.2 MP cap | 1.25×, 2.1 MP cap |
 | Anti-aliasing | 8× MSAA (4× on 2× screens) + alpha-to-coverage leaves | 4× MSAA + alpha-to-coverage | 4× MSAA | none |
@@ -116,6 +116,8 @@ about 300 MB of frame buffers (8× MSAA at half float), 250 MB of reflection map
 230 MB of generated textures and 110 MB of canvas textures. Each frame also renders the scene into four
 shadow cascades. Those are the levers for the performance pass; `quality=high` and `balanced` show
 where each one lands.
+
+If the graphics chip drops the 3D context (usually running out of memory) or the scene fails to build, the page reloads itself one preset lower.
 
 With `prefers-reduced-motion`, the camera drift and intro orbit are off and the intro swoop is shorter.
 
