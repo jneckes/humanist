@@ -1,7 +1,8 @@
 // The Settings window (6.1 Settings › General, 6.10 Settings › Trust, 9.9 allowlist and strict option; 9.1 Shell
 // view): its validators, its channels with a fake Electron (only the Settings shell is answered), its preload
 // API, the page's shell rules, the help text, and the packaging pieces: the electron-builder entries and a static
-// check that installer.nsh removes everything it writes.
+// check that installer.nsh removes everything it writes. Phase 2: Settings › General › Smart punctuation (6.3), the
+// settings default in config.json.
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -115,11 +116,12 @@ vi.mock('electron', () => ({
 
 import { MainToSettings, PROTECTED_VIEW_HELP, SettingsToMain, protectedViewHelpText, type SettingsState } from '@blueline/core/ipc-trust';
 import { shellRouter } from '../../../packages/app/src/main/channels';
-import { ConfigStore, sanitizeConfig } from '../../../packages/app/src/main/config';
+import { ConfigStore, configGeneralSettings, sanitizeConfig, type GeneralSettingsState } from '../../../packages/app/src/main/config';
 import { TrustSettings } from '../../../packages/app/src/main/folders';
 import { createNativeHelper, REGISTERED_APP_NAME, WINDOWS_PROG_ID } from '../../../packages/app/src/main/native-helper';
 import { DEFAULT_ALLOWLIST } from '../../../packages/app/src/main/network-policy';
 import {
+  SETTINGS_GENERAL_CHANNELS,
   SETTINGS_KEY,
   SETTINGS_URL,
   appLocationOptions,
@@ -127,7 +129,9 @@ import {
   validateAddFolder,
   validateHost,
   validateRemoveFolder,
+  validateSmartPunctuation,
   validateStrict,
+  type SettingsWindowState,
 } from '../../../packages/app/src/main/settings-window';
 
 const repo = path.resolve(__dirname, '../../..');
@@ -151,6 +155,11 @@ describe('Settings validators (9.1: every argument checked in main)', () => {
     expect(validateStrict([false])).toEqual({ ok: true, value: false });
     for (const bad of [[], ['true'], [1], [true, false], [null]]) expect(validateStrict(bad).ok).toBe(false);
   });
+  it('setSmartPunctuation(on)', () => {
+    expect(validateSmartPunctuation([true])).toEqual({ ok: true, value: true });
+    expect(validateSmartPunctuation([false])).toEqual({ ok: true, value: false });
+    for (const bad of [[], ['true'], [0], [true, true], [null], [{ on: true }]]) expect(validateSmartPunctuation(bad).ok).toBe(false);
+  });
   it('allowlist host', () => {
     expect(validateHost(['cdn.example.com'])).toEqual({ ok: true, value: 'cdn.example.com' });
     expect(validateHost(['https://cdn.example.com/x'])).toEqual({ ok: true, value: 'https://cdn.example.com/x' }); // TrustSettings explains
@@ -167,6 +176,7 @@ describe('Settings channels: only the Settings window’s own shell is answered'
   let config: ConfigStore;
   let settings: TrustSettings;
   const changes: string[] = [];
+  const generalChanges: GeneralSettingsState[] = [];
   let controller: ReturnType<typeof installSettingsWindow>;
 
   beforeAll(() => {
@@ -187,6 +197,8 @@ describe('Settings channels: only the Settings window’s own shell is answered'
       platform: 'linux',
       devTools: false,
       onTrustSettingsChanged: (c) => changes.push(c),
+      general: configGeneralSettings(config),
+      onGeneralSettingsChanged: (g) => generalChanges.push(g),
       log: () => undefined,
       test: true,
     });
@@ -198,8 +210,11 @@ describe('Settings channels: only the Settings window’s own shell is answered'
   const eventFrom = (wc: { id: number; mainFrame: unknown }) => ({ sender: wc, senderFrame: wc.mainFrame });
   const call = (channel: string, event: unknown, ...args: unknown[]) => fake.handlers.get(channel)!(event, ...args);
 
-  it('declares every SettingsToMain channel', () => {
-    for (const c of Object.values(SettingsToMain)) expect(fake.handlers.has(c), c).toBe(true);
+  const allChannels = () => [...Object.values(SettingsToMain), ...Object.values(SETTINGS_GENERAL_CHANNELS)];
+
+  it('declares every SettingsToMain channel and Settings › General’s', () => {
+    for (const c of allChannels()) expect(fake.handlers.has(c), c).toBe(true);
+    expect(SETTINGS_GENERAL_CHANNELS.setSmartPunctuation).toBe('bl:settings:set-smart-punctuation');
   });
 
   it('opens one sandboxed window on app://shell/settings.html with its own preload; opening again focuses it', () => {
@@ -221,8 +236,8 @@ describe('Settings channels: only the Settings window’s own shell is answered'
 
   it('getState from the Settings shell', async () => {
     const w = settingsWin();
-    const s = (await call(SettingsToMain.getState, eventFrom(w.webContents))) as SettingsState;
-    expect(s).toMatchObject({ platform: 'linux', trustedFolders: [], untrustedFolders: [], strictProtected: false, allowlist: [...DEFAULT_ALLOWLIST], allowlistIsDefault: true });
+    const s = (await call(SettingsToMain.getState, eventFrom(w.webContents))) as SettingsWindowState;
+    expect(s).toMatchObject({ platform: 'linux', trustedFolders: [], untrustedFolders: [], strictProtected: false, allowlist: [...DEFAULT_ALLOWLIST], allowlistIsDefault: true, smartPunctuation: true });
   });
 
   it('refuses a document window’s shell, an unregistered sender (a deck view), another frame and another origin', async () => {
@@ -233,11 +248,13 @@ describe('Settings channels: only the Settings window’s own shell is answered'
     const w = settingsWin();
     const subframe = { sender: w.webContents, senderFrame: { processId: 1, routingId: 999, origin: 'app://shell', parent: w.webContents.mainFrame } };
     const wrongOrigin = { sender: w.webContents, senderFrame: { ...w.webContents.mainFrame, origin: 'blueline://0123456789abcdef' } };
-    for (const c of Object.values(SettingsToMain)) {
-      const args = c === SettingsToMain.addFolder ? ['trusted'] : c === SettingsToMain.removeFolder ? ['trusted', decks] : c === SettingsToMain.setStrictProtected ? [true] : c.includes('host') ? ['evil.example'] : [];
+    for (const c of allChannels()) {
+      const args = c === SettingsToMain.addFolder ? ['trusted'] : c === SettingsToMain.removeFolder ? ['trusted', decks] : c === SettingsToMain.setStrictProtected ? [true] : c === SETTINGS_GENERAL_CHANNELS.setSmartPunctuation ? [false] : c.includes('host') ? ['evil.example'] : [];
       for (const ev of [eventFrom(doc), eventFrom(deck), subframe, wrongOrigin]) await expect(call(c, ev, ...args), c).rejects.toThrow('Refused');
     }
     expect(settings.strict()).toBe(false);
+    expect(config.get().defaults).toBeUndefined();
+    expect(generalChanges).toEqual([]);
     expect(settings.allowlist()).not.toContain('evil.example');
     expect(fake.state.dialogCalls).toHaveLength(0);
     expect(changes).toEqual([]);
@@ -249,7 +266,29 @@ describe('Settings channels: only the Settings window’s own shell is answered'
     await expect(call(SettingsToMain.addFolder, ev, '/Users/j')).rejects.toThrow('Refused');
     await expect(call(SettingsToMain.removeFolder, ev, 'trusted')).rejects.toThrow('Refused');
     await expect(call(SettingsToMain.getState, ev, 'extra')).rejects.toThrow('Refused');
+    await expect(call(SETTINGS_GENERAL_CHANNELS.setSmartPunctuation, ev, 'off')).rejects.toThrow('Refused');
+    await expect(call(SETTINGS_GENERAL_CHANNELS.setSmartPunctuation, ev)).rejects.toThrow('Refused');
     expect(settings.strict()).toBe(false);
+    expect(config.get().defaults).toBeUndefined();
+  });
+
+  it('Smart punctuation (6.3): the default in config.json, pushed to the page, and main is told to update the decks', async () => {
+    const w = settingsWin();
+    const ev = eventFrom(w.webContents);
+    await call(SETTINGS_GENERAL_CHANNELS.setSmartPunctuation, ev, false);
+    await config.idle();
+    expect(JSON.parse(fs.readFileSync(path.join(userData, 'config.json'), 'utf8')).defaults).toEqual({ smartPunctuation: false });
+    expect(generalChanges).toEqual([{ smartPunctuation: false }]);
+    const pushed = w.webContents.sent.filter(([c]) => c === MainToSettings.state).map(([, st]) => st as SettingsWindowState);
+    expect(pushed[pushed.length - 1].smartPunctuation).toBe(false);
+    expect(((await call(SettingsToMain.getState, ev)) as SettingsWindowState).smartPunctuation).toBe(false);
+    // Setting it to what it is changes nothing.
+    await call(SETTINGS_GENERAL_CHANNELS.setSmartPunctuation, ev, false);
+    expect(generalChanges).toHaveLength(1);
+    await call(SETTINGS_GENERAL_CHANNELS.setSmartPunctuation, ev, true);
+    expect(generalChanges).toEqual([{ smartPunctuation: false }, { smartPunctuation: true }]);
+    // Trust changes are not general ones.
+    expect(changes).toEqual([]);
   });
 
   it('Add… shows main’s folder dialog; the shell never names the folder', async () => {
@@ -290,6 +329,7 @@ describe('Settings channels: only the Settings window’s own shell is answered'
     await call(SettingsToMain.resetAllowlist, ev);
     expect(settings.allowlistIsDefault()).toBe(true);
     expect(changes).toEqual(['folders', 'folders', 'strict', 'allowlist', 'allowlist', 'allowlist']);
+    expect(generalChanges).toHaveLength(2);
   });
 
   it('Make Blueline your HTML app goes to the helper (Linux: unsupported)', async () => {
@@ -330,7 +370,7 @@ describe('preload-settings (9.1: named functions only)', () => {
     await import('../../../packages/app/src/preload/settings');
     expect(Object.keys(exposed)).toEqual(['blueline']);
     const api = exposed.blueline as Record<string, (...a: unknown[]) => unknown>;
-    expect(Object.keys(api).sort()).toEqual(['addAllowlistHost', 'addFolder', 'getState', 'makeDefaultApp', 'onShowPane', 'onState', 'removeAllowlistHost', 'removeFolder', 'resetAllowlist', 'setStrictProtected']);
+    expect(Object.keys(api).sort()).toEqual(['addAllowlistHost', 'addFolder', 'getState', 'makeDefaultApp', 'onShowPane', 'onState', 'removeAllowlistHost', 'removeFolder', 'resetAllowlist', 'setSmartPunctuation', 'setStrictProtected']);
     for (const k of Object.keys(api)) expect(typeof api[k]).toBe('function');
     await api.getState();
     await api.makeDefaultApp();
@@ -340,6 +380,7 @@ describe('preload-settings (9.1: named functions only)', () => {
     await api.addAllowlistHost('a.example');
     await api.removeAllowlistHost('a.example');
     await api.resetAllowlist();
+    await api.setSmartPunctuation(false);
     expect(invoke.mock.calls).toEqual([
       [SettingsToMain.getState],
       [SettingsToMain.makeDefaultApp],
@@ -349,6 +390,8 @@ describe('preload-settings (9.1: named functions only)', () => {
       [SettingsToMain.addAllowlistHost, 'a.example'],
       [SettingsToMain.removeAllowlistHost, 'a.example'],
       [SettingsToMain.resetAllowlist],
+      // The preload's own copy of the channel name is main's (settings-window.ts SETTINGS_GENERAL_CHANNELS).
+      [SETTINGS_GENERAL_CHANNELS.setSmartPunctuation, false],
     ]);
     const got: unknown[] = [];
     api.onState((s: unknown) => got.push(s));
@@ -371,6 +414,8 @@ describe('the Settings page follows 9.1 Shell view', () => {
     expect(html).not.toMatch(/\sstyle=/i);
     expect(html).not.toMatch(/\son[a-z]+=/i);
     expect(html).toMatch(/<script src="settings\.js" defer><\/script>/);
+    // Settings › General › Smart punctuation (6.3), off until main's state says it is offered.
+    expect(html).toMatch(/<input id="smart-punctuation" type="checkbox" disabled>/);
   });
 
   it('settings.ts and preload/settings.ts use no HTML or style-string sinks and no raw ipcRenderer in the page', () => {

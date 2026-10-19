@@ -1,11 +1,12 @@
 // session.json (9.7; 6.8 One writer): atomic writes, defensive reads that never lose a note.
+// Phase 2: SourceLoc on targets, locked spans checked field by field, the last known version (P2-12).
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import type { Note, Session } from '@blueline/core/types';
 import { NotesStore } from '../../../packages/app/src/main/notes';
-import { SessionStore, emptySession, learnDeckNav, readNote, readSession, sessionFileFor } from '../../../packages/app/src/main/session-store';
+import { SessionStore, emptySession, learnDeckNav, readLocked, readNote, readSession, readSource, sessionFileFor } from '../../../packages/app/src/main/session-store';
 
 let ud: string;
 const DECK: Session['deck'] = { path: '/d/deck.html', realpath: '/d/deck.html', fileKey: '0123456789abcdef', sha256: 'f'.repeat(64), title: 'Deck' };
@@ -155,5 +156,147 @@ describe('learnDeckNav', () => {
     expect(learnDeckNav(stored, { forward: 'PageDown', back: 'ArrowUp' })).toBeNull();
     // A different forward key: its own counterpart.
     expect(learnDeckNav(stored, { forward: 'ArrowRight' })).toEqual({ forward: 'ArrowRight', back: 'ArrowLeft' });
+  });
+});
+
+// ------------------------------------------------------------------------------------------- Phase 2
+
+const V2 = 'c'.repeat(64);
+const source = {
+  file: 'deck.html',
+  version: V2,
+  start: 100,
+  end: 115,
+  line: 12,
+  col: 5,
+  strategy: 'html-text' as const,
+  confidence: 'exact' as const,
+};
+const withSource = (src: unknown): Note =>
+  note({ kind: 'edit', status: 'done', marks: [], targets: [{ ...note().targets[0], source: src as never }], verbatim: { before: 'a', after: 'b' }, summary: 'Edited: a → b' });
+
+describe('SourceLoc (section 8) on targets', () => {
+  it('round-trips, candidates and key warnings included', () => {
+    const s: Session = { ...emptySession(DECK), notes: [withSource({ ...source, strategy: 'agent', confidence: 'ambiguous', candidates: [{ start: 1, end: 2, line: 1, context: 'x' }, { start: 5, end: 9, line: 2, context: 'y', keyWarning: 'This text is also used as a key at deck.html:2' }] })] };
+    const r = readSession(JSON.parse(JSON.stringify(s)), DECK);
+    expect(r.lossy).toBe(false);
+    expect(r.session.notes).toEqual(s.notes);
+  });
+
+  it('a SourceLoc that cannot be read is left out; the note stays and the file is kept aside', () => {
+    for (const bad of [
+      { ...source, version: 'abc' },
+      { ...source, start: 20, end: 10 },
+      { ...source, start: -1 },
+      { ...source, start: 1.5 },
+      { ...source, line: 0 },
+      { ...source, col: 0 },
+      { ...source, strategy: 'guess' },
+      { ...source, confidence: 'sure' },
+      { ...source, file: 3 },
+      { ...source, candidates: [{ start: 3, end: 1, line: 1, context: '' }] },
+      { ...source, candidates: 'x' },
+      { ...source, candidates: Array.from({ length: 201 }, () => ({ start: 0, end: 0, line: 1, context: '' })) },
+      'x',
+    ]) {
+      const r = readSession({ version: 2, notes: [withSource(bad)] }, DECK);
+      expect(r.lossy, JSON.stringify(bad).slice(0, 80)).toBe(true);
+      expect(r.session.notes).toHaveLength(1);
+      expect(r.session.notes[0].targets[0].source).toBeUndefined();
+      expect(r.session.notes[0].verbatim).toEqual({ before: 'a', after: 'b' });
+    }
+    expect(readSource(source)).toEqual(source);
+    expect(() => readSource({ ...source, extra: 1, candidates: [{ start: 0, end: 0, line: 1, context: '', evil: 1 }] })).not.toThrow();
+    expect(readSource({ ...source, candidates: [{ start: 0, end: 0, line: 1, context: '', evil: 1 }] }).candidates).toEqual([{ start: 0, end: 0, line: 1, context: '' }]);
+  });
+});
+
+describe('locked spans (section 8) round-trip and are checked', () => {
+  const span = { start: 100, end: 115, text: 'Revenue grew 5%', noteId: 'n-0001', state: 'ok' as const };
+
+  it('round-trip through session.json, a violated one with its change', () => {
+    const s: Session = {
+      ...emptySession(DECK),
+      notes: [withSource(source), withSource(source)].map((n, i) => ({ ...n, id: `n-000${i + 1}` })),
+      locked: [span, { ...span, noteId: 'n-0002', state: 'violated', change: { before: 'Revenue grew 5%', after: 'Revenue fell' } }],
+    };
+    const r = readSession(JSON.parse(JSON.stringify(s)), DECK);
+    expect(r.lossy).toBe(false);
+    expect(r.session.locked).toEqual(s.locked);
+  });
+
+  it('malformed spans are dropped (and the file kept aside); a span whose note is gone protects nothing', () => {
+    for (const bad of [
+      { ...span, start: 20, end: 10 },
+      { ...span, start: -5 },
+      { ...span, end: 1.5 },
+      { ...span, start: '100' },
+      { ...span, noteId: 'n-1' },
+      { ...span, noteId: '../n-0001' },
+      { ...span, state: 'broken' },
+      { ...span, text: null },
+      { ...span, change: { before: 'x' } },
+      [],
+    ]) {
+      expect(() => readLocked(bad), JSON.stringify(bad)).toThrow();
+      const r = readSession({ version: 2, notes: [withSource(source)], locked: [span, bad] }, DECK);
+      expect(r.lossy).toBe(true);
+      expect(r.session.locked).toEqual([span]);
+    }
+    // An orphan span is not a read failure: nothing is lost by dropping it.
+    const orphan = readSession({ version: 2, notes: [withSource(source)], locked: [span, { ...span, noteId: 'n-0009' }] }, DECK);
+    expect(orphan.lossy).toBe(false);
+    expect(orphan.session.locked).toEqual([span]);
+    expect(readLocked({ ...span, noteId: 'anna-x7k2:n-0003', extra: 1 })).toEqual({ ...span, noteId: 'anna-x7k2:n-0003' });
+  });
+
+  it('a second note with an id already read is dropped (undo must delete the right one)', () => {
+    const r = readSession({ version: 2, notes: [note({ text: 'first' }), note({ text: 'second' })] }, DECK);
+    expect(r.lossy).toBe(true);
+    expect(r.session.notes.map((n) => n.text)).toEqual(['first']);
+  });
+
+  it('settings.smartPunctuation (the per-document override, 6.3) round-trips', () => {
+    const r = readSession({ version: 2, settings: { smartPunctuation: false, inkFilter: 'nope' } }, DECK);
+    expect(r.session.settings).toEqual({ smartPunctuation: false });
+    expect(readSession({ version: 2, settings: { smartPunctuation: 'off' } }, DECK).session.settings).toEqual({});
+  });
+});
+
+describe('the last known version (P2-12) and the stored deck fields', () => {
+  it('known() and deck.sha256 follow noteVersion, are saved, and come back with the deck fields the file had', async () => {
+    const file = sessionFileFor(ud, 'dddddddddddddddd');
+    const s = await SessionStore.open(file, DECK);
+    expect(s.known()).toBeNull();
+    expect(s.storedDeck).toBeNull();
+    s.noteVersion({ version: V2, contentHash: 'e'.repeat(64), title: 'Deck v2' });
+    expect(s.known()).toEqual({ version: V2 });
+    expect(s.session.deck).toEqual({ ...DECK, sha256: 'e'.repeat(64), title: 'Deck v2' });
+    await s.save();
+    const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    expect(disk.known).toEqual({ version: V2 });
+    expect(disk.deck.sha256).toBe('e'.repeat(64));
+
+    // Reopened for the deck as it is now (changed while no window showed it): the deck fields are the current
+    // document's, the stored ones and the known version say what the session last saw.
+    const again = await SessionStore.open(file, { ...DECK, sha256: '1'.repeat(64) });
+    expect(again.session.deck.sha256).toBe('1'.repeat(64));
+    expect(again.storedDeck).toEqual({ ...DECK, sha256: 'e'.repeat(64), title: 'Deck v2' });
+    expect(again.known()).toEqual({ version: V2 });
+    // known() is a copy.
+    again.known()!.version = 'x';
+    expect(again.known()).toEqual({ version: V2 });
+    expect(() => again.noteVersion({ version: 'abc', contentHash: V2 })).toThrow();
+    expect(() => again.noteVersion({ version: V2, contentHash: 'abc' })).toThrow();
+    expect(again.known()).toEqual({ version: V2 });
+  });
+
+  it('an unreadable known version is dropped and the file kept aside', () => {
+    const r = readSession({ version: 2, known: { version: 'not a hash' } }, DECK);
+    expect(r.known).toBeNull();
+    expect(r.lossy).toBe(true);
+    expect(readSession({ version: 2, known: { version: V2, extra: 1 } }, DECK).known).toEqual({ version: V2 });
+    expect(readSession({ version: 2 }, DECK)).toMatchObject({ known: null, storedDeck: null, lossy: false });
+    expect(readSession({ version: 2, deck: { path: 1 } }, DECK).storedDeck).toBeNull();
   });
 });

@@ -466,7 +466,62 @@ export interface EditRequest {
   beforeText: string;
   /** The run's whole text after the edit, after the commit clean-up (core/edit-cleanup). */
   afterText: string;
+  /**
+   * Added in Phase 2: the edit was made on a node the author picked in the ambiguity picker (6.3, 9.2 Strategy 2
+   * steps 3–4). beforeText and afterText are still the RUN's whole text (lifted from the node's text with
+   * core/edit-commit liftPick); `pick` says how, and the write queue lifts it again and refuses the edit when the
+   * two disagree, so a node's text is never written into a run it was not lifted to.
+   */
+  pick?: EditPick;
 }
+
+/**
+ * Added in Phase 2: how a picked candidate relates to the node the author edited (P2-8). `equal`: the node's text
+ * is the run's whole text (several equal runs, a key, a shadow value, another element's stamp); `substring`: the
+ * node's text occurs once inside the run; `normalized`: the two are equal only after whitespace collapse and NFC
+ * (matcher reason `not-equal`). nodeBefore and nodeAfter are the node's text before and after the edit.
+ */
+export interface EditPick {
+  kind: 'equal' | 'substring' | 'normalized';
+  nodeBefore: string;
+  nodeAfter: string;
+}
+
+/**
+ * Added in Phase 2: why the write protocol did not write an edit, undo, redo or restore. Every code but `noop`
+ * makes a verbatim note (6.3 "When a write fails"); `noop` (the text did not change) makes nothing.
+ *   - not-utf8:    the deck failed the UTF-8 decode, so it is never written (9.2 rule 1);
+ *   - structural:  the edit empties a run or leaves it whitespace-only (6.3);
+ *   - stale:       the deck changed and the text is gone, or moved somewhere else (9.2 Write protocol step 2),
+ *                  or (undo, redo) the deck changed since the write (9.2 Undo and redo case 3);
+ *   - ambiguous:   the deck changed and the text is in several places, or is also text Blueline never writes; or
+ *                  a picked candidate cannot be mapped to its run exactly (Strategy 2 step 4);
+ *   - placeholder: the run holds `${…}`, or the new text holds U+E000 (section 7);
+ *   - markup:      the edit adds `<` or `&` to a literal the page may set with innerHTML (Strategy 2 step 5.1);
+ *   - escape:      the new text cannot be encoded or escaped in place (NUL in HTML text, a lone surrogate, a
+ *                  character that is an HTML parse error, an escaped splice that does not cook back);
+ *   - unaligned:   the run has no verified decoded-to-raw or cooked-to-raw table, or is a shadow reading;
+ *   - conflict:    the deck kept changing during the write (requeued maxRetries times), or (restore) it changed
+ *                  since the version the restore was confirmed on;
+ *   - verify:      the re-parse of the exact bytes to be written failed a check (9.2 Write protocol step 5);
+ *   - refused:     editing was not allowed at the moment of the write (9.1), or the request is inconsistent
+ *                  (names a run its version does not have, a beforeText that run does not hold);
+ *   - internal:    an unexpected error, a failed read or write, or a failed snapshot (beforeWrite).
+ */
+export type RefusalCode =
+  | 'noop'
+  | 'not-utf8'
+  | 'structural'
+  | 'stale'
+  | 'ambiguous'
+  | 'placeholder'
+  | 'markup'
+  | 'escape'
+  | 'unaligned'
+  | 'conflict'
+  | 'verify'
+  | 'refused'
+  | 'internal';
 
 /** One write's undo record (9.2 Undo and redo). All offsets index src; all slices are raw source. */
 export interface WriteRecord {
@@ -479,6 +534,12 @@ export interface WriteRecord {
   suffix: string; // 32 source characters after start + rawBefore.length (before the write)
 }
 
+/**
+ * `merged` (added in Phase 2): the queue wrote on top of a version other than the request's (an external change
+ * landed first and the edit was re-resolved by its text, 9.2 Write protocol step 2). Main then treats the change
+ * it did not see as an external one before it adopts the write (P2-4). `code` (added in Phase 2) types the
+ * refusal; only `noop` is not a note.
+ */
 export type WriteOutcome =
-  | { ok: true; record: WriteRecord; version: string; runId: string; line: number }
-  | { ok: false; verbatim: { before: string; after: string }; why: string };
+  | { ok: true; record: WriteRecord; version: string; runId: string; line: number; merged: boolean }
+  | { ok: false; verbatim: { before: string; after: string }; why: string; code: RefusalCode };

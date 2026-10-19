@@ -14,11 +14,18 @@
 // The shell never names a folder to add: main shows the folder dialog itself (Add…). Changes go to config.json
 // through TrustSettings (folders.ts), and every change is passed to onTrustSettingsChanged, which re-applies
 // every open document's network policy (the views item).
+//
+// Phase 2 adds Settings › General › Smart punctuation (6.3: "default on; toggle in settings"): the default in
+// config.json (config.ts GeneralSettings), which a document uses unless its Session.settings sets its own. Its
+// channel is declared here with the others and answered only for the Settings shell; onGeneralSettingsChanged
+// lets main tell the open decks. The channel and the state field live here, not in core/ipc-trust.ts, until
+// that contract takes them (see SETTINGS_GENERAL_CHANNELS).
 
 import { app, BrowserWindow, dialog, nativeTheme, session } from 'electron';
 import * as os from 'node:os';
 import { MainToSettings, SETTINGS_LIMITS, SettingsToMain, type DefaultAppStatus, type FolderKind, type SettingsPane, type SettingsState } from '@blueline/core/ipc-trust';
 import { shellRouter } from './channels';
+import type { GeneralSettings, GeneralSettingsState } from './config';
 import type { TrustSettings, TrustSettingsChange } from './folders';
 import { validateNoArgs, type ArgsValidator, type ShellSender, type Validated } from './ipc-guard';
 import type { LocationOptions } from './markers';
@@ -30,6 +37,18 @@ import { installShellPolicy } from './trust-hooks';
 export const SETTINGS_KEY = 'settings';
 export const SETTINGS_URL = `${SHELL_ORIGIN}/settings.html`;
 const SHELL_PARTITION = 'shell';
+
+/**
+ * Settings › General's channel (Settings shell → main, `ipcRenderer.invoke`). preload/settings.ts invokes the
+ * same name (a unit test holds them together); it belongs in core/ipc-trust.ts SettingsToMain.
+ */
+export const SETTINGS_GENERAL_CHANNELS = Object.freeze({
+  /** (on: boolean) → void. 6.3 Smart punctuation, the default for documents without their own setting. */
+  setSmartPunctuation: 'bl:settings:set-smart-punctuation',
+});
+
+/** SettingsState as main sends it: core's fields, plus Settings › General's (null: not offered here). */
+export type SettingsWindowState = SettingsState & { smartPunctuation: boolean | null };
 
 // ---------------------------------------------------------------------------------------------------
 // Validators (ipc-guard.ts style: argument lists rebuilt, nothing but the expected primitives accepted)
@@ -72,6 +91,12 @@ export const validateStrict: ArgsValidator<boolean> = (args) => {
   return { ok: true, value: args[0] };
 };
 
+/** setSmartPunctuation(on). */
+export const validateSmartPunctuation: ArgsValidator<boolean> = (args) => {
+  if (args.length !== 1 || typeof args[0] !== 'boolean') return { ok: false, why: 'one boolean' };
+  return { ok: true, value: args[0] };
+};
+
 /** addAllowlistHost(host) / removeAllowlistHost(host): the text the user typed; TrustSettings normalizes it. */
 export const validateHost: ArgsValidator<string> = (args) => {
   if (args.length !== 1) return { ok: false, why: 'one argument' };
@@ -100,6 +125,16 @@ export interface SettingsWindowDeps {
    * next open, 6.10 When it applies).
    */
   onTrustSettingsChanged(change: TrustSettingsChange): void;
+  /**
+   * Settings › General's settings defaults (config.ts configGeneralSettings(config)). Without it the General
+   * toggles are shown off and disabled, and their channel refuses.
+   */
+  general?: GeneralSettings;
+  /**
+   * Called after every change of the settings defaults: main sends the new smart punctuation value to each open
+   * deck whose session has no setting of its own (config.ts smartPunctuationFor).
+   */
+  onGeneralSettingsChanged?(s: GeneralSettingsState): void;
   log(msg: string): void;
   /** BLUELINE_TEST=1: exposes globalThis.__blSettings for the E2E and security suites. */
   test?: boolean;
@@ -159,6 +194,21 @@ export function installSettingsWindow(deps: SettingsWindowDeps): SettingsControl
     const w = win(from);
     await deps.settings.resetAllowlist();
     w.push();
+  });
+  r.handle(SETTINGS_GENERAL_CHANNELS.setSmartPunctuation, validateSmartPunctuation, async (from, on) => {
+    const w = win(from);
+    if (!deps.general) throw new Error('Refused');
+    await deps.general.setSmartPunctuation(on);
+    w.push();
+  });
+
+  deps.general?.onChange((s) => {
+    try {
+      deps.onGeneralSettingsChanged?.(s);
+    } catch (e) {
+      deps.log(`settings: applying the defaults failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    current?.push();
   });
 
   deps.settings.onChange((change) => {
@@ -277,7 +327,7 @@ class SettingsWindow {
     if (!this.win.isDestroyed()) this.win.webContents.send(MainToSettings.showPane, this.pane);
   }
 
-  state(): SettingsState {
+  state(): SettingsWindowState {
     const s = this.deps.settings;
     const lists = { trusted: s.trustedFolders(), untrusted: s.untrustedFolders() };
     const platform = this.deps.platform;
@@ -289,6 +339,7 @@ class SettingsWindow {
       strictProtected: s.strict(),
       allowlist: [...s.allowlist()],
       allowlistIsDefault: s.allowlistIsDefault(),
+      smartPunctuation: this.deps.general ? this.deps.general.get().smartPunctuation : null,
     };
   }
 

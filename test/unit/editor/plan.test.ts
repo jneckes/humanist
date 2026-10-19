@@ -163,15 +163,48 @@ describe('planEdit: html-text (9.2 Strategy 1 step 5)', () => {
     expect(refusal(src, 'a \u{1F600} b', 'a \uD83D b')).toMatch(/surrogate/);
   });
 
-  it('refuses a control character that would be a new parse error (verify)', () => {
+  it('refuses a character that is an HTML parse error by rule (escape), and verify would catch it too', () => {
     const src = doc('<p>Hello</p>');
     const map = mapOf(src);
-    const req = requestFor(map, 'Hello', 'Hel\u0001lo');
-    const plan = planEdit(src, map, req);
-    expect(plan.ok).toBe(true);
-    if (!plan.ok) return;
-    const v = verifyEdit(src, plan.newSrc, map, mapOf(plan.newSrc), plan, req);
+    // C0 controls other than white space, C1 controls and noncharacters, in HTML text.
+    for (const ch of ['\u0001', '\u0007', '\u007F', '\u0085', '\uFDD0', '\uFFFE', '\u{1FFFF}']) {
+      const plan = planEdit(src, map, requestFor(map, 'Hello', `Hel${ch}lo`));
+      expect(plan).toMatchObject({ ok: false, code: 'escape', why: expect.stringMatching(/parser reports as an error/) });
+    }
+    // White space and ordinary characters are fine.
+    expect(planEdit(src, map, requestFor(map, 'Hello', 'Hel\tlo\u00A0\u2028')).ok).toBe(true);
+    // Verify still refuses such a character if a plan ever carried one (the precheck is a typed rule, not the guard).
+    const ok = planEdit(src, map, requestFor(map, 'Hello', 'Helxlo'));
+    if (!ok.ok) throw new Error(ok.why);
+    const forged = { ...ok, rawAfter: '\u0001', afterText: 'Hel\u0001lo', newSrc: doc('<p>Hel\u0001lo</p>') };
+    const v = verifyEdit(src, forged.newSrc, map, mapOf(forged.newSrc), forged, { afterText: 'Hel\u0001lo' });
     expect(v).toEqual({ ok: false, why: expect.stringMatching(/new parse error control-character-in-input-stream/) });
+  });
+
+  it('refuses a character reference right after the dropped newline of <pre> (parse5 cannot locate that text node)', () => {
+    for (const nl of ['\n', '\r\n']) {
+      const src = `<!doctype html><body><pre>${nl}Plan${nl}  next</pre></body>`;
+      const map = mapOf(src);
+      const run = map.runs.find((r) => r.tagName === 'pre')!;
+      for (const lead of ['&', '<', '&amp; ']) {
+        expect(planEdit(src, map, requestFor(map, run.id, lead + run.value)), JSON.stringify([nl, lead])).toMatchObject({ ok: false, code: 'escape' });
+      }
+      // Anywhere else in the run, and plain text at its start, are written and verify.
+      expect(edit(src, run.value, 'X' + run.value, map).out).toContain(`<pre>${nl}XPlan`);
+      expect(edit(src, run.value, 'R&D ' + run.value, map).out).toContain(`<pre>${nl}R&amp;D Plan`);
+      expect(edit(src, run.value, run.value.replace('Plan', 'Plan & do'), map).out).toContain('Plan &amp; do');
+    }
+    // Without a dropped newline the reference maps fine.
+    const flat = '<!doctype html><body><pre>Plan</pre></body>';
+    expect(edit(flat, 'Plan', '&Plan').out).toContain('<pre>&amp;Plan</pre>');
+  });
+
+  it('lets a literal carry C0 controls (escaped as \\u00XX) but not C1 controls or noncharacters', () => {
+    const src = doc('<div id="app"></div>', "<script>var a = 'Line';</script>");
+    const map = mapOf(src);
+    expect(planEdit(src, map, requestFor(map, 'Line', 'Line\u0007')).ok).toBe(true);
+    expect(planEdit(src, map, requestFor(map, 'Line', 'Line\u0085'))).toMatchObject({ ok: false, code: 'escape' });
+    expect(planEdit(src, map, requestFor(map, 'Line', 'Line\uFFFF'))).toMatchObject({ ok: false, code: 'escape' });
   });
 
   it('edits text after a notes block is removed from mapping and keeps the block intact', () => {

@@ -5,9 +5,9 @@
 // already encoded and escaped, with up to 32 source characters of context on each side. Undo puts rawBefore
 // back in place of rawAfter, and redo is the same operation with the two swapped. Neither ever re-encodes or
 // re-escapes, so an undo restores the previous bytes exactly. Cmd+Z never restores a whole-file snapshot
-// (that is the separate "Restore deck to <time>" command, Phase 2 history list).
+// (that is the separate "Restore deck to <time>" command: WriteQueue.restore, P2-11).
 
-import type { WriteRecord } from '@blueline/core/types';
+import type { RefusalCode, WriteRecord } from '@blueline/core/types';
 
 /** Characters of source context kept on each side of a write (9.2 Undo and redo). */
 export const CONTEXT = 32;
@@ -78,6 +78,8 @@ export interface UndoRefusal {
   why: string;
   /** Offer "Make a note", which keeps the change as a verbatim note (9.2 Undo and redo case 3). */
   canMakeNote: boolean;
+  /** `stale` for case 3 (the deck changed since the write), `refused` for a malformed record. */
+  code: RefusalCode;
 }
 
 export const CANT_UNDO = "Can't undo in place: the deck changed since this edit";
@@ -111,14 +113,14 @@ export function isWriteRecord(r: unknown): r is WriteRecord {
  * For redo, pass swapRecord(record).
  */
 export function planUndo(src: string, record: WriteRecord, currentVersion: string): UndoPlan | UndoRefusal {
-  if (!isWriteRecord(record)) return { ok: false, why: 'not a write record', canMakeNote: false };
+  if (!isWriteRecord(record)) return { ok: false, why: 'not a write record', canMakeNote: false, code: 'refused' };
   const { start, rawBefore, rawAfter, prefix, suffix } = record;
   if (currentVersion === record.versionAfter) {
     if (start + rawAfter.length <= src.length && src.slice(start, start + rawAfter.length) === rawAfter) {
       return { ok: true, case: 1, start, rawBefore: rawAfter, rawAfter: rawBefore };
     }
     // The hash says unchanged but the text disagrees: the record does not belong to this file.
-    return { ok: false, why: CANT_UNDO, canMakeNote: true };
+    return { ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' };
   }
   const needle = prefix + rawAfter + suffix;
   const atFileStart = prefix.length < CONTEXT;
@@ -133,6 +135,6 @@ export function planUndo(src: string, record: WriteRecord, currentVersion: strin
     count++;
     if (count > 1) break;
   }
-  if (count !== 1) return { ok: false, why: CANT_UNDO, canMakeNote: true };
+  if (count !== 1) return { ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' };
   return { ok: true, case: 2, start: found + prefix.length, rawBefore: rawAfter, rawAfter: rawBefore };
 }

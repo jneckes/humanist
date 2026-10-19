@@ -1,27 +1,35 @@
-// The Phase 2 fuzz test (section 10 Phase 2 exit gate; section 11): seeded, reproducible random edits across
-// every UTF-8 deck in fixtures/decks/ (and fixtures/local/ when present) plus generated documents. Each edit
-// takes the same path as a typed edit: the commit clean-up, then the write queue (the full write protocol)
-// over an in-memory DeckIO with the atomic writer's conflict contract.
+// The Phase 2 fuzz test, Node half (section 10 Phase 2 exit gate; section 11; P2-16): seeded, reproducible random
+// edits across every UTF-8 deck in fixtures/decks/ (and fixtures/local/ when present) plus generated documents.
+// Each edit takes the same path as a typed edit, literally the same code: an edit field is built from the map's
+// runs (the element's text nodes, sometimes with unmapped white space between them), the "user" changes it,
+// core/edit-commit commitField makes the commit (clean-up, smart punctuation, the run boundary and caret rule),
+// a picked substring or normalized candidate is lifted with liftPick, and the write queue runs the full write
+// protocol over an in-memory DeckIO with the atomic writer's conflict contract.
 //
 // After each written edit: the file decodes and parses with no new parse errors; the diff touches only the
-// target run's range; re-mapping finds the new text at the target and every other run unchanged; undo
-// restores the bytes exactly, and redo restores the edit's bytes exactly. An edit that becomes a verbatim note
-// must leave the file byte-identical, and the note must hold the exact before and after text. Some edits go
-// in against a stale version, after an external change (or while a conflicting write lands), and the external
-// change must survive. Zero failures.
+// target run's range; re-mapping finds the new text at the target and every other run unchanged; undo restores
+// the bytes exactly, and redo restores the edit's bytes exactly. Notes count only when they are notes BY RULE:
+// commitField's typed reasons, and the queue's typed refusal codes other than internal, conflict, verify and
+// refused, which are failures; such a note must leave the file byte-identical and hold the exact before and
+// after text. No-ops (nothing changed after the clean-up) are counted apart. An edit made inside one run with
+// the caret in it must be that run's edit (or a no-op, or structural). Some edits go in against a stale
+// version, after an external change (or while a conflicting write lands), and the external change must survive.
+// Zero failures.
 //
 // Reproduce with BL_FUZZ_SEED=<n> BL_FUZZ_EDITS=<n> npx vitest run test/unit/editor/fuzz.test.ts --silent=false
-// (the report goes to stderr). The Chromium half of the probe (section 11: "each edit is also run through the
-// mutation probe in Chromium") runs in `blueline map`'s probe (app-render), not here.
+// (the report goes to stderr). The Chromium half (each written edit through the mutation probe, P2-16) is the
+// gate's harness (test/fuzz/), on the committed fixtures and Josh's decks.
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createWriteQueue } from '@blueline/editor';
 import { cleanupCommit } from '@blueline/core/edit-cleanup';
+import { commitField, liftPick, type CommitResult, type FieldRun } from '@blueline/core/edit-commit';
 import { buildMap } from '@blueline/core/mapper';
+import { normalizeForMatch } from '@blueline/core/matcher';
 import { decodeDeck } from '@blueline/core/text';
-import type { DeckMap, EditRequest, HtmlRun, LiteralRun } from '@blueline/core/types';
+import type { DeckMap, EditPick, EditRequest, HtmlRun, LiteralRun, RefusalCode } from '@blueline/core/types';
 import { bytesEqual, MemIO, sha256 } from './helpers';
 
 const SEED = Number(process.env.BL_FUZZ_SEED ?? 0x5eed2026) >>> 0;
@@ -253,23 +261,90 @@ function externalChange(r: Rng, src: string, map: DeckMap, target: HtmlRun | Lit
   }
 }
 
+
+// ------------------------------------------------------------------------------------------ edit fields
+
+/** The queue's codes for notes BY RULE; anything else (internal, conflict, verify, refused) is a failure. */
+const RULE_CODES = new Set<RefusalCode>(['not-utf8', 'structural', 'stale', 'ambiguous', 'placeholder', 'markup', 'escape', 'unaligned']);
+
+interface Field {
+  text: string;
+  runs: FieldRun[];
+  /** The target's place in the field. */
+  at: FieldRun;
+}
+
+/**
+ * The edit field around a target run, as the overlay records it (9.2 step 1): for parsed text, the runs of the
+ * target's element in source order, with the runs of inline elements between them (an element's textContent);
+ * for a literal of an HTML fragment, the fragment's runs around it; otherwise the run alone. White space that is
+ * no run sometimes sits between two runs (a white-space-only text node).
+ */
+function fieldFor(r: Rng, map: DeckMap, target: HtmlRun | LiteralRun): Field {
+  let members: (HtmlRun | LiteralRun)[] = [target];
+  if (target.strategy === 'html-text') {
+    const own = map.runs.filter((x) => x.stamp === (target as HtmlRun).stamp);
+    const lo = Math.min(...own.map((x) => x.start));
+    const hi = Math.max(...own.map((x) => x.end));
+    members = map.runs.filter((x) => x.start >= lo && x.end <= hi).sort((a, b) => a.start - b.start);
+  } else if ((target as LiteralRun).html && map.units[(target as LiteralRun).unit]?.html) {
+    members = map.literals.filter((x) => x.unit === (target as LiteralRun).unit && x.html).sort((a, b) => a.runIndex - b.runIndex);
+  }
+  // A field is one element: keep a few runs on each side of the target.
+  const k = members.indexOf(target);
+  members = members.slice(Math.max(0, k - 3), k + 4);
+  let text = '';
+  const runs: FieldRun[] = [];
+  let at: FieldRun | null = null;
+  for (const m of members) {
+    if (runs.length > 0 && r.chance(0.25)) text += r.pick([' ', '\n  ', ' \t']);
+    const fr: FieldRun = { runId: m.id, start: text.length, end: text.length + m.value.length, value: m.value };
+    runs.push(fr);
+    if (m === target) at = fr;
+    text += m.value;
+  }
+  return { text, runs, at: at! };
+}
+
+/** Curly quotes read as straight ones: smart punctuation changes only those (6.3). */
+function plainQuotes(s: string): string {
+  return s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+}
+
+/** A node the picker would offer for this run, and how it relates (P2-8): a unique piece of it, or its normalized text. */
+function pickedNode(r: Rng, run: HtmlRun | LiteralRun): { node: string; kind: EditPick['kind'] } | null {
+  const norm = normalizeForMatch(run.value);
+  if (norm.length > 0 && norm !== run.value && r.chance(0.5)) return { node: norm, kind: 'normalized' };
+  const b = boundaries(run.value);
+  if (b.length < 4) return null;
+  for (let tries = 0; tries < 4; tries++) {
+    const i = r.pick(b.slice(0, -2));
+    const j = r.pick(b.filter((x) => x > i + 1));
+    if (j === undefined) continue;
+    const piece = run.value.slice(i, j);
+    if (piece.trim() === '' || piece === run.value) continue;
+    if (run.value.indexOf(piece) === i && run.value.indexOf(piece, i + 1) < 0) return { node: piece, kind: 'substring' };
+  }
+  return null;
+}
+
 interface Stats {
   edits: number;
   written: number;
+  /** Notes by rule: commitField's typed reasons and the queue's rule codes. */
   notes: number;
+  noops: number;
+  picks: number;
+  pickWritten: number;
   stale: number;
   staleWritten: number;
+  merged: number;
   conflicts: number;
   undoCase2: number;
   reasons: Map<string, number>;
-  perDoc: Map<string, { written: number; notes: number }>;
 }
 
-function reasonKey(why: string): string {
-  return why.replace(/ \d+/g, ' N').replace(/ at N.*/, '').replace(/\(.*?\)/g, '').slice(0, 90).trim();
-}
-
-describe('fuzz: seeded random edits through the commit clean-up and the write protocol', () => {
+describe('fuzz: seeded random edits through commitField and the write protocol', () => {
   it(`${EDITS} edits, seed ${SEED}: zero failures`, async () => {
     const r = rng(SEED);
     const docs = corpus();
@@ -283,13 +358,17 @@ describe('fuzz: seeded random edits through the commit clean-up and the write pr
       edits: 0,
       written: 0,
       notes: 0,
+      noops: 0,
+      picks: 0,
+      pickWritten: 0,
       stale: 0,
       staleWritten: 0,
+      merged: 0,
       conflicts: 0,
       undoCase2: 0,
       reasons: new Map(),
-      perDoc: new Map(),
     };
+    const reason = (k: string) => stats.reasons.set(k, (stats.reasons.get(k) ?? 0) + 1);
     const failures: string[] = [];
 
     for (let e = 0; e < EDITS; e++) {
@@ -300,10 +379,90 @@ describe('fuzz: seeded random edits through the commit clean-up and the write pr
       if (good.length === 0) continue;
       // Mostly runs the overlay would offer; sometimes any run (placeholder, unaligned, shadow) to test refusals.
       const target = r.chance(0.9) ? r.pick(good) : r.pick(runs);
-      const raw = browserEdit(r, target.value);
-      const after = cleanupCommit(target.value, raw);
-      const req: EditRequest = { version: map.version, runId: target.id, beforeText: target.value, afterText: after };
-      const ctx = () => `seed=${SEED} edit=${e} doc=${d.name} run=${target.id} before=${JSON.stringify(target.value)} after=${JSON.stringify(after)}`;
+      const smart = r.chance(0.8);
+      // How the author edits: inside the target's own text node (the caret there), anywhere in the field (a
+      // selection across runs, unmapped text, a caret elsewhere), or in a node picked in the picker (P2-8).
+      const roll = r.next();
+      const picked = roll < 0.06 ? pickedNode(r, target) : null;
+      const inTarget = !picked && roll < 0.82;
+      let commit: CommitResult;
+      let pick: EditPick | undefined;
+      let fieldText = '';
+      let fieldRaw = '';
+      let caret: string | null = null;
+      let fieldInfo: Field | null = null;
+      if (picked) {
+        // The field holds the node; its FieldRun names the picked run but carries the node's text.
+        fieldText = picked.node;
+        fieldRaw = browserEdit(r, picked.node);
+        caret = target.id;
+        commit = commitField({ before: fieldText, after: fieldRaw, runs: [{ runId: target.id, start: 0, end: fieldText.length, value: fieldText }], caretRunId: caret }, { smartPunctuation: smart });
+      } else {
+        const f = fieldFor(r, map, target);
+        fieldInfo = f;
+        fieldText = f.text;
+        if (inTarget) {
+          fieldRaw = f.text.slice(0, f.at.start) + browserEdit(r, target.value) + f.text.slice(f.at.end);
+          caret = r.chance(0.9) ? target.id : null;
+        } else {
+          fieldRaw = browserEdit(r, f.text);
+          caret = r.chance(0.7) ? r.pick(f.runs).runId : null;
+        }
+        commit = commitField({ before: f.text, after: fieldRaw, runs: f.runs, caretRunId: caret }, { smartPunctuation: smart });
+      }
+      const ctx = () =>
+        `seed=${SEED} edit=${e} doc=${d.name} run=${target.id} field=${JSON.stringify(fieldText)} raw=${JSON.stringify(fieldRaw)} caret=${caret} commit=${JSON.stringify(commit)}`;
+      stats.edits++;
+
+      // The commit path's own oracle.
+      try {
+        if (commit.kind === 'verbatim') {
+          expect(commit.before, `${ctx()} [verbatim before]`).toBe(fieldText);
+          // An edit inside one run with the caret in it is that run's edit, a no-op, or structural.
+          if (inTarget && caret === target.id) expect(['emptied', 'run-emptied', 'invalid'], `${ctx()} [in-run verbatim]`).toContain(commit.why);
+        } else if (commit.kind === 'edit' && fieldInfo) {
+          const fr = fieldInfo.runs.find((x) => x.runId === commit.runId);
+          expect(fr, `${ctx()} [unknown run]`).toBeTruthy();
+          expect(commit.beforeText, ctx()).toBe(fr!.value);
+          if (inTarget && caret === target.id) expect(commit.runId, `${ctx()} [caret run]`).toBe(target.id);
+          // The field with the run's new text is the cleaned field, up to the quotes smart punctuation curled.
+          const owners = fieldInfo.runs.filter((x) => x.runId === commit.runId);
+          const cleaned = plainQuotes(cleanupCommit(fieldInfo.text, fieldRaw));
+          const rebuilt = owners.map((o) => plainQuotes(fieldInfo!.text.slice(0, o.start) + commit.afterText + fieldInfo!.text.slice(o.end)));
+          expect(rebuilt, `${ctx()} [rebuilt field]`).toContain(cleaned);
+        }
+      } catch (err) {
+        failures.push(err instanceof Error ? err.message.split('\n')[0] : String(err));
+        if (failures.length > 20) break;
+        continue;
+      }
+      if (commit.kind === 'noop') {
+        stats.noops++;
+        reason('commit: noop');
+        continue;
+      }
+      if (commit.kind === 'verbatim') {
+        // A note by rule: nothing reaches the queue, so the file is untouched.
+        stats.notes++;
+        reason(`commit: ${commit.why}`);
+        continue;
+      }
+      let req: EditRequest;
+      if (picked) {
+        stats.picks++;
+        pick = { kind: picked.kind, nodeBefore: commit.beforeText, nodeAfter: commit.afterText };
+        const lifted = liftPick(target.value, pick);
+        if (!lifted) {
+          // Main makes a verbatim note before the queue (P2-8): a note by rule.
+          stats.notes++;
+          reason(`pick: ${picked.kind} not liftable`);
+          continue;
+        }
+        req = { version: map.version, runId: target.id, beforeText: lifted.beforeText, afterText: lifted.afterText, pick };
+      } else {
+        req = { version: map.version, runId: commit.runId, beforeText: commit.beforeText, afterText: commit.afterText };
+      }
+      const editRun = runs.find((x) => x.id === req.runId) ?? target;
 
       // Some edits race an external change (the request then names a stale version), or a write that lands
       // between the queue's read and its rename.
@@ -312,14 +471,14 @@ describe('fuzz: seeded random edits through the commit clean-up and the write pr
       let fired = false; // the conflicting write landed (the queue reached its atomic write)
       const mode = r.int(10);
       if (mode === 0) {
-        const ext = externalChange(r, decodeDeck(d.io.bytes).src, map, target);
+        const ext = externalChange(r, decodeDeck(d.io.bytes).src, map, editRun);
         d.io.external(ext.text);
         marker = ext.marker;
         externalKind = ext.kind;
         stats.stale++;
       } else if (mode === 1) {
         const src = decodeDeck(d.io.bytes).src;
-        const ext = externalChange(r, src, map, target);
+        const ext = externalChange(r, src, map, editRun);
         d.io.beforeWrite = () => {
           d.io.external(ext.text);
           fired = true;
@@ -336,72 +495,75 @@ describe('fuzz: seeded random edits through the commit clean-up and the write pr
         marker = null; // refused before writing: nothing raced it
         externalKind = '';
       }
-      stats.edits++;
-      const per = stats.perDoc.get(d.name) ?? { written: 0, notes: 0 };
-      stats.perDoc.set(d.name, per);
+      const qctx = () => `${ctx()} req=${JSON.stringify(req)}`;
 
       try {
         if (!out.ok) {
-          stats.notes++;
-          per.notes++;
-          const key = reasonKey(out.why);
-          if (process.env.BL_FUZZ_TRACE && new RegExp(process.env.BL_FUZZ_TRACE).test(out.why)) process.stderr.write(`TRACE ${ctx()} :: ${out.why}\n`);
-          stats.reasons.set(key, (stats.reasons.get(key) ?? 0) + 1);
-          expect(out.verbatim, `${ctx()} [note text]`).toEqual({ before: req.beforeText, after: req.afterText });
+          if (process.env.BL_FUZZ_TRACE && new RegExp(process.env.BL_FUZZ_TRACE).test(out.why)) process.stderr.write(`TRACE ${qctx()} :: ${out.why}\n`);
+          expect(out.verbatim, `${qctx()} [note text]`).toEqual({ before: req.beforeText, after: req.afterText });
           // Byte-identical: to the file before the edit, or to the external write that raced it.
           const now = decodeDeck(d.io.bytes).src;
           if (mode === 1 && fired) {
-            // Byte-identical to the external write that raced it: the queue wrote nothing.
-            expect(marker !== null && now.includes(marker), `${ctx()} [note: file changed]`).toBe(true);
+            expect(marker !== null && now.includes(marker), `${qctx()} [note: file changed]`).toBe(true);
           } else {
-            expect(bytesEqual(d.io.bytes, before), `${ctx()} [note: not byte-identical] ${out.why}`).toBe(true);
+            expect(bytesEqual(d.io.bytes, before), `${qctx()} [note: not byte-identical] ${out.why}`).toBe(true);
           }
-          if (marker) expect(now.includes(marker), `${ctx()} [note: external change lost] ${externalKind}`).toBe(true);
+          if (marker) expect(now.includes(marker), `${qctx()} [note: external change lost] ${externalKind}`).toBe(true);
+          if (out.code === 'noop') {
+            stats.noops++;
+            reason('queue: noop');
+          } else {
+            expect(RULE_CODES.has(out.code), `${qctx()} [not a note by rule: ${out.code}] ${out.why}`).toBe(true);
+            stats.notes++;
+            reason(`queue ${out.code}: ${reasonKey(out.why)}`);
+          }
           continue;
         }
         stats.written++;
-        per.written++;
+        if (picked) stats.pickWritten++;
         if (mode === 0) stats.staleWritten++;
+        if (out.merged) stats.merged++;
+        expect(out.merged, qctx()).toBe(out.record.versionBefore !== req.version);
         const newBytes = d.io.bytes.slice();
         const dec = decodeDeck(newBytes);
-        expect(dec.utf8, ctx()).toBe(true);
-        expect(out.version, ctx()).toBe(sha256(newBytes));
+        expect(dec.utf8, qctx()).toBe(true);
+        expect(out.version, qctx()).toBe(sha256(newBytes));
         // The source the write was planned on: the record's versionBefore.
         const oldSrc = mode === 1 && sha256(before) !== out.record.versionBefore ? null : beforeSrc;
         const rec = out.record;
         const base = oldSrc ?? dec.src.slice(0, rec.start) + rec.rawBefore + dec.src.slice(rec.start + rec.rawAfter.length);
-        expect(sha256(new TextEncoder().encode(base)), ctx()).toBe(rec.versionBefore);
+        expect(sha256(new TextEncoder().encode(base)), qctx()).toBe(rec.versionBefore);
         // The diff is exactly the record's splice.
-        expect(dec.src, ctx()).toBe(base.slice(0, rec.start) + rec.rawAfter + base.slice(rec.start + rec.rawBefore.length));
+        expect(dec.src, qctx()).toBe(base.slice(0, rec.start) + rec.rawAfter + base.slice(rec.start + rec.rawBefore.length));
         const oldMap = buildMap(base, { version: rec.versionBefore, utf8: true });
         const newMap = buildMap(dec.src, { version: out.version, utf8: true });
         // The diff touches only the target run's range.
         const oldRun = allRuns(oldMap).find((x) => x.id === out.runId);
-        expect(oldRun, ctx()).toBeTruthy();
-        expect(rec.start >= oldRun!.start && rec.start + rec.rawBefore.length <= oldRun!.end, ctx()).toBe(true);
+        expect(oldRun, qctx()).toBeTruthy();
+        expect(rec.start >= oldRun!.start && rec.start + rec.rawBefore.length <= oldRun!.end, qctx()).toBe(true);
         // Re-mapping finds the new text at the target, and every other run is as it was.
         const newRun = allRuns(newMap).find((x) => x.id === out.runId);
-        expect(newRun?.value, ctx()).toBe(after);
+        expect(newRun?.value, qctx()).toBe(req.afterText);
         const others = (m: DeckMap) =>
           allRuns(m)
             .filter((x) => x.id !== out.runId && !(x.strategy !== 'html-text' && (x as LiteralRun).html && !m.units[(x as LiteralRun).unit].html))
             .map((x) => `${x.id}\u0000${x.value}`);
-        expect(others(newMap), ctx()).toEqual(others(oldMap));
+        expect(others(newMap), qctx()).toEqual(others(oldMap));
         // No new parse errors (by code).
         const oc = codeCounts(oldMap);
-        for (const [code, n] of codeCounts(newMap)) expect(n <= (oc.get(code) ?? 0), `${ctx()} new ${code}`).toBe(true);
+        for (const [code, n] of codeCounts(newMap)) expect(n <= (oc.get(code) ?? 0), `${qctx()} new ${code}`).toBe(true);
         // The external change survived (whether it came before the edit or raced its write).
-        if (marker) expect(dec.src.includes(marker), `${ctx()} [external change lost] ${externalKind}`).toBe(true);
+        if (marker) expect(dec.src.includes(marker), `${qctx()} [external change lost] ${externalKind}`).toBe(true);
 
         // Undo restores the bytes exactly; redo restores the edit's bytes exactly.
         const u = await d.q.undo(rec);
-        expect(u.ok, `${ctx()} undo ${u.ok ? '' : u.why}`).toBe(true);
-        expect(decodeDeck(d.io.bytes).src, ctx()).toBe(base);
-        expect(sha256(d.io.bytes), ctx()).toBe(rec.versionBefore);
+        expect(u.ok, `${qctx()} undo ${u.ok ? '' : u.why}`).toBe(true);
+        expect(decodeDeck(d.io.bytes).src, qctx()).toBe(base);
+        expect(sha256(d.io.bytes), qctx()).toBe(rec.versionBefore);
         if (r.chance(0.7)) {
           const re = await d.q.redo(rec);
-          expect(re.ok, `${ctx()} redo ${re.ok ? '' : re.why}`).toBe(true);
-          expect(bytesEqual(d.io.bytes, newBytes), ctx()).toBe(true);
+          expect(re.ok, `${qctx()} redo ${re.ok ? '' : re.why}`).toBe(true);
+          expect(bytesEqual(d.io.bytes, newBytes), qctx()).toBe(true);
           if (r.chance(0.3)) {
             // Undo in a changed file (case 2): an external change far from the edit.
             const src = decodeDeck(d.io.bytes).src;
@@ -411,8 +573,8 @@ describe('fuzz: seeded random edits through the commit clean-up and the write pr
               const ins = '<p>Later external change</p>';
               d.io.external(src.slice(0, at) + ins + src.slice(at));
               const u2 = await d.q.undo(rec);
-              expect(u2.ok, `${ctx()} undo case 2 ${u2.ok ? '' : u2.why}`).toBe(true);
-              expect(decodeDeck(d.io.bytes).src, ctx()).toBe(base.slice(0, at) + ins + base.slice(at));
+              expect(u2.ok, `${qctx()} undo case 2 ${u2.ok ? '' : u2.why}`).toBe(true);
+              expect(decodeDeck(d.io.bytes).src, qctx()).toBe(base.slice(0, at) + ins + base.slice(at));
               stats.undoCase2++;
             }
           }
@@ -426,9 +588,9 @@ describe('fuzz: seeded random edits through the commit clean-up and the write pr
     const pct = (n: number) => `${((100 * n) / Math.max(1, stats.edits)).toFixed(1)}%`;
     const lines = [
       `fuzz seed=${SEED} docs=${state.length} edits=${stats.edits}`,
-      `  written ${stats.written} (${pct(stats.written)}), verbatim notes ${stats.notes} (${pct(stats.notes)})`,
-      `  stale-version edits ${stats.stale} (written ${stats.staleWritten}), conflicting writes ${stats.conflicts}, undo case 2 ${stats.undoCase2}`,
-      '  why edits became notes:',
+      `  written ${stats.written} (${pct(stats.written)}), notes by rule ${stats.notes} (${pct(stats.notes)}), no-ops ${stats.noops} (${pct(stats.noops)})`,
+      `  picked candidates ${stats.picks} (written ${stats.pickWritten}), stale-version edits ${stats.stale} (written ${stats.staleWritten}), merged writes ${stats.merged}, conflicting writes ${stats.conflicts}, undo case 2 ${stats.undoCase2}`,
+      '  why edits became notes or no-ops:',
       ...[...stats.reasons.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `    ${String(n).padStart(4)}  ${k}`),
       `  failures: ${failures.length}`,
       ...failures.slice(0, 20).map((f) => `    ${f}`),
@@ -436,7 +598,12 @@ describe('fuzz: seeded random edits through the commit clean-up and the write pr
     process.stderr.write(lines.join('\n') + '\n');
     expect(failures).toEqual([]);
     expect(stats.edits).toBeGreaterThanOrEqual(Math.min(EDITS, 1000));
+    expect(stats.written + stats.notes + stats.noops).toBe(stats.edits);
     // A fuzz that only produced notes would test nothing.
     expect(stats.written).toBeGreaterThan(stats.edits / 3);
   }, 600_000);
 });
+
+function reasonKey(why: string): string {
+  return why.replace(/ \d+/g, ' N').replace(/ at N.*/, '').replace(/\(.*?\)/g, '').replace(/U\+[0-9A-F]+/g, 'U+X').slice(0, 90).trim();
+}

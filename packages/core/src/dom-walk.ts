@@ -343,6 +343,8 @@ export class ScriptTouchTracker {
   private readonly parents = new WeakSet<object>();
   /** Elements a script inserted: every text node inside one is a script's (GSAP SplitText wraps each word). */
   private readonly inserted = new WeakSet<object>();
+  /** Elements whose changes are the overlay's own while they are held (ownRegion: an open edit field). */
+  private readonly regions = new Set<Node>();
   private readonly observer: MutationObserver | null;
   private parsed: boolean;
 
@@ -364,6 +366,7 @@ export class ScriptTouchTracker {
 
   private take(records: MutationRecord[], parserTime = !this.parsed): void {
     for (const r of records) {
+      if (this.regions.size > 0 && this.inRegion(r.target)) continue;
       if (parserTime) {
         // During parsing only a removed text node is certain to be a script's doing.
         if (r.type !== 'childList' || !Array.prototype.some.call(r.removedNodes, (n: Node) => n.nodeType === 3)) continue;
@@ -390,6 +393,73 @@ export class ScriptTouchTracker {
     for (let p: Node | null = node.parentNode; p; p = p.parentNode) if (this.inserted.has(p)) return true;
     return false;
   }
+
+  private inRegion(target: Node): boolean {
+    for (const el of this.regions) if (el === target || el.contains(target)) return true;
+    return false;
+  }
+
+  /**
+   * Runs `fn`, a synchronous DOM change the overlay makes itself (an edit field's text written back after a
+   * commit, restored after a cancel or a refused input), so it is not counted as a script's (P2-6): a node the
+   * author edited stays the parser's own text node and keeps matching its stamped run. Changes queued before `fn`
+   * are delivered first, as the page's. With `scope`, only changes whose target is `scope` or inside it are
+   * dropped: anything else that changed while `fn` ran stays the page's. `fn` must not run page code (no focus(),
+   * no events): mutation events no longer exist in Chromium, so a text write runs none.
+   */
+  ownChanges<T>(fn: () => T, scope?: Node | null): T {
+    if (this.observer) this.take(this.observer.takeRecords());
+    try {
+      return fn();
+    } finally {
+      if (this.observer) {
+        const records = this.observer.takeRecords();
+        if (scope) this.take(records.filter((r) => !(r.target === scope || scope.contains(r.target))));
+      }
+    }
+  }
+
+  /**
+   * Holds `el` (an open edit field) as the overlay's own until the returned function is called: the browser's
+   * editing of the field (typing, paste, dictation, which Chromium may do by replacing its text nodes) arrives as
+   * mutation records after the input event, and none of them counts as a script's (P2-6). The page's own changes
+   * inside the field while it is open are the edit controller's to refuse (its input gate restores them, P2-7);
+   * anything outside it, and anything after the release, counts as usual. Changes queued before the call are
+   * delivered first, as the page's; the release drops those still queued inside the field.
+   */
+  ownRegion(el: Node): () => void {
+    if (this.observer) this.take(this.observer.takeRecords());
+    this.regions.add(el);
+    let held = true;
+    return () => {
+      if (!held) return;
+      held = false;
+      if (this.observer) this.take(this.observer.takeRecords());
+      this.regions.delete(el);
+    };
+  }
+}
+
+/**
+ * The DomTextNode the matcher takes, exactly as the render walk builds it (DomWalker.collect): the parent's stamp,
+ * textIndex, data and texts (D-b), and, with the tracker that ran from preload start, `tracked`, `touched` and the
+ * touched node's `stampedAncestor` (P2-6: Edit matches as `blueline map` does).
+ */
+export function describeNode(node: Text, tracker?: ScriptTouchTracker | null, cache?: TextsCache): DomTextNode {
+  const d = describeTextNode(node, cache);
+  if (!tracker) return d;
+  d.tracked = true;
+  if (tracker.isTouched(node)) {
+    d.touched = true;
+    for (let el: Element | null = node.parentElement; el; el = el.parentElement) {
+      const s = stampOf(el);
+      if (s) {
+        d.stampedAncestor = s;
+        break;
+      }
+    }
+  }
+  return d;
 }
 
 export class DomWalker {
@@ -571,20 +641,17 @@ export class DomWalker {
     return { x: round2(r.left + scope.ox), y: round2(r.top + scope.oy), w: round2(r.width), h: round2(r.height) };
   }
 
+  /**
+   * One node's DomTextNode, as collect, find and locate describe it (describeNode with this walker's tracker), for
+   * the deck view's edit controller: its outlines and clicks then match exactly as `blueline map` does (P2-6).
+   */
+  describeNode(node: Text): DomTextNode {
+    return describeNode(node, this.opts.touched ?? null);
+  }
+
   /** The node's DomTextNode, with its parent's texts while the reply's texts budget lasts. */
   private describe(node: Text): DomTextNode {
-    const d = describeTextNode(node, this.textsCache);
-    if (this.opts.touched) d.tracked = true;
-    if (this.opts.touched?.isTouched(node)) {
-      d.touched = true;
-      for (let el: Element | null = node.parentElement; el; el = el.parentElement) {
-        const s = stampOf(el);
-        if (s) {
-          d.stampedAncestor = s;
-          break;
-        }
-      }
-    }
+    const d = describeNode(node, this.opts.touched ?? null, this.textsCache);
     if (d.texts) {
       const t = node.parentNode ? this.textsCache.get(node.parentNode) : null;
       const cost = t ? t.chars + t.texts.length : 0;

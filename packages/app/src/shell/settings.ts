@@ -1,9 +1,10 @@
 // The Settings window's page (6.1 Becoming the default app: Settings › General; 6.10 Settings › Trust; 9.9 the
 // CDN allowlist and the strict option). Two panes: General (whether Blueline is the default HTML app, and the
-// button that makes it so) and Trust (trusted and untrusted folders, "Block all network in Protected view", the
-// allowlist, and About Protected view). Every string goes in with textContent, never as HTML, and no data goes
-// into a style string (9.1 Shell view); the page talks to main only through window.blueline, the Settings
-// preload's contextBridge API. Main shows the folder dialog itself: the page never names a folder to add.
+// button that makes it so; since Phase 2 also Editing › Smart punctuation, 6.3) and Trust (trusted and untrusted
+// folders, "Block all network in Protected view", the allowlist, and About Protected view). Every string goes in
+// with textContent, never as HTML, and no data goes into a style string (9.1 Shell view); the page talks to main
+// only through window.blueline, the Settings preload's contextBridge API. Main shows the folder dialog itself:
+// the page never names a folder to add.
 
 import {
   PROTECTED_VIEW_HELP,
@@ -16,9 +17,16 @@ import {
   type SettingsState,
 } from '@blueline/core/ipc-trust';
 
+/**
+ * Settings › General's additions to the state and the API (main: settings-window.ts SettingsWindowState and
+ * SETTINGS_GENERAL_CHANNELS; preload: SettingsWindowApi). `smartPunctuation` null or absent: not offered.
+ */
+type PageState = SettingsState & { smartPunctuation?: boolean | null };
+type PageApi = SettingsApi & { setSmartPunctuation(on: boolean): Promise<void> };
+
 // window.blueline is declared as the document shell's ShellApi (shell.ts); in this window the Settings preload
 // puts a SettingsApi there instead.
-const api = (window as unknown as { blueline: SettingsApi }).blueline;
+const api = (window as unknown as { blueline: PageApi }).blueline;
 
 function el<T extends HTMLElement = HTMLElement>(id: string): T {
   const e = document.getElementById(id);
@@ -43,7 +51,7 @@ function failure(e: unknown): string {
   return `Not changed: ${e instanceof Error ? e.message : String(e)}`;
 }
 
-let state: SettingsState | null = null;
+let state: PageState | null = null;
 
 // ------------------------------------------------------------------------------------------- tabs
 
@@ -118,6 +126,35 @@ function setupGeneral(): void {
         if (state) renderDefault(state.defaultApp, state.platform);
       });
   });
+  // 6.3 Smart punctuation: the default for every document that has no setting of its own.
+  const smart = el<HTMLInputElement>('smart-punctuation');
+  smart.addEventListener('change', () => {
+    const on = smart.checked;
+    smartBusy = true;
+    smart.disabled = true;
+    say('smart-punctuation-result', '');
+    void api
+      .setSmartPunctuation(on)
+      .catch((e: unknown) => {
+        smart.checked = !on;
+        say('smart-punctuation-result', failure(e), 'error');
+      })
+      .finally(() => {
+        smartBusy = false;
+        if (state) renderSmartPunctuation(state);
+      });
+  });
+}
+
+/** A change of the smart punctuation default is on its way to main: a state push leaves the box alone. */
+let smartBusy = false;
+
+function renderSmartPunctuation(s: PageState): void {
+  if (smartBusy) return;
+  const smart = el<HTMLInputElement>('smart-punctuation');
+  const offered = typeof s.smartPunctuation === 'boolean';
+  if (offered) smart.checked = s.smartPunctuation === true;
+  smart.disabled = !offered;
 }
 
 // ------------------------------------------------------------------------------------------- Trust
@@ -259,9 +296,10 @@ function renderHelp(): void {
 
 // ------------------------------------------------------------------------------------------- state
 
-function render(s: SettingsState): void {
+function render(s: PageState): void {
   state = s;
   renderDefault(s.defaultApp, s.platform);
+  renderSmartPunctuation(s);
   renderFolders('trusted', s.trustedFolders);
   renderFolders('untrusted', s.untrustedFolders);
   const strict = el<HTMLInputElement>('strict');

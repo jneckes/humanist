@@ -15,7 +15,6 @@ describe('write queue: the write protocol (9.2)', () => {
     const io = new MemIO(doc('<h1>Title</h1>\n<p>Hello</p>'));
     const seen: { map: DeckMap; record: WriteRecord }[] = [];
     const q = createWriteQueue(io, { afterWrite: (map, record) => void seen.push({ map, record }) });
-    expect(q.currentMap()).toBeNull();
     const map = await q.refresh();
     const out = await q.edit(requestFor(map, 'Hello', 'Hello there'));
     expect(out.ok).toBe(true);
@@ -27,7 +26,7 @@ describe('write queue: the write protocol (9.2)', () => {
     expect(out.record).toMatchObject({ versionBefore: map.version, versionAfter: out.version, rawBefore: '', rawAfter: ' there' });
     expect(seen).toHaveLength(1);
     expect(seen[0].map.version).toBe(out.version);
-    expect(q.currentMap()!.version).toBe(out.version);
+    expect((await q.currentMap()).version).toBe(out.version);
   });
 
   it('never writes a deck that is not UTF-8', async () => {
@@ -48,7 +47,7 @@ describe('write queue: the write protocol (9.2)', () => {
     const map = await q.refresh();
     const req = requestFor(map, 'bold', '');
     const out = await q.edit(req);
-    expect(out).toEqual({ ok: false, verbatim: { before: 'bold', after: '' }, why: expect.stringMatching(/structural/) });
+    expect(out).toEqual({ ok: false, verbatim: { before: 'bold', after: '' }, why: expect.stringMatching(/structural/), code: 'structural' });
     expect(io.writes).toBe(0);
   });
 
@@ -87,7 +86,7 @@ describe('write queue: the write protocol (9.2)', () => {
       return real(b);
     };
     const out = await q.edit(requestFor(map, 'Hello', 'Hi'));
-    expect(out).toEqual({ ok: false, verbatim: { before: 'Hello', after: 'Hi' }, why: 'internal error: boom' });
+    expect(out).toEqual({ ok: false, verbatim: { before: 'Hello', after: 'Hi' }, why: 'internal error: boom', code: 'internal' });
     expect(io.writes).toBe(0);
     // The queue keeps working afterwards.
     expect((await q.edit(requestFor(map, 'Hello', 'Hi'))).ok).toBe(true);
@@ -167,7 +166,7 @@ describe('write queue: the version check (9.2 Write protocol step 2)', () => {
     const map = await q.refresh();
     const unknown = 'f'.repeat(64);
     expect((await q.edit({ ...requestFor(map, 'Solo', 'Solo!'), version: unknown })).ok).toBe(true);
-    const m2 = q.currentMap()!;
+    const m2 = await q.currentMap();
     expect((await q.edit({ ...requestFor(m2, 'Twin', 'Twin!'), version: unknown })).ok).toBe(false);
   });
 

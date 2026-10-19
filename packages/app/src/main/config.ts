@@ -5,13 +5,27 @@
 // refused folders); this file only stores them, re-checking each value when it reads the file. Writes go
 // through the atomic writer, one at a time (CoalescingWriter).
 //
+// Phase 2 adds the settings defaults (9.7: "config.json: name, color, settings defaults, …"): `defaults` holds the
+// value a document's Session.settings takes when it sets none, today smart punctuation (6.3: "default on; toggle in
+// settings"), changed in Settings › General (settings-window.ts).
+//
 // The file is Blueline's own app data, so fields this version does not know are kept as they are when it
 // rewrites the file (a newer version may have added them).
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { Session } from '@blueline/core/types';
 import { CoalescingWriter } from './atomic-write';
 import { normalizeAllowlistHost } from './network-policy';
+
+/** 6.3 Smart punctuation: default on. */
+export const DEFAULT_SMART_PUNCTUATION = true;
+
+/** Settings defaults (9.7): what each document's Session.settings falls back to. */
+export interface SettingsDefaults {
+  /** 6.3 Smart punctuation. Absent: DEFAULT_SMART_PUNCTUATION. */
+  smartPunctuation?: boolean;
+}
 
 export interface AppConfig {
   name?: string;
@@ -35,10 +49,27 @@ export interface AppConfig {
   strictProtected?: boolean;
   /** Settings › Trust: the CDN allowlist as the user edited it (9.9). Absent: network-policy's DEFAULT_ALLOWLIST. */
   cdnAllowlist?: string[];
+  /** Settings defaults (9.7), changed in Settings › General. */
+  defaults?: SettingsDefaults;
 }
 
-/** A change to the config. `cdnAllowlist: null` removes the edited list (back to the 9.9 defaults). */
+/** A change to the config. `cdnAllowlist: null` removes the edited list (back to the 9.9 defaults). `defaults` merges. */
 export type ConfigPatch = Omit<AppConfig, 'cdnAllowlist'> & { cdnAllowlist?: string[] | null };
+
+/** The smart punctuation default (config.json), on unless the user turned it off. */
+export function smartPunctuationDefault(c: AppConfig): boolean {
+  return c.defaults?.smartPunctuation ?? DEFAULT_SMART_PUNCTUATION;
+}
+
+/**
+ * Whether the commit clean-up converts straight quotes for one document (6.3): the document's own setting
+ * (Session.settings.smartPunctuation) when it has one, else the default from config.json. DeckInit.settings
+ * carries it to the deck view.
+ */
+export function smartPunctuationFor(c: AppConfig, settings: Session['settings'] | null | undefined): boolean {
+  const own = settings?.smartPunctuation;
+  return typeof own === 'boolean' ? own : smartPunctuationDefault(c);
+}
 
 const PERSON_ID = /^[a-z0-9-]{1,40}$/;
 const COLOR = /^#[0-9a-f]{6}$/;
@@ -110,6 +141,23 @@ export function sanitizeConfig(raw: unknown): AppConfig {
   else if (get('strictProtected') === false) out.strictProtected = false;
   const hosts = sanitizeHostList(get('cdnAllowlist'));
   if (hosts) out.cdnAllowlist = hosts;
+  const defaults = get('defaults');
+  if (defaults && typeof defaults === 'object' && !Array.isArray(defaults)) {
+    const d = defaults as Record<string, unknown>;
+    const kept: SettingsDefaults = {};
+    if (Object.prototype.hasOwnProperty.call(d, 'smartPunctuation') && typeof d.smartPunctuation === 'boolean') kept.smartPunctuation = d.smartPunctuation;
+    if (Object.keys(kept).length > 0) out.defaults = kept;
+  }
+  return out;
+}
+
+const UNSAFE_KEYS: ReadonlySet<string> = new Set(['__proto__', 'constructor', 'prototype']);
+
+/** A plain object's own fields, without keys that could reach a prototype (the file is read back as JSON). */
+function ownFields(v: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+  for (const k of Object.keys(v)) if (!UNSAFE_KEYS.has(k)) out[k] = (v as Record<string, unknown>)[k];
   return out;
 }
 
@@ -155,6 +203,7 @@ export class ConfigStore {
       trustedFolders: c.trustedFolders ? [...c.trustedFolders] : undefined,
       untrustedFolders: c.untrustedFolders ? [...c.untrustedFolders] : undefined,
       cdnAllowlist: c.cdnAllowlist ? [...c.cdnAllowlist] : undefined,
+      defaults: c.defaults ? { ...c.defaults } : undefined,
     };
   }
 
@@ -175,14 +224,13 @@ export class ConfigStore {
       // The file's own copy goes too, or the rewrite below would keep the edited list (unknown fields are kept).
       delete this.raw.cdnAllowlist;
     } else if (patch.cdnAllowlist !== undefined) next.cdnAllowlist = [...patch.cdnAllowlist];
+    if (patch.defaults !== undefined) next.defaults = { ...this.config.defaults, ...patch.defaults };
     this.config = sanitizeConfig(next);
     return this.writer.schedule(() => {
-      const out: Record<string, unknown> = {};
-      for (const k of Object.keys(this.raw)) {
-        if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
-        out[k] = this.raw[k];
-      }
+      const out = ownFields(this.raw);
       for (const [k, v] of Object.entries(this.config)) if (v !== undefined) out[k] = v;
+      // Defaults this version does not know stay too (a newer version may have added them).
+      if (this.config.defaults) out.defaults = { ...ownFields(this.raw.defaults), ...this.config.defaults };
       return new TextEncoder().encode(JSON.stringify(out, null, 2) + '\n');
     });
   }
@@ -194,4 +242,43 @@ export class ConfigStore {
   get busy(): boolean {
     return this.writer.busy;
   }
+}
+
+/** The settings defaults Settings › General changes (6.3 Smart punctuation), as one snapshot. */
+export interface GeneralSettingsState {
+  smartPunctuation: boolean;
+}
+
+/** Settings › General's settings defaults over config.json. */
+export interface GeneralSettings {
+  get(): GeneralSettingsState;
+  setSmartPunctuation(on: boolean): Promise<void>;
+  /** Called after every change (main pushes the new default to open documents that have no setting of their own). */
+  onChange(fn: (s: GeneralSettingsState) => void): () => void;
+}
+
+/** GeneralSettings stored in config.json `defaults`. */
+export function configGeneralSettings(config: Pick<ConfigStore, 'get' | 'update'>): GeneralSettings {
+  const listeners = new Set<(s: GeneralSettingsState) => void>();
+  const get = (): GeneralSettingsState => ({ smartPunctuation: smartPunctuationDefault(config.get()) });
+  return {
+    get,
+    async setSmartPunctuation(on) {
+      if (typeof on !== 'boolean') throw new Error('setSmartPunctuation: not a boolean');
+      if (get().smartPunctuation === on) return;
+      await config.update({ defaults: { smartPunctuation: on } });
+      const s = get();
+      for (const fn of [...listeners]) {
+        try {
+          fn(s);
+        } catch {
+          // A listener's failure must not keep the others from the change.
+        }
+      }
+    },
+    onChange(fn) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
+  };
 }

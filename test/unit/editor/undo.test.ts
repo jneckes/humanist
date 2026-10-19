@@ -48,9 +48,9 @@ describe('planUndo (9.2 Undo and redo cases 1-3)', () => {
 
   it('case 3: the text changed, or it occurs twice: refuse with Make a note', () => {
     const edited = after.replace('Hello world', 'Hello there');
-    expect(planUndo(edited, record, 'v-other')).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true });
+    expect(planUndo(edited, record, 'v-other')).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' });
     const twice = after + after;
-    expect(planUndo(twice, record, 'v-other')).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true });
+    expect(planUndo(twice, record, 'v-other')).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' });
   });
 
   it('counts overlapping occurrences as different places', () => {
@@ -104,7 +104,7 @@ describe('undo through the write queue restores the bytes exactly', () => {
       let written = 0;
       for (const run of runs) {
         const before = io.bytes.slice();
-        const cur = q.currentMap()!;
+        const cur = await q.currentMap();
         // The mutation probe's edit: append the sentinel to the run (section 10, Phase 0).
         const out = await q.edit(requestFor(cur, run.id, run.value + '⟦bl⟧'));
         if (!out.ok) {
@@ -151,7 +151,7 @@ describe('undo through the write queue restores the bytes exactly', () => {
     io.external('<!doctype html><body><p>Hello there world</p></body>');
     const snapshot = io.bytes.slice();
     const u = await q.undo(out.record);
-    expect(u).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true });
+    expect(u).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' });
     expect(bytesEqual(io.bytes, snapshot)).toBe(true);
   });
 

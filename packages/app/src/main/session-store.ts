@@ -5,10 +5,20 @@
 // The file is Blueline's own app data, but it is still read defensively: a file that does not parse, or
 // that holds a note this version cannot read, is kept aside as `session.json.unreadable-<time>` before
 // anything is written over it, so no note is ever lost to a parse.
+//
+// Phase 2 (Edit) keeps, beside the section 8 Session:
+//   - each target's SourceLoc (edit and verbatim notes say where their text is; 9.2 Strategy 3 candidates);
+//   - the locked spans of edit notes, checked field by field (section 8 Locked spans; a span whose note is gone
+//     protects nothing and is dropped);
+//   - `known`: the whole-file sha256 of the last deck version main knew (decision P2-12). Its bytes are in the
+//     history folder (history.ts, the base), so locked spans can be transformed from it after a restart or a
+//     D-1 reopen, and a change made while Blueline was closed is seen. `deck.sha256` (the same version without
+//     the notes block, section 8) follows every version main takes (noteVersion), not only the one at open.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type {
+  Confidence,
   LockedSpan,
   Mark,
   MarkShape,
@@ -21,7 +31,9 @@ import type {
   Session,
   SlideNavKind,
   SlideRef,
+  SourceLoc,
   Status,
+  Strategy,
   Target,
 } from '@blueline/core/types';
 import { CoalescingWriter } from './atomic-write';
@@ -31,10 +43,21 @@ const KINDS: readonly NoteKind[] = ['markup', 'verbatim', 'edit'];
 const TOOLS: readonly MarkTool[] = ['pen', 'highlighter', 'arrow', 'pin', 'box'];
 const SHAPES: readonly MarkShape[] = ['ellipse', 'freehand', 'underline', 'strike', 'rect'];
 const NAV_KINDS: readonly SlideNavKind[] = ['hash', 'reveal', 'index', 'scroll', 'none'];
+const STRATEGIES: readonly Strategy[] = ['html-text', 'script-literal', 'json-literal', 'agent'];
+const CONFIDENCES: readonly Confidence[] = ['exact', 'ambiguous', 'none'];
 const NOTE_ID = /^(?:[a-z0-9-]{1,40}:)?n-[0-9]{4,6}$/;
 const PERSON_ID = /^[a-z0-9-]{1,40}$/;
 const COLOR = /^#[0-9a-f]{6}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
 const MAX_SESSION_BYTES = 256 * 1024 * 1024;
+/** Candidate locations kept per SourceLoc (the picker never offers this many). */
+const MAX_CANDIDATES = 200;
+
+/** P2-12: the last deck version main knew. */
+export interface KnownVersion {
+  /** sha256 of the whole file (the map `version`; the history folder stores its bytes under it). */
+  version: string;
+}
 
 export function sessionFileFor(userData: string, fileKey: string): string {
   if (!/^[0-9a-f]{16}$/.test(fileKey)) throw new Error('invalid fileKey');
@@ -77,6 +100,11 @@ function oneOf<T extends string>(v: unknown, all: readonly T[], what: string): T
   if (typeof v !== 'string' || !(all as readonly string[]).includes(v)) bad(`${what}: unexpected value`);
   return v as T;
 }
+/** A UTF-16 offset or a line/column number: a non-negative safe integer. */
+function offset(v: unknown, what: string): number {
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) bad(`${what}: not an offset`);
+  return v;
+}
 
 function readSlide(v: unknown): SlideRef {
   const o = obj(v, 'slide');
@@ -114,7 +142,47 @@ function readSelector(v: unknown): Selector {
   }
 }
 
-function readTarget(v: unknown): Target {
+/** Section 8 SourceLoc: offsets index the decoded file `version` (9.2 rule 2); line and col are 1-based. */
+export function readSource(v: unknown): SourceLoc {
+  const o = obj(v, 'source');
+  const version = str(field(o, 'version'), 'source.version');
+  if (!SHA256.test(version)) bad('source.version');
+  const start = offset(field(o, 'start'), 'source.start');
+  const end = offset(field(o, 'end'), 'source.end');
+  if (start > end) bad('source: start after end');
+  const line = offset(field(o, 'line'), 'source.line');
+  const col = offset(field(o, 'col'), 'source.col');
+  if (line < 1 || col < 1) bad('source: line and col are 1-based');
+  const s: SourceLoc = {
+    file: str(field(o, 'file'), 'source.file'),
+    version,
+    start,
+    end,
+    line,
+    col,
+    strategy: oneOf(field(o, 'strategy'), STRATEGIES, 'source.strategy'),
+    confidence: oneOf(field(o, 'confidence'), CONFIDENCES, 'source.confidence'),
+  };
+  const candidates = field(o, 'candidates');
+  if (candidates !== undefined) {
+    const list = arr(candidates, 'source.candidates');
+    if (list.length > MAX_CANDIDATES) bad('source.candidates: too many');
+    s.candidates = list.map((c) => {
+      const co = obj(c, 'candidate');
+      const cs = offset(field(co, 'start'), 'candidate.start');
+      const ce = offset(field(co, 'end'), 'candidate.end');
+      if (cs > ce) bad('candidate: start after end');
+      const out: NonNullable<SourceLoc['candidates']>[number] = { start: cs, end: ce, line: offset(field(co, 'line'), 'candidate.line'), context: str(field(co, 'context'), 'candidate.context') };
+      const kw = optStr(field(co, 'keyWarning'), 'candidate.keyWarning');
+      if (kw !== undefined) out.keyWarning = kw;
+      return out;
+    });
+  }
+  return s;
+}
+
+/** `dropped` is called when an optional part could not be read and was left out (the file is then kept aside). */
+function readTarget(v: unknown, dropped: () => void = () => undefined): Target {
   const o = obj(v, 'target');
   const box = obj(field(o, 'box'), 'target.box');
   const t: Target = {
@@ -137,7 +205,17 @@ function readTarget(v: unknown): Target {
     if (click !== undefined) t.state.click = arr(click, 'state.click').map((c) => str(c, 'state.click[]'));
     if (hover !== undefined) t.state.hover = str(hover, 'state.hover');
   }
-  // `source` (SourceLoc) is re-resolved against the current file whenever it is used (9.5); Phase 0 keeps none.
+  // `source` (SourceLoc) says where an edit or verbatim note's text was; it is re-resolved against the current
+  // file whenever it is used (9.5). One that cannot be read is left out, never the whole note.
+  const source = field(o, 'source');
+  if (source !== undefined) {
+    try {
+      t.source = readSource(source);
+    } catch (e) {
+      if (!(e instanceof Bad)) throw e;
+      dropped();
+    }
+  }
   return t;
 }
 
@@ -173,8 +251,11 @@ function readRecording(v: unknown): Recording {
   return r;
 }
 
-/** Rebuilds one note field by field; throws Bad if any field is unreadable. */
-export function readNote(v: unknown): Note {
+/**
+ * Rebuilds one note field by field; throws Bad if a required field is unreadable. An optional part that cannot
+ * be read (a target's SourceLoc) is left out and reported to `dropped`.
+ */
+export function readNote(v: unknown, dropped: () => void = () => undefined): Note {
   const o = obj(v, 'note');
   const id = str(field(o, 'id'), 'note.id');
   if (!NOTE_ID.test(id)) bad('note.id');
@@ -188,7 +269,7 @@ export function readNote(v: unknown): Note {
     updatedAt: str(field(o, 'updatedAt'), 'note.updatedAt'),
     pass: pass === null ? null : num(pass, 'note.pass'),
     slide: readSlide(field(o, 'slide')),
-    targets: arr(field(o, 'targets'), 'note.targets').map(readTarget),
+    targets: arr(field(o, 'targets'), 'note.targets').map((t) => readTarget(t, dropped)),
     marks: arr(field(o, 'marks'), 'note.marks').map(readMark),
     text: str(field(o, 'text'), 'note.text'),
     recordings: arr(field(o, 'recordings') ?? [], 'note.recordings').map(readRecording),
@@ -223,13 +304,22 @@ function readPerson(v: unknown): Person {
   return { id, name: str(field(o, 'name'), 'person.name'), color };
 }
 
-function readLocked(v: unknown): LockedSpan {
+/**
+ * Section 8 Locked spans: UTF-16 offsets into the decoded file (9.2 rule 2), start ≤ end, the id of the edit
+ * note that holds the lock, and for a violated span the change that broke it.
+ */
+export function readLocked(v: unknown): LockedSpan {
   const o = obj(v, 'locked');
+  const start = offset(field(o, 'start'), 'locked.start');
+  const end = offset(field(o, 'end'), 'locked.end');
+  if (start > end) bad('locked: start after end');
+  const noteId = str(field(o, 'noteId'), 'locked.noteId');
+  if (!NOTE_ID.test(noteId)) bad('locked.noteId');
   const l: LockedSpan = {
-    start: num(field(o, 'start'), 'locked.start'),
-    end: num(field(o, 'end'), 'locked.end'),
+    start,
+    end,
     text: str(field(o, 'text'), 'locked.text'),
-    noteId: str(field(o, 'noteId'), 'locked.noteId'),
+    noteId,
     state: oneOf(field(o, 'state'), ['ok', 'violated'] as const, 'locked.state'),
   };
   const change = field(o, 'change');
@@ -240,10 +330,41 @@ function readLocked(v: unknown): LockedSpan {
   return l;
 }
 
+function readKnown(v: unknown): KnownVersion {
+  const o = obj(v, 'known');
+  const version = str(field(o, 'version'), 'known.version');
+  if (!SHA256.test(version)) bad('known.version');
+  return { version };
+}
+
+/** The deck fields as the file stored them (Session.deck), or null when they cannot be read. */
+function readDeck(v: unknown): Session['deck'] | null {
+  try {
+    const o = obj(v, 'deck');
+    return {
+      path: str(field(o, 'path'), 'deck.path'),
+      realpath: str(field(o, 'realpath'), 'deck.realpath'),
+      fileKey: str(field(o, 'fileKey'), 'deck.fileKey'),
+      sha256: str(field(o, 'sha256'), 'deck.sha256'),
+      title: str(field(o, 'title'), 'deck.title'),
+    };
+  } catch (e) {
+    if (!(e instanceof Bad)) throw e;
+    return null;
+  }
+}
+
 export interface ReadResult {
   session: Session;
   /** Something could not be read: the original file must be kept aside before the next write. */
   lossy: boolean;
+  /** P2-12: the last deck version main knew when the file was written, or null (none yet, or unreadable). */
+  known: KnownVersion | null;
+  /**
+   * The deck fields as the file had them (`deck.sha256`: the last version the session knew, without the notes
+   * block; 9.7 Moved files and 6.8 baseSha compare against it), before `deck` replaced them. Null for none.
+   */
+  storedDeck: Session['deck'] | null;
 }
 
 /**
@@ -269,13 +390,26 @@ export function readSession(raw: unknown, deck: Session['deck']): ReadResult {
     return out;
   };
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || (raw as Record<string, unknown>).version !== 2) {
-    return { session: emptySession(deck), lossy: true };
+    return { session: emptySession(deck), lossy: true, known: null, storedDeck: null };
   }
   const r = raw as Record<string, unknown>;
   const s = emptySession(deck);
-  s.notes = keep(field(r, 'notes'), readNote);
+  const dropped = () => {
+    lossy = true;
+  };
+  // A second note with an id already read would make undo delete the wrong one: the first is kept.
+  const ids = new Set<string>();
+  s.notes = keep(field(r, 'notes'), (v) => readNote(v, dropped)).filter((n) => {
+    if (ids.has(n.id)) {
+      lossy = true;
+      return false;
+    }
+    ids.add(n.id);
+    return true;
+  });
   s.people = keep(field(r, 'people'), readPerson);
-  s.locked = keep(field(r, 'locked'), readLocked);
+  // A lock protects an edit note's text (section 8); a lock whose note is gone protects nothing.
+  s.locked = keep(field(r, 'locked'), readLocked).filter((l) => ids.has(l.noteId));
   s.tombstones = keep(field(r, 'tombstones'), (t) => {
     const id = str(t, 'tombstone');
     if (!NOTE_ID.test(id)) bad('tombstone');
@@ -319,7 +453,17 @@ export function readSession(raw: unknown, deck: Session['deck']): ReadResult {
     // 6.9 View › Reading Width, remembered per file (added by views).
     if (typeof field(st, 'readingWidth') === 'boolean') s.settings.readingWidth = st.readingWidth as boolean;
   }
-  return { session: s, lossy };
+  let known: KnownVersion | null = null;
+  const rawKnown = field(r, 'known');
+  if (rawKnown !== undefined && rawKnown !== null) {
+    try {
+      known = readKnown(rawKnown);
+    } catch (e) {
+      if (!(e instanceof Bad)) throw e;
+      lossy = true;
+    }
+  }
+  return { session: s, lossy, known, storedDeck: readDeck(field(r, 'deck')) };
 }
 
 // ------------------------------------------------------------------------------------- deckNav (6.7)
@@ -382,24 +526,42 @@ export async function sessionFileSettled(file: string): Promise<void> {
   }
 }
 
+/** The session as session.json holds it: the section 8 Session, then `known` (P2-12). */
+export function serializeSession(session: Session, known: KnownVersion | null): Uint8Array {
+  const out: Record<string, unknown> = { ...session };
+  if (known) out.known = { version: known.version };
+  return new TextEncoder().encode(JSON.stringify(out, null, 2) + '\n');
+}
+
 /** One document's session: loaded at open, written atomically after each change. */
 export class SessionStore {
   private readonly writer: CoalescingWriter;
   private keptAside = false;
+  private knownVersion: KnownVersion | null;
+  /**
+   * The deck fields as session.json had them before this open replaced them with the current document's, or
+   * null (a new session, or unreadable). `storedDeck.sha256 !== session.deck.sha256` (and known() against the
+   * document's version) says the deck changed while no window showed it.
+   */
+  readonly storedDeck: Session['deck'] | null;
 
   private constructor(
     readonly file: string,
     readonly session: Session,
     private lossy: boolean,
     onSave: (e: SaveEvent) => void,
+    stored: { known: KnownVersion | null; deck: Session['deck'] | null } = { known: null, deck: null },
   ) {
     this.writer = new CoalescingWriter(file, (err) => onSave(err ? { state: 'error', error: err } : { state: 'saved', at: new Date() }));
+    this.knownVersion = stored.known;
+    this.storedDeck = stored.deck;
   }
 
   /**
    * Loads `file` for `deck` (or starts empty). The deck fields are always the current document's: path,
-   * realpath, fileKey, sha256 (without the notes block) and title. Phase 1 adds "Continue the review from
-   * <old path>?" for moved files (9.7).
+   * realpath, fileKey, sha256 (without the notes block) and title; the ones the file had stay readable as
+   * storedDeck, and the last version main knew as known(). Phase 1 adds "Continue the review from <old path>?"
+   * for moved files (9.7).
    */
   static async open(file: string, deck: Session['deck'], onSave: (e: SaveEvent) => void = () => undefined): Promise<SessionStore> {
     // One writer (6.8): read only after another store's write of this file has landed.
@@ -420,7 +582,25 @@ export class SessionStore {
       parsed = null;
     }
     const r = readSession(parsed, deck);
-    return new SessionStore(file, r.session, r.lossy, onSave);
+    return new SessionStore(file, r.session, r.lossy, onSave, { known: r.known, deck: r.storedDeck });
+  }
+
+  /** P2-12: the last deck version main knew (its bytes are history.ts's base), or null. */
+  known(): KnownVersion | null {
+    return this.knownVersion ? { ...this.knownVersion } : null;
+  }
+
+  /**
+   * Main took a new version of the deck (open, an own write, an external change, a restore): `known` becomes
+   * its whole-file sha256 and `deck.sha256` and `deck.title` follow it (section 8: deck.sha256 is the version
+   * without the notes block). Call save() after, with the change that goes with it.
+   */
+  noteVersion(v: { version: string; contentHash: string; title?: string }): void {
+    if (typeof v.version !== 'string' || !SHA256.test(v.version)) throw new Error('noteVersion: bad version');
+    if (typeof v.contentHash !== 'string' || !SHA256.test(v.contentHash)) throw new Error('noteVersion: bad contentHash');
+    this.knownVersion = { version: v.version };
+    this.session.deck.sha256 = v.contentHash;
+    if (typeof v.title === 'string') this.session.deck.title = v.title;
   }
 
   /** Writes the current session (coalesced). Resolves when the queue is idle; failures go to onSave. */
@@ -437,7 +617,7 @@ export class SessionStore {
       const aside = `${this.file}.unreadable-${new Date().toISOString().replace(/[:.]/g, '-')}`;
       await fs.promises.copyFile(this.file, aside, fs.constants.COPYFILE_EXCL).catch(() => undefined);
     }
-    return this.writer.schedule(() => new TextEncoder().encode(JSON.stringify(this.session, null, 2) + '\n'));
+    return this.writer.schedule(() => serializeSession(this.session, this.knownVersion));
   }
 
   idle(): Promise<void> {
