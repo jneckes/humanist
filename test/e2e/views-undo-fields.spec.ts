@@ -1,13 +1,16 @@
 // Edit › Undo in Blueline's own text fields (review finding 21; 6.2: Cmd+Z goes to native undo while a text
 // field has focus; 9.2 Undo step 5). Undo and Redo are custom menu items, so on macOS Cmd+Z reaches a field only
 // through the item's click. In the shell's Find input and in the Settings host input that click undoes the
-// typing, with no "arrives in Phase 2" toast. The macOS route is run here by calling the item's click() from
-// main while the field has focus (Linux and Windows handle Ctrl+Z in the page itself).
+// typing, with no app-undo toast. The macOS route is run here by calling the item's click() from main while the
+// field has focus (Linux and Windows handle Ctrl+Z in the page itself). Outside a field it is app undo (Phase 2,
+// P2-10): with no write of the document's own to undo it says "Nothing to undo" (edit-session.ts).
 
 import { expect, test, type Page } from '@playwright/test';
 import * as path from 'node:path';
 import { FIXTURES, Scratch, copyInto, launchApp, resolveRunAs, sleep, type BlApp } from '../helpers/app';
-import { PHASE_STUBS } from '../../packages/app/src/main/actions';
+
+/** App undo with nothing to undo (packages/app/src/main/edit-session.ts NOTHING_TO_UNDO, NOTHING_TO_REDO). */
+const APP_UNDO = { undo: 'Nothing to undo', redo: 'Nothing to redo' } as const;
 
 test.describe.configure({ mode: 'serial' });
 
@@ -38,7 +41,7 @@ async function watchToasts(shell: Page): Promise<() => Promise<string[]>> {
   return () => shell.evaluate(() => (globalThis as unknown as { __toasts: string[] }).__toasts.slice());
 }
 
-test('Edit › Undo in the Find input and in the Settings host input undoes the typing, with no Phase 2 toast', async () => {
+test('Edit › Undo in the Find input and in the Settings host input undoes the typing, with no app-undo toast', async () => {
   const dir = scratch.dir('views-undo-fields');
   const file = copyInto(path.join(FIXTURES, 'decks/keys-prevent-default.html'), dir);
   scratch.own(dir);
@@ -61,8 +64,8 @@ test('Edit › Undo in the Find input and in the Settings host input undoes the 
     await expect.poll(value).toBe('quarterly revenue');
     await menuEdit(app, 'Redo');
     await expect.poll(value).toBe('quarterly ');
-    expect(await toasts()).not.toContain(PHASE_STUBS.undo);
-    expect(await toasts()).not.toContain(PHASE_STUBS.redo);
+    expect(await toasts()).not.toContain(APP_UNDO.undo);
+    expect(await toasts()).not.toContain(APP_UNDO.redo);
 
     // Settings › Trust: the allowlist's host input.
     await app.run('settings');
@@ -80,9 +83,9 @@ test('Edit › Undo in the Find input and in the Settings host input undoes the 
     expect(await page.locator('#host-input').inputValue()).toBe('cdn.example');
     await menuEdit(app, 'Undo');
     await expect.poll(() => page.locator('#host-input').inputValue()).toBe('cdn.example.com');
-    expect(await toasts()).not.toContain(PHASE_STUBS.undo);
+    expect(await toasts()).not.toContain(APP_UNDO.undo);
 
-    // The deck view keeps its rule: outside a deck text field, Undo is app undo (Phase 2's toast).
+    // The deck view keeps its rule: outside a deck text field, Undo is app undo (nothing to undo here).
     await page.close();
     await expect
       .poll(async () => {
@@ -91,7 +94,7 @@ test('Edit › Undo in the Find input and in the Settings host input undoes the 
       })
       .toBe(win.deckWebContentsId);
     await menuEdit(app, 'Undo');
-    await expect.poll(toasts).toContain(PHASE_STUBS.undo);
+    await expect.poll(toasts).toContain(APP_UNDO.undo);
   } finally {
     await app.close();
   }
@@ -117,9 +120,9 @@ test('Edit › Undo while the shell is focused with no text field (a toolbar or 
     await expect.poll(() => app.electronApp.evaluate(({ webContents }) => webContents.getFocusedWebContents()?.id ?? null)).toBe(win.shellWebContentsId);
     expect(await shell.evaluate(() => document.activeElement?.tagName ?? '')).toBe('BODY');
     await menuEdit(app, 'Undo');
-    await expect.poll(toasts).toContain(PHASE_STUBS.undo);
+    await expect.poll(toasts).toContain(APP_UNDO.undo);
     await menuEdit(app, 'Redo');
-    await expect.poll(toasts).toContain(PHASE_STUBS.redo);
+    await expect.poll(toasts).toContain(APP_UNDO.redo);
   } finally {
     await app.close();
   }

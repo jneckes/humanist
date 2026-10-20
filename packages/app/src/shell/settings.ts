@@ -17,12 +17,9 @@ import {
   type SettingsState,
 } from '@blueline/core/ipc-trust';
 
-/**
- * Settings › General's additions to the state and the API (main: settings-window.ts SettingsWindowState and
- * SETTINGS_GENERAL_CHANNELS; preload: SettingsWindowApi). `smartPunctuation` null or absent: not offered.
- */
-type PageState = SettingsState & { smartPunctuation?: boolean | null };
-type PageApi = SettingsApi & { setSmartPunctuation(on: boolean): Promise<void> };
+/** The state and API as main and the preload give them. `smartPunctuation` null (or absent): not offered. */
+type PageState = Omit<SettingsState, 'smartPunctuation'> & { smartPunctuation?: boolean | null };
+type PageApi = SettingsApi;
 
 // window.blueline is declared as the document shell's ShellApi (shell.ts); in this window the Settings preload
 // puts a SettingsApi there instead.

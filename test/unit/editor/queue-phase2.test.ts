@@ -242,8 +242,8 @@ describe('typed refusal codes (only noop is not a note)', () => {
     expect(await codeOf(doc('<p>Hello</p>'), 'Hello', 'Hello')).toBe('noop');
     expect(await codeOf(doc('<p>Hello</p>'), 'Hello', '   ')).toBe('structural');
     expect(await codeOf(doc("<p id=x></p><script>x.textContent = 'Plain';</script>"), 'Plain', 'Plain & simple')).toBe('markup');
-    expect(await codeOf(doc('<script>var t = `Hi ${name} there`;</script>'), `Hi  there`, 'Hi  here')).toBe('placeholder');
-    expect(await codeOf(doc('<script>var t = `Total`;</script>'), 'Total', 'Total ')).toBe('placeholder');
+    expect(await codeOf(doc('<script>var t = `Hi ${name} there`;</script>'), `Hi \uE000 there`, 'Hi \uE000 here')).toBe('placeholder');
+    expect(await codeOf(doc('<script>var t = `Total`;</script>'), 'Total', 'Total \uE000')).toBe('placeholder');
     expect(await codeOf(doc('<p>Hello</p>'), 'Hello', 'Hel\u0000lo')).toBe('escape');
     expect(await codeOf(doc('<p>Hello</p>'), 'Hello', 'Hel\u0007lo')).toBe('escape');
     expect(await codeOf(doc('<p>Hello</p>'), 'Hello', 'Hel\uD800lo')).toBe('escape');

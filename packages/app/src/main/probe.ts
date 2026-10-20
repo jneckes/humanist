@@ -24,6 +24,13 @@
 // one run (a new console error, a changed slide count, a refused or failed write, a failed undo) and every
 // run that fails on the batch is probed again on its own with ⟦bl⟧, and that result is its verdict. A wrong
 // write cannot pass a batch: the run's own sentinel would be missing from its node, or present in another.
+//
+// The Phase 2 fuzz gate (P2-16, test/fuzz/) probes edited text with the same machinery: probeTargets takes the
+// runs explicitly, each with the text its sentinel is appended to and, for an edited run, the text its nodes
+// must read exactly (NodeCheck.expectData: the edit's new text plus the sentinel). Its copy holds the fuzz's
+// edits, so ProbeContext.original is the version each pass must restore, not the deck's bytes. A run the
+// author picked in the picker (P2-8) is judged only on where else its sentinel lands (NodeCheck.pickedRun).
+// `blueline map` sets none of these, and its writes, loads and verdicts are as before.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -33,7 +40,7 @@ import type { WriteOutcome, WriteRecord } from '@blueline/core/types';
 import { buildMap } from '@blueline/core/mapper';
 import { buildServedCopy } from '@blueline/core/served';
 import { decodeDeck, encodeDeck, encodeLatin1 } from '@blueline/core/text';
-import { atomicWriteFile, createDeckIO, readRegularFile, sha256Hex } from './atomic-write';
+import { atomicWriteFile, createDeckIO, readRegularFile, sha256Hex, type DeckIOOptions } from './atomic-write';
 import { markDerivedFile, type DerivedSource } from './markers';
 import type { ServedDoc } from './protocol';
 import type { CountedNode, ProbeVerdict } from './report';
@@ -209,10 +216,11 @@ export class ProbeCopy implements ServedDoc {
   /**
    * The patcher's DeckIO for the copy: reads and atomic writes of the copy only. No history, no session.
    * Writes are tracked, so an interrupt can let one in flight finish (it removes its own temp file) and
-   * refuse the rest (closeWrites).
+   * refuse the rest (closeWrites). `opts` reach the app's createDeckIO as they are (the fuzz gate lands an
+   * external write inside the atomic write with `write.prepareTemp`); `blueline map` passes none.
    */
-  io(): DeckIO {
-    const io = createDeckIO(this.path);
+  io(opts?: DeckIOOptions): DeckIO {
+    const io = createDeckIO(this.path, opts);
     return {
       realpath: io.realpath,
       read: () => io.read(),
@@ -260,9 +268,12 @@ export class ProbeCopy implements ServedDoc {
     return { body: d.utf8 ? encodeDeck(served) : encodeLatin1(served), utf8: d.utf8 };
   }
 
-  /** Puts the original's bytes back (only after an undo that did not restore them). */
-  async restore(): Promise<void> {
-    await this.track(() => atomicWriteFile(this.path, this.original.bytes));
+  /**
+   * Puts the original's bytes back (only after an undo that did not restore them), or `bytes`: the version a
+   * probe pass started from when the copy holds edits of its own (the fuzz gate).
+   */
+  async restore(bytes: Uint8Array = this.original.bytes): Promise<void> {
+    await this.track(() => atomicWriteFile(this.path, bytes));
   }
 
   /** Deletes the copy (synchronous, so it also runs from exit and signal handlers). True when it is gone. */
@@ -331,6 +342,18 @@ export interface NodeCheck {
   newErrors: readonly string[];
   /** The sentinel written to this node's run (default ⟦bl⟧; batches give each run its own). */
   sentinel?: string;
+  /**
+   * The fuzz gate (P2-16): the node must read exactly this, the edited run's new text plus the sentinel, so an
+   * edit that renders other than as written (an entity shown literally, a lost character) fails the node.
+   */
+  expectData?: string;
+  /**
+   * The fuzz gate: the author picked this node's run in the picker (P2-8), so whether the node renders that run
+   * is the author's choice, not something the probe can know. The node need not hold the sentinel; the sentinel
+   * must still appear in no node other than reported renders of the run, with no new console error and the same
+   * slide count.
+   */
+  pickedRun?: boolean;
 }
 
 /**
@@ -350,10 +373,15 @@ export function judgeNode(c: NodeCheck): ProbeVerdict {
   if (c.slideCountAfter !== c.slideCountBefore) {
     return { pass: false, why: `the slide count changed from ${c.slideCountBefore} to ${c.slideCountAfter}` };
   }
-  if (!c.located || !c.located.found || !c.located.node) return { pass: false, why: 'the node is not there after the reload' };
   const sentinel = c.sentinel ?? SENTINEL;
-  const data = c.located.node.node.data;
-  if (!data.includes(sentinel)) return { pass: false, why: `the sentinel is not in the node (it reads ${JSON.stringify(data.slice(0, 80))})` };
+  if (!c.pickedRun) {
+    if (!c.located || !c.located.found || !c.located.node) return { pass: false, why: 'the node is not there after the reload' };
+    const data = c.located.node.node.data;
+    if (!data.includes(sentinel)) return { pass: false, why: `the sentinel is not in the node (it reads ${JSON.stringify(data.slice(0, 80))})` };
+    if (c.expectData !== undefined && data !== c.expectData) {
+      return { pass: false, why: `the node reads ${JSON.stringify(data.slice(0, 120))}, not the edited text ${JSON.stringify(c.expectData.slice(0, 120))}` };
+    }
+  }
   if (c.found.truncated) return { pass: false, why: 'the sentinel appears in too many nodes' };
   const self = locatorKey(c.self);
   for (const m of c.found.matches) {
@@ -403,7 +431,17 @@ export interface ProbeContext {
   view: RenderView;
   editor: EditorModule;
   copy: ProbeCopy;
+  /**
+   * The bytes and version the copy holds when the probe starts; every pass writes on this version and must leave
+   * the copy byte-identical to it (step 5). For `blueline map` the deck's own bytes; for the fuzz gate, the
+   * version its edits produced.
+   */
   original: { bytes: Uint8Array; version: string };
+  /**
+   * The write queue of the copy. Default: a bare queue made here (no hooks, so no snapshots and no session, step
+   * 1). The fuzz gate passes the queue its edits went through.
+   */
+  queue?: WriteQueue;
   /** Every node the report counted; verdicts are written onto the exact ones. */
   nodes: CountedNode[];
   /** The walk's slide count (step 4: unchanged). */
@@ -441,6 +479,22 @@ export interface ProbeRun {
   loads?: number;
 }
 
+/**
+ * One run to probe (probeTargets): the sentinel is appended to `before`, and every node of `nodes` is judged.
+ * runProbe makes one per run of the exact nodes; the fuzz gate makes one per edited run.
+ */
+export interface ProbeTarget {
+  runId: string;
+  /** The nodes that render the run; each gets a verdict (CountedNode.probe). Never empty. */
+  nodes: CountedNode[];
+  /** The run's whole text now, to which the sentinel is appended. Default: the first node's data (an exact node's text is its run's). */
+  before?: string;
+  /** Each node must read exactly `expect` plus the sentinel (NodeCheck.expectData). */
+  expect?: string;
+  /** The author picked the run for `nodes` in the picker (NodeCheck.pickedRun). */
+  picked?: boolean;
+}
+
 interface RunGroup {
   runId: string;
   group: CountedNode[];
@@ -448,6 +502,9 @@ interface RunGroup {
   sameRun: ReadonlySet<string>;
   /** Earliest walk stop that shows one of its nodes: batches follow the walk's order. */
   firstStop: number;
+  before?: string;
+  expect?: string;
+  picked?: boolean;
 }
 
 type PassItem = { run: RunGroup; sentinel: string };
@@ -463,19 +520,36 @@ export async function runProbe(ctx: ProbeContext): Promise<ProbeRun> {
     if (!g) groups.set(n.match.runId, (g = []));
     g.push(n);
   }
+  return probeTargets(
+    ctx,
+    [...groups].map(([runId, nodes]) => ({ runId, nodes })),
+  );
+}
+
+/**
+ * Probes the given runs (each run once, every node of it judged): batches of up to ctx.batchSize first, in the
+ * walk's order, then each run the batch could not decide on its own. Every pass leaves the copy byte-identical to
+ * ctx.original.
+ */
+export async function probeTargets(ctx: ProbeContext, targets: readonly ProbeTarget[]): Promise<ProbeRun> {
   const reported = new Set(ctx.nodes.map((n) => locatorKey(n.locator)));
-  const runsList: RunGroup[] = [...groups].map(([runId, group]) => ({
-    runId,
-    group,
-    sameRun: new Set(
-      ctx.nodes
-        .filter((n) => n.match.runId === runId || (n.match.confidence === 'ambiguous' && n.match.candidates.some((c) => c.runId === runId)))
-        .map((n) => locatorKey(n.locator)),
-    ),
-    firstStop: Math.min(...group.map((n) => n.stop)),
-  }));
+  const runsList: RunGroup[] = targets
+    .filter((t) => t.nodes.length > 0)
+    .map((t) => ({
+      runId: t.runId,
+      group: t.nodes,
+      sameRun: new Set(
+        ctx.nodes
+          .filter((n) => n.match.runId === t.runId || (n.match.confidence === 'ambiguous' && n.match.candidates.some((c) => c.runId === t.runId)))
+          .map((n) => locatorKey(n.locator)),
+      ),
+      firstStop: Math.min(...t.nodes.map((n) => n.stop)),
+      ...(t.before !== undefined ? { before: t.before } : {}),
+      ...(t.expect !== undefined ? { expect: t.expect } : {}),
+      ...(t.picked ? { picked: true } : {}),
+    }));
   runsList.sort((a, b) => a.firstStop - b.firstStop);
-  const queue: WriteQueue = ctx.editor.createWriteQueue(ctx.copy.io());
+  const queue: WriteQueue = ctx.queue ?? ctx.editor.createWriteQueue(ctx.copy.io());
   // Every load on its own origin: storage a deck wrote on an earlier probe load (the slide it was on, a "seen"
   // flag) never changes where or how the next load opens (review finding 30).
   const target = () => ({ docId: ctx.newDocId ? ctx.copy.addDocId(ctx.newDocId()) : ctx.copy.docId, fileName: ctx.copy.fileName });
@@ -542,12 +616,12 @@ async function probePass(
   let version = ctx.original.version;
   let writeTrouble = false;
   for (const it of items) {
-    const before = it.run.group[0].node.data;
+    const before = it.run.before ?? it.run.group[0].node.data;
     let outcome: WriteOutcome;
     try {
       outcome = await queue.edit({ version, runId: it.run.runId, beforeText: before, afterText: before + it.sentinel });
     } catch (e) {
-      outcome = { ok: false, verbatim: { before, after: before + it.sentinel }, why: e instanceof Error ? e.message : String(e) };
+      outcome = { ok: false, verbatim: { before, after: before + it.sentinel }, why: e instanceof Error ? e.message : String(e), code: 'internal' };
     }
     if (outcome.ok) {
       state.runs++;
@@ -605,7 +679,7 @@ async function probePass(
     else for (const it of items) finalFail(it.run, why);
     if (!restored) {
       try {
-        await ctx.copy.restore();
+        await ctx.copy.restore(ctx.original.bytes);
         const again = await ctx.copy.read();
         if (!sameBytes(again, ctx.original.bytes)) state.aborted = 'the probe copy could not be restored';
       } catch (e) {
@@ -674,6 +748,8 @@ async function checkPass(
           reported,
           newErrors,
           sentinel: item.sentinel,
+          ...(item.run.expect !== undefined ? { expectData: item.run.expect + item.sentinel } : {}),
+          ...(item.run.picked ? { pickedRun: true } : {}),
         }),
       );
     }

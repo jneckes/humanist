@@ -4,7 +4,7 @@
 
 import { expect, test } from '@playwright/test';
 import * as path from 'node:path';
-import { FIXTURES, Scratch, copyInto, resolveRunAs, sleep } from '../helpers/app';
+import { EDIT_BUILD, FIXTURES, Scratch, copyInto, resolveRunAs, sleep } from '../helpers/app';
 import { launchApp } from '../helpers/app';
 
 test.describe.configure({ mode: 'serial' });
@@ -69,7 +69,9 @@ test('Cmd/Ctrl+1/2/3 switch modes even on a deck that preventDefault()s every ke
     expect(await modeOf(), 'Cmd/Ctrl+2 should switch to Review').toBe('review');
     await deck.chord('3');
     await sleep(200);
-    expect(await modeOf(), 'Cmd/Ctrl+3 should switch to Edit').toBe('edit');
+    // A reader-only build refuses Edit (P2-15) and stays in Review; the chord still never reaches the page.
+    if (EDIT_BUILD) expect(await modeOf(), 'Cmd/Ctrl+3 should switch to Edit').toBe('edit');
+    else expect(await modeOf(), 'a reader-only build refuses Edit').toBe('review');
     await deck.chord('1');
     await sleep(200);
     expect(await modeOf(), 'Cmd/Ctrl+1 should switch to Read').toBe('read');

@@ -38,7 +38,7 @@ test('Settings: General shows the default-app state; Trust adds and removes fold
 
     // 9.1: the page runs under the shell CSP and has only the Settings API (named functions).
     const api = await page.evaluate(() => Object.keys((window as unknown as { blueline: Record<string, unknown> }).blueline).sort());
-    expect(api).toEqual(['addAllowlistHost', 'addFolder', 'getState', 'makeDefaultApp', 'onShowPane', 'onState', 'removeAllowlistHost', 'removeFolder', 'resetAllowlist', 'setStrictProtected']);
+    expect(api).toEqual(['addAllowlistHost', 'addFolder', 'getState', 'makeDefaultApp', 'onShowPane', 'onState', 'removeAllowlistHost', 'removeFolder', 'resetAllowlist', 'setSmartPunctuation', 'setStrictProtected']);
     expect(await page.evaluate(() => typeof (window as unknown as Record<string, unknown>).require)).toBe('undefined');
 
     // General: on Linux the platform cannot set the default (Linux packages are Later); the button says so.
@@ -46,6 +46,15 @@ test('Settings: General shows the default-app state; Trust adds and removes fold
     await expect(page.locator('#default-status')).toHaveText(/cannot tell which app opens your HTML files/);
     await expect(page.locator('#make-default')).toBeDisabled();
     await expect(page.locator('#default-note')).toContainText('Linux');
+    // General › Editing › Smart punctuation (6.3, Phase 2): on by default, stored in config.json's defaults.
+    const smart = page.locator('#smart-punctuation');
+    await expect(smart).toBeEnabled();
+    await expect(smart).toBeChecked();
+    await smart.click();
+    await waitConfig(app, (c) => (c.defaults as { smartPunctuation?: unknown } | undefined)?.smartPunctuation === false);
+    await expect(smart).not.toBeChecked();
+    await smart.click();
+    await waitConfig(app, (c) => (c.defaults as { smartPunctuation?: unknown } | undefined)?.smartPunctuation === true);
 
     // Trust.
     await page.locator('#tab-trust').click();

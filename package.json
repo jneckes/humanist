@@ -16,6 +16,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "build:reader-only": "node scripts/build.mjs --reader-only",
+    "test:reader-only": "node scripts/reader-only-check.mjs",
     "dev": "node scripts/build.mjs --watch --run",
     "start": "node scripts/run-electron.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
@@ -25,6 +26,7 @@
     "test:parity": "node scripts/build.mjs && vitest run -c test/parity/vitest.config.mts && playwright test -c test/parity/playwright.config.ts",
     "parity": "node scripts/parity.mjs",
     "first-paint": "node scripts/first-paint.mjs",
+    "fuzz": "node scripts/build.mjs && node scripts/fuzz.mjs",
     "map": "node packages/cli/dist/blueline.cjs map",
     "dist": "node scripts/build.mjs && electron-builder --config packages/app/electron-builder.config.cjs",
     "package:smoke": "node scripts/build.mjs && node scripts/package-smoke.mjs"

@@ -12,6 +12,9 @@
 // TMPDIR, which must be empty afterwards: the command's run folder, xvfb-run's folder and the app's temp
 // folders all went.
 
+// Tests tagged @edit assert results of the mutation probe, which writes through the editor (dist/editor.cjs): the
+// reader-only gate (npm run test:reader-only, P2-15) leaves them out.
+
 import { _electron as electron, expect, test } from '@playwright/test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -165,7 +168,7 @@ test('SIGTERM to `blueline check` alone (no display: xvfb-run) stops the run: 14
   }
 });
 
-test('SIGTERM to `blueline map` alone during the probe: 143, the probe copy is gone, the deck untouched, nothing left running', async () => {
+test('SIGTERM to `blueline map` alone during the probe: 143, the probe copy is gone, the deck untouched, nothing left running @edit', async () => {
   test.setTimeout(180_000);
   const dir = tmp('bl-cli-e2e-map-');
   const deck = path.join(dir, 'js-templates.html');

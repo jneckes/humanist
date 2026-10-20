@@ -171,6 +171,32 @@ button.icon {
   color: var(--muted);
 }
 
+/* 6.8 the name chip: the name on your notes; a click turns it into a field. */
+.name-chip {
+  border-radius: 13px;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+.name-chip[hidden],
+.name-input[hidden] {
+  display: none;
+}
+
+.name-input {
+  font: inherit;
+  height: 26px;
+  width: 180px;
+  padding: 2px 8px;
+  border: 1px solid var(--accent);
+  border-radius: 13px;
+  background: var(--surface);
+  color: var(--text);
+  user-select: text;
+}
+
 /* ------------------------------------------------------------------------------------------- bars */
 
 .trust-bar,
@@ -529,6 +555,78 @@ body.presenting .deck-slot {
   font-style: italic;
 }
 
+/* P2-13: edit and verbatim notes show before → after; Copy asks main to write the clipboard. */
+.note-list .before-after {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 6;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.note-list .before {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.note-list .arrow {
+  color: var(--muted);
+}
+
+.note-list .summary,
+.note-list .where {
+  color: var(--muted);
+}
+
+.note-list .summary {
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.note-list .violated {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.note-list .copy {
+  margin-top: 4px;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+/* P2-11: the history list in the rail. */
+.history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0 6px 12px;
+}
+
+.history-entry {
+  padding: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.history-time {
+  font-weight: 600;
+}
+
+.history-cause {
+  color: var(--muted);
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.history-restore {
+  height: auto;
+  min-height: 22px;
+  padding: 2px 8px;
+  white-space: normal;
+  text-align: left;
+  font-size: 12px;
+}
+
 .empty-note {
   color: var(--muted);
   padding: 4px 6px;
@@ -577,4 +675,17 @@ body.presenting .deck-slot {
 
 .toast.error {
   color: var(--error);
+}
+
+/* P2-14: a toast's buttons ("Make a note"). */
+.toast-action {
+  margin-left: 8px;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 12px;
+  vertical-align: middle;
+}
+
+.toast:not(.visible) .toast-action {
+  pointer-events: none;
 }

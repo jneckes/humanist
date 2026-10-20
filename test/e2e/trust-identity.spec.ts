@@ -10,7 +10,7 @@
 import { expect, test } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { FIXTURES, Scratch, launchApp, resolveRunAs, type BlApp } from '../helpers/app';
+import { EDIT_BUILD, FIXTURES, Scratch, launchApp, resolveRunAs, type BlApp } from '../helpers/app';
 
 test.describe.configure({ mode: 'serial' });
 test.setTimeout(180_000);
@@ -54,9 +54,12 @@ async function openAndAllow(t: Setup): Promise<{ app: BlApp; docId: string }> {
   const shell = await app.shellPage(deck.docId);
   await shell.locator('#allow-network').click();
   await expect.poll(async () => (await app.win(deck.docId)).networkAllowed).toBe(true);
-  await shell.locator('#enable-editing').click();
-  await expect.poll(async () => (await app.win(deck.docId)).editingAllowed).toBe(true);
-  await expect.poll(() => entry(t)).toMatchObject({ marker: null, allowNetwork: true, editing: true });
+  // A reader-only build has no Enable editing (P2-15): the binding is checked on Allow network alone there.
+  if (EDIT_BUILD) {
+    await shell.locator('#enable-editing').click();
+    await expect.poll(async () => (await app.win(deck.docId)).editingAllowed).toBe(true);
+  }
+  await expect.poll(() => entry(t)).toMatchObject({ marker: null, allowNetwork: true, editing: EDIT_BUILD });
   return { app, docId: deck.docId };
 }
 
@@ -103,7 +106,7 @@ test("the control: Blueline's own atomic write (also a new inode) keeps both swi
     await app.close();
     expect(fs.readFileSync(t.file, 'utf8')).toBe(text);
     expect(fs.statSync(t.file).ino, 'the atomic write renames a new file into place').not.toBe(ino);
-    expect(await reopen(t)).toEqual({ trust: 'protected', trustReason: UNTRUSTED, networkAllowed: true, editingAllowed: true });
+    expect(await reopen(t)).toEqual({ trust: 'protected', trustReason: UNTRUSTED, networkAllowed: true, editingAllowed: EDIT_BUILD });
   } finally {
     t.s.cleanup();
   }

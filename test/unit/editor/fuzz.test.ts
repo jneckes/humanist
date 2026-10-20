@@ -308,7 +308,7 @@ function fieldFor(r: Rng, map: DeckMap, target: HtmlRun | LiteralRun): Field {
 
 /** Curly quotes read as straight ones: smart punctuation changes only those (6.3). */
 function plainQuotes(s: string): string {
-  return s.replace(/[“”]/g, '"').replace(/[‘’]/g, "'");
+  return s.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
 }
 
 /** A node the picker would offer for this run, and how it relates (P2-8): a unique piece of it, or its normalized text. */

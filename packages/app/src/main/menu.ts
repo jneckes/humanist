@@ -22,6 +22,12 @@ export interface MenuState {
   readingWidth: boolean;
   railHidden: boolean;
   presenting: boolean;
+  /** Phase 2 (6.3, 6.10): Edit can be entered now (the Edit capability, editing allowed); absent means yes. */
+  editAvailable?: boolean;
+  /** Phase 2 (P2-11): File › History… is offered (the Edit capability). */
+  history?: boolean;
+  /** The history list is open (the item is checked). */
+  historyOpen?: boolean;
 }
 
 export const NO_DOCUMENT: Readonly<MenuState> = Object.freeze({
@@ -32,6 +38,9 @@ export const NO_DOCUMENT: Readonly<MenuState> = Object.freeze({
   readingWidth: false,
   railHidden: false,
   presenting: false,
+  editAvailable: false,
+  history: false,
+  historyOpen: false,
 });
 
 export interface MenuHandlers {
@@ -117,6 +126,9 @@ export function menuTemplate(h: MenuHandlers): MenuItemConstructorOptions[] {
       item('Open in Browser', 'open-in-browser', undefined, doc),
       item(revealLabel(h.platform), 'reveal', undefined, doc),
       { type: 'separator' },
+      // P2-11: the document's history (snapshots before each write) and "Restore deck to <time>".
+      { label: 'History', type: 'checkbox', checked: doc && st.historyOpen === true, enabled: doc && st.history === true, click: () => h.run('history') },
+      { type: 'separator' },
       item('Close', 'close', 'CmdOrCtrl+W', doc),
       ...(mac ? [] : ([{ type: 'separator' }, { role: 'quit' }] as MenuItemConstructorOptions[])),
     ],
@@ -143,7 +155,8 @@ export function menuTemplate(h: MenuHandlers): MenuItemConstructorOptions[] {
     submenu: [
       radio('Read', 'mode-read', st.appMode === 'read', doc, 'CmdOrCtrl+1'),
       radio('Review', 'mode-review', st.appMode === 'review', doc, 'CmdOrCtrl+2'),
-      radio('Edit', 'mode-edit', st.appMode === 'edit', doc, 'CmdOrCtrl+3'),
+      // 6.3: off with a reason (Cmd+3 says it) when the Edit capability is off or editing is not allowed.
+      radio('Edit', 'mode-edit', st.appMode === 'edit', doc && st.editAvailable !== false, 'CmdOrCtrl+3'),
       { type: 'separator' },
       // 6.9 Deck view: Fit (default), 100%, Fill width. Documents have no zoom.
       radio('Fit', 'zoom-fit', st.zoomMode === 'fit', deck, ZOOM_ACCELERATORS['zoom-fit']),

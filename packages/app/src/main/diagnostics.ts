@@ -36,6 +36,7 @@ import {
   type NotesUpdate,
   type SlideState,
 } from '@blueline/core/ipc';
+import { MainToDeckEdit, type EditCandidatesReply, type EditResult } from '@blueline/core/ipc-edit';
 import { buildMap, toClientMap } from '@blueline/core/mapper';
 import { buildServedCopy } from '@blueline/core/served';
 import { decodeDeck, encodeDeck, encodeLatin1 } from '@blueline/core/text';
@@ -439,6 +440,17 @@ class DiagDeck {
       },
       note: (_f, op) => this.onNoteOp(op),
       diag: (_f, e) => this.onDiag(e),
+      // Phase 2: the Diagnostics deck's Edit runs the real overlay, but Diagnostics writes nothing. Its commits and
+      // picker requests are answered at once (the overlay would otherwise wait 15 s), and logged.
+      editCommit: (_f, p) => {
+        this.log('edit-commit', { kind: p.result.kind });
+        const r: EditResult = { fieldId: p.fieldId, outcome: 'refused', reload: false, why: 'Diagnostics writes nothing' };
+        if (!this.wc.isDestroyed()) this.wc.send(MainToDeckEdit.result, r);
+      },
+      editCandidates: (_f, p) => {
+        const r: EditCandidatesReply = { fieldId: p.fieldId, candidates: [] };
+        if (!this.wc.isDestroyed()) this.wc.send(MainToDeckEdit.candidates, r);
+      },
     });
     installDeckWebContentsPolicy(wc, {
       docId: doc.docId,

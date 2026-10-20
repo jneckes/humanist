@@ -21,7 +21,7 @@ import type {
 } from '@blueline/core/ipc';
 import { DomWalker, ScriptTouchTracker, cssPath } from '@blueline/core/dom-walk';
 import { currentSlide, detectSlides, inferHashFormat, scrollBlocks, slideIndexOf, slideTitle, toDetectResult, type HashFormat, type SlideModel } from '@blueline/core/slides';
-import { PAUSE_ANIMATIONS_CSS } from './styles';
+import { adoptSheet, makePauseSheet, pauseRunning } from './animation-pause';
 import { listen } from './listeners';
 
 /** 6.7: after each navigation, wait up to 1 s for the visible slide to change. */
@@ -279,34 +279,17 @@ export class RenderAgent {
       }
     });
     if (finite.length) await withTimeout(Promise.all(finite.map((a) => a.finished.catch(() => undefined))).then(() => true), FINITE_ANIMATION_WAIT_MS, false);
-    let paused = 0;
-    for (const a of this.doc.getAnimations()) {
-      try {
-        if (a.playState === 'running') {
-          a.pause();
-          paused++;
-        }
-      } catch {
-        // An animation the page removed meanwhile.
-      }
-    }
+    // A render window is thrown away, so nothing is ever resumed here (the deck view's Edit pause resumes,
+    // animation-pause.ts).
+    const paused = pauseRunning(this.doc).length;
     const sheetAdopted = this.adoptPauseSheet();
     await frame(this.win);
     return { fontsReady, paused, sheetAdopted };
   }
 
   private adoptPauseSheet(): boolean {
-    try {
-      if (!this.pauseSheet) {
-        this.pauseSheet = new CSSStyleSheet();
-        this.pauseSheet.replaceSync(PAUSE_ANIMATIONS_CSS);
-      }
-      const doc = this.doc;
-      if (!doc.adoptedStyleSheets.includes(this.pauseSheet)) doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, this.pauseSheet];
-      return doc.adoptedStyleSheets.includes(this.pauseSheet);
-    } catch {
-      return false;
-    }
+    if (!this.pauseSheet) this.pauseSheet = makePauseSheet();
+    return adoptSheet(this.doc, this.pauseSheet);
   }
 
   /**

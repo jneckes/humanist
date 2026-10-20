@@ -186,6 +186,8 @@ describe('menuTemplate', () => {
     expect(PHASE_STUBS.present).toBeUndefined();
     expect(PHASE_STUBS.find).toBeUndefined();
     expect(PHASE_STUBS.send).toMatch(/Phase 4/);
-    expect(PHASE_STUBS.undo).toMatch(/Phase 2/);
+    // Phase 2: undo and redo of the document's own writes are app undo now (P2-10), not a stub.
+    expect(PHASE_STUBS.undo).toBeUndefined();
+    expect(PHASE_STUBS.redo).toBeUndefined();
   });
 });

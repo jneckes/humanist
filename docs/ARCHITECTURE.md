@@ -1,4 +1,4 @@
-# Blueline architecture (Phase 0 build contract, and what Phase 1 added)
+# Blueline architecture (Phase 0 build contract, and what Phases 1 and 2 added)
 
 SPEC.md is the source of truth. This page fixes the module boundaries, file ownership and cross-module
 interfaces that SPEC.md leaves to the implementation, so that the pieces of Phase 0 can be built in
@@ -129,7 +129,8 @@ meaningful together with the map `version` it came from.
 `planUndo`). The write queue implements the whole write protocol (9.2): per-deck serial queue, version
 check and re-resolution by `beforeText` + 32 chars of context, re-check, atomic write through
 `DeckIO.atomicWrite` (which re-hashes before rename), verify (re-parse, same run holds `afterText`, no new
-parse5 errors, Strategy 2 checks), restore on failure, and the verbatim fallback.
+parse5 errors, Strategy 2 checks) on the exact bytes before they are renamed in (decision P2-1, so a bad file never
+lands), and the verbatim fallback.
 
 ### app main
 
@@ -350,6 +351,74 @@ keeps the app running while no window shows the file.
   says so. The parity harness seeds `Math.random` in every render by wrapping `RenderView.prototype.load` in its
   own process (decision D-10; the app never does), so `RenderView.load` must stay a prototype method and `wc`
   public. Results: `docs/PHASE1-RESULTS.md`.
+
+## Phase 2 (Edit): the new modules and who calls what
+
+`docs/PHASE2-PLAN.md` fixed the ownership, the interfaces and decisions P2-1 to P2-17; this is what was built.
+The capability seam holds: `packages/editor` is still imported by nothing else (the reader-only gate checks it,
+below), and every piece of the commit path that a reader-only build or the fuzz needs is pure code in core.
+
+### core (pure)
+
+| Module | What |
+|---|---|
+| `edit-commit.ts` | `commitField(field, {smartPunctuation})`: the field's text before and after, its recorded runs (offsets in the field's `textContent`) and the caret's run → an edit of one run (`{runId, beforeText, afterText}`, the run's whole text), a `verbatim` note with a typed reason (`VerbatimWhy`), or a no-op. Clean-up, then the changed span, then the run rule (one run; an insertion at a boundary goes to the caret's run), then smart punctuation on that run (6.3). `liftToRun`/`liftPick` lift a picked substring or whitespace/NFC-normalized candidate to its run's whole text (P2-8); `pickKindFor` says which matcher reasons the picker offers (never `split` or `short`). The overlay and both fuzz harnesses call it: "the same path as a typed edit" is the same code |
+| `locked-spans.ts` | Section 8 locks: `transformLockedSpans(prev, cur, spans)` for external changes and restores (`diff_main` with a time limit, `diff_xIndex`, no semantic clean-up; a timeout only over-reports a violation), `applyOwnWrite(spans, record, {noteId})` for Blueline's own writes (shift; a write inside a span updates it; an undo drops its note's span), `lockForRun`. `LockedSpan.text` is the raw source slice |
+| `ipc-edit.ts` | The edit channels (`EditDeckToMain`, `MainToDeckEdit`), their payloads, `EDIT_LIMITS` (UTF-8 bytes), the id/version/token formats, `candidateContext` (±40 characters on one line) |
+| `capabilities.ts` (changed) | `WriteQueueOptions` gains `beforeWrite(prev, next)` (the exact bytes about to be replaced, right before the rename: the history snapshot), `afterWrite(map, record, next)` with `next.basedOn` (the hash the queue read), `canWrite()` (checked at the moment of the write, 9.1), `onHookError`, `maxRetries`; `WriteQueue` gains `know(version, src, map)` (P2-3: the version the page holds, for the 32-character context), `restore(bytes, expectVersion)` and `currentMap()`. Refusals carry a typed `RefusalCode`; a written outcome says whether it `merged` an external change |
+| `dom-walk.ts` (changed) | `describeNode(node, tracker)` for the overlay, `ScriptTouchTracker.ownChanges(fn)` and `ownRegion(el)` so the overlay's own changes never count as a script's (P2-6) |
+
+### editor
+
+`write-queue.ts` implements the new options: `know` (checked against its sha256), `beforeWrite` with the bytes read
+in step 2, `canWrite` before and after it, verify on the exact bytes before the rename (P2-1), a read-back after the
+rename, `restore` serialized and conflict-checked, typed refusals. `plan.ts` refuses by rule what the HTML parser
+reports as an error and the `<pre>` character-reference case parse5 mislocates.
+
+### app main
+
+| Module | What |
+|---|---|
+| `edit-session.ts` | **EditRegistry** (one per app): one **EditLane** per realpath, shared by every window of the file and kept 30 s after its last window so a D-1 reopen keeps it (P2-3). A lane holds the write queue (from the `EditorModule`), the history store, a version cache and ONE serial lane through which the watcher's external changes and the queue's writes both pass. Its hooks: `beforeWrite` snapshots the bytes being replaced (and, first, the content main last knew when the queue writes on top of an external change, cause `external`); `afterWrite` handles an absorbed external change (locks moved from the content main knew to the bytes the queue read, trust decided again per D-1, reload; P2-4), then moves the locks for the own write and adopts it. **EditSession** (one per window): the deck's edit channels with the trusted-input rule (`TrustedInput` from `input-event`, `FieldRegistry`, `gateCommit`; P2-7), the picker's candidates (P2-8), app undo and redo through `UndoStack` (P2-10), Make a note, toasts with actions (`ToastBook`, P2-14), Copy (P2-13), the history list and Restore (P2-11), Edit availability (6.3, 6.10) |
+| `history.ts` | `HistoryStore`: `<userData>/files/<fileKey>/history/`, one `<sha256>.html` per version (0600, Protected ones marked), `index.json`, newest 100 within 256 MiB, `countSince` for Restore's counts, `setBase` for the last content main knew (P2-12) |
+| `undo-stack.ts` | `UndoStack`: per window, in memory; entries hold the original `WriteRecord`, the run, the decoded texts and the note id; one operation at a time (`undo()`/`redo()` start it, `settle` ends it); `latest(token)` for the toast's Undo |
+| `notes.ts` (changed) | `addEdit` (kind `edit`, done, with its `SourceLoc` and lock), `addVerbatim` (kind `verbatim`, open, exact texts, why), `removeEdit` (tombstoned, so redo gets a new id), `canRecordEdit` |
+| `session-store.ts` (changed) | Targets keep their `SourceLoc`; locks are validated; `known: {version}` (the last whole-file hash main knew, P2-12) |
+| `config.ts`, `settings-window.ts`, `identity.ts` | Settings › General › Smart punctuation (`SettingsToMain.setSmartPunctuation`); `Identity` for the name chip (6.8), which updates the live `Person` and every open session |
+| `documents.ts`, `atomic-write.ts`, `watcher.ts` (changed) | Own writes are adopted, not re-read (P2-2): `DeckIOOptions.expectOwn(hash)` before the rename, `BlDocument.adoptOwnWrite(bytes, map)` after it (content, map, served copy, version, `knownHash`), the watcher's `isOwnWrite` |
+| `view-state.ts` (changed) | `ReloadCoordinator`: `setEditBusy` (a field open or a commit in flight), `setWriting` (an own write running), `noteOwnWrite` (html-text writes need no reload; literals and absorbed changes do), `whenIdle()` for the in-place reloads of Allow network and reduced motion |
+| `window.ts`, `controller.ts`, `actions.ts`, `menu.ts`, `channels.ts`, `ipc-guard.ts` (changed) | The lane per window (`deps.edits.acquire`), `input-event` fed to `TrustedInput`, the edit channels declared with validators, Edit > Undo/Redo outside a text field go to `appUndo`, File › History, the quit wait includes lanes and history |
+
+Main → deck: `MainToDeck.settings` (smart punctuation changed) and `MainToDeck.userName` (the name chip) besides the
+edit results; `DeckInit` gains `fileName`, `pageVersion` (the version whose served copy the page loaded) and
+`settings`.
+
+### deck preload
+
+| Module | What |
+|---|---|
+| `edit-controller.ts` | Edit in the page: matching against the map of the page's version only (P2-5, P2-6), hover outlines (solid exact, dashed pickable), the field (opened on the press at window capture; source case; `user-select` lifted; SVG text through an overlay input), commit with `commitField`, the result and the toast's Undo, "Not editable", stale-page handling, busy reporting |
+| `edit-input.ts` | The field's input filter and gate (P2-7, P2-9), shared with the Diagnostics heading: the range from the selection (Electron 44 gives `getTargetRanges()` nothing for `plaintext-only`), the allowed `inputType`s, line breaks to spaces, native undo only within the field's own steps |
+| `picker.ts`, `fit-guard.ts`, `animation-pause.ts` | The picker's rows and keys; the fit guard's line, overflow and widow badge; pausing animations on entering Edit and resuming only what it paused (render-agent shares the helpers) |
+
+### shell
+
+The notes panel lists edit and verbatim notes with Copy (P2-13); toasts carry action buttons; the name chip; File ›
+History opens the history list in the left rail, and Restore asks through a native confirmation with the counts and
+a line diff.
+
+### Exit-gate harnesses
+
+- `scripts/fuzz.mjs` + `test/fuzz/harness/` (P2-16): an Electron main of its own, like the parity harness, that
+  loads the shipped `dist/editor.cjs` through `editor-loader.ts`, walks each deck, drives `commitField` and the real
+  queue over the app's DeckIO on a probe copy, and runs `probe.ts probeTargets` on the new text. Renaming
+  `DeckWalker`, `RenderView.collect`, `waitScripted`, `ProbeCopy`, `probeTargets` or `createDeckIO` breaks it, and
+  tsc says so.
+- `scripts/reader-only-check.mjs` (`npm run test:reader-only`, P2-15): copies the tree without `packages/editor` next
+  to the repository, links its `node_modules`, builds reader-only into the copy's own `dist`, scans the bundles, and
+  runs `tsconfig.reader.json`, `vitest.reader.config.ts` and Playwright without `@edit`. Convention: unit tests that
+  need the editor live in `test/unit/editor/` or are named `*.edit.test.ts`; Playwright tests that need it carry
+  `@edit` in their title; tests that run in both builds read `test/helpers/app.ts EDIT_BUILD`.
 
 ## Phase 0 findings
 

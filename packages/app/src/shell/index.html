@@ -21,6 +21,8 @@
   <button id="present" class="tool" type="button">&#9654; Present</button>
   <button id="share" class="tool" type="button" aria-haspopup="menu">Share &#9662;</button>
   <span id="agent-chip" class="agent-chip" hidden></span>
+  <button id="name-chip" class="name-chip" type="button" title="Your name on your notes. Click to change it."></button>
+  <input id="name-input" class="name-input" type="text" maxlength="200" autocomplete="off" spellcheck="false" aria-label="Your name" hidden>
 </header>
 <div id="trust-bar" class="trust-bar" role="region" aria-label="Protected view" hidden>
   <span class="trust-icon" aria-hidden="true">&#9888;</span>
@@ -54,6 +56,7 @@
     <ol id="slide-list" class="slide-list"></ol>
     <ol id="outline-list" class="outline-list" hidden></ol>
     <ol id="result-list" class="result-list" hidden></ol>
+    <ol id="history-list" class="history-list" hidden></ol>
   </nav>
   <div id="deck-slot" class="deck-slot"><div id="deck-spacer" class="deck-spacer"></div></div>
   <aside id="panel" class="panel" aria-label="Notes">

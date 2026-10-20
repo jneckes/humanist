@@ -47,7 +47,27 @@ export const MainToDeck = {
   /** Added by preload: close the open card (6.4: a click on the toolbar or the notes panel). No payload. */
   closeCard: 'bl:deck:close-card',
   renderRequest: 'bl:render:request',
+  /**
+   * Added by main-wiring (Phase 2): DeckSettingsUpdate, the deck's settings changed after its init (Settings ›
+   * General's smart punctuation default, 6.3). The page's next init carries them too.
+   */
+  settings: 'bl:deck:settings',
+  /** Added by main-wiring (Phase 2): DeckUserUpdate, the user's name changed on the name chip (6.8). */
+  userName: 'bl:deck:user-name',
 } as const;
+
+/** The deck's settings (6.3 Smart punctuation: Session.settings over config.json's default, which is on). */
+export interface DeckSettings {
+  smartPunctuation: boolean;
+}
+
+/** MainToDeck.settings. */
+export type DeckSettingsUpdate = DeckSettings;
+
+/** MainToDeck.userName. */
+export interface DeckUserUpdate {
+  userName: string;
+}
 
 export interface DeckInit {
   mode: PreloadMode;
@@ -66,6 +86,15 @@ export interface DeckInit {
   notes: Note[];
   /** Display name of the user, for the note card's author chip. */
   userName: string;
+  /** Added in Phase 2: the deck's file name, for "Saved · deck.html:142" and the picker's lines (6.3). */
+  fileName?: string;
+  /**
+   * Added in Phase 2 (P2-5, P2-6): sha256 of the version whose served copy this page loaded. The overlay matches
+   * only against the map of this version (advanced by its own html-text writes).
+   */
+  pageVersion?: string;
+  /** Added in Phase 2: the deck's settings (6.3 Smart punctuation). */
+  settings?: DeckSettings;
 }
 
 export interface FocusState {
@@ -368,6 +397,19 @@ export const ShellToMain = {
    * overflow). Native menus draw above the deck view, which covers the shell's content area.
    */
   popupMenu: 'bl:shell:popup-menu',
+  /**
+   * Added by main-wiring (Phase 2; P2-14): (token: string, actionId: string) → void. A button of the toast main
+   * showed last (ShellToast.actions); main checks the token is that toast's and the action one of its own.
+   */
+  toastAction: 'bl:shell:toast-action',
+  /** Added by main-wiring (P2-13): (noteId: string) → boolean. Main writes the note to the clipboard. */
+  copyNote: 'bl:shell:copy-note',
+  /** Added by main-wiring (6.8 the name chip): (name: string) → NameResult. */
+  setName: 'bl:shell:set-name',
+  /** Added by main-wiring (P2-11): () → void. Closes the history list. */
+  historyClose: 'bl:shell:history-close',
+  /** Added by main-wiring (P2-11; 9.2 Undo and redo 4): (id: string) → void. "Restore deck to <time>"; main asks first. */
+  historyRestore: 'bl:shell:history-restore',
 } as const;
 
 export const MainToShell = {
@@ -403,7 +445,8 @@ export interface ShellState {
   slide: { current: number; count: number; kind: SlideState['kind']; titles: string[] } | null;
   saveState: string;
   layout: ShellLayout;
-  notes: Pick<Note, 'id' | 'status' | 'text' | 'kind'>[];
+  /** The notes panel's list (Phase 2, P2-13: edit and verbatim notes with their texts; Copy). */
+  notes: ShellNote[];
   banner: string | null; // e.g. "This page tried to leave the document"
   /** Added by views (6.9): the deck or document view, its zoom, Reading Width, the rail, Present, scrolling. */
   view: ShellView;
@@ -411,7 +454,79 @@ export interface ShellState {
   index: ShellIndex | null;
   /** Added by views (6.0 Status bar): a long task, a deferred reload (6.6), a file that went away (9.2). */
   status: ShellStatus;
+  /** Added by main-wiring (6.3, 6.10): whether Edit can be entered now, and why not. */
+  edit?: ShellEditAvailability;
+  /** Added by main-wiring (6.8): the user's name, for the name chip. */
+  userName?: string;
+  /** Added by main-wiring (P2-11): the history list, while it is open (it shows in the rail). */
+  history?: ShellHistory | null;
 }
+
+/** One note in the notes panel (6.6; Phase 2's minimal list, P2-13). Texts are shortened for display. */
+export interface ShellNote {
+  id: string;
+  status: Note['status'];
+  kind: Note['kind'];
+  /** What the author typed (markup notes), at most 500 characters. */
+  text: string;
+  /** The one-line summary ("Edited: a → b", "Not written: …"). */
+  summary?: string;
+  /** Edit and verbatim notes: the texts before and after (each at most SHELL_NOTE_TEXT characters). */
+  before?: string;
+  after?: string;
+  /** The slide index the note is on, or null. */
+  slide: number | null;
+  /** 1-based line in the deck (the target's SourceLoc), or null. */
+  line: number | null;
+  /** The note's locked span (section 8): 'violated' when a change outside Blueline touched it. */
+  locked: 'ok' | 'violated' | null;
+}
+
+/** Whether Edit is available (6.3: the Edit capability, editing allowed), and the reason when it is not. */
+export interface ShellEditAvailability {
+  available: boolean;
+  /** Why not, for the mode switch's tooltip and Cmd+3's toast. */
+  reason: string | null;
+  /** Enable editing (6.10) would make it available. */
+  enable: boolean;
+}
+
+/** One snapshot in the history list (P2-11). */
+export interface ShellHistoryEntry {
+  id: string;
+  /** ISO time of the write that replaced it. */
+  at: string;
+  cause: 'edit' | 'undo' | 'redo' | 'restore' | 'external';
+  size: number;
+}
+
+/** The history list (9.2 Undo and redo 4; P2-11), newest first. */
+export interface ShellHistory {
+  entries: ShellHistoryEntry[];
+  /** Restore is possible now (Edit capability, editing allowed); else `reason` says why not. */
+  canRestore: boolean;
+  reason: string | null;
+}
+
+/** A toast (MainToShell.toast). With actions, it names a token main checks when a button is pressed (P2-14). */
+export interface ShellToast {
+  text: string;
+  kind: 'info' | 'warn' | 'error';
+  token?: string;
+  actions?: { id: string; label: string }[];
+}
+
+/** Phase 2: limits of the shell's edit calls (main's validators). */
+export const SHELL_EDIT_LIMITS = Object.freeze({
+  /** Toast tokens: 32 lowercase hex. */
+  toastToken: /^[0-9a-f]{32}$/,
+  /** Toast action ids. */
+  toastAction: /^[a-z][a-z-]{0,31}$/,
+  /** History entry ids (history.ts `h-<n>`). */
+  historyId: /^h-[0-9]{1,15}$/,
+  /** Characters of a note's before and after in ShellState (the Copy button copies them whole). */
+  noteText: 500,
+});
 
 export interface DiagStep {
   id: string;
@@ -439,7 +554,7 @@ export type ShellMenu = 'file' | 'share' | 'trust-overflow';
 export interface ShellApi {
   getState(): Promise<ShellState>;
   onState(cb: (s: ShellState) => void): void;
-  onToast(cb: (t: { text: string; kind: 'info' | 'warn' | 'error' }) => void): void;
+  onToast(cb: (t: ShellToast) => void): void;
   setMode(mode: AppMode): Promise<void>;
   allowNetwork(): Promise<void>;
   enableEditing(): Promise<void>;
@@ -470,6 +585,16 @@ export interface ShellApi {
   onFindOpen(cb: () => void): void;
   /** Added by views (MainToShellViews.scrollTo): main panned the deck view. */
   onScrollTo(cb: (p: { x: number; y: number }) => void): void;
+  /** Added by main-wiring (ShellToMain.toastAction): a toast's button (P2-14). */
+  toastAction(token: string, actionId: string): Promise<void>;
+  /** Added by main-wiring (ShellToMain.copyNote): main copies the note's text (P2-13); true when copied. */
+  copyNote(noteId: string): Promise<boolean>;
+  /** Added by main-wiring (ShellToMain.setName): the name chip (6.8). */
+  setName(name: string): Promise<{ ok: boolean; name: string; reason?: string }>;
+  /** Added by main-wiring (ShellToMain.historyClose). */
+  historyClose(): Promise<void>;
+  /** Added by main-wiring (ShellToMain.historyRestore): "Restore deck to <time>"; main shows the diff and asks. */
+  historyRestore(id: string): Promise<void>;
   diag: {
     getState(): Promise<DiagState>;
     onState(cb: (s: DiagState) => void): void;

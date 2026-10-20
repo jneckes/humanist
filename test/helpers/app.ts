@@ -47,6 +47,11 @@ import { SINK_IP } from './servers';
 export const ROOT = path.resolve(__dirname, '../..');
 export const APP_DIR = path.join(ROOT, 'packages/app');
 export const FIXTURES = path.join(ROOT, 'fixtures');
+/**
+ * Whether the build under test has the editor (P2-15). A reader-only build ships no dist/editor.cjs; tests that
+ * run in both builds check the reader-only behaviour (Edit refused) when it is false.
+ */
+export const EDIT_BUILD = fs.existsSync(path.join(APP_DIR, 'dist', 'editor.cjs'));
 
 const requireFromApp = createRequire(path.join(APP_DIR, 'package.json'));
 /** The Electron binary (require('electron') from Node returns its path). */
@@ -202,10 +207,37 @@ export interface WinInfo {
     networkAllowed: boolean;
     editingAllowed: boolean;
     banner: string | null;
-    notes: { id: string; status: string; text: string; kind: string }[];
+    notes: {
+      id: string;
+      status: string;
+      text: string;
+      kind: string;
+      /** Phase 2 (P2-13): edit and verbatim notes. */
+      before?: string;
+      after?: string;
+      summary?: string;
+      slide?: number | null;
+      line?: number | null;
+      locked?: 'ok' | 'violated' | null;
+    }[];
     slide: { current: number; count: number; kind: string; titles: string[] } | null;
     layout: Record<string, number>;
+    /** Phase 2: Edit's availability (6.3, 6.10), the name chip (6.8), the history list (P2-11). */
+    edit?: { available: boolean; reason: string | null; enable: boolean };
+    userName?: string;
+    history?: { entries: { id: string; at: string; cause: string; size: number }[]; canRestore: boolean; reason: string | null } | null;
   };
+}
+
+/** What `__blTest.edit(docId)` returns (Phase 2; packages/app/src/main/index.ts). */
+export interface EditInfo {
+  version: string;
+  knownHash: string;
+  undo: { undo: number; redo: number };
+  history: { id: string; at: string; cause: string; size: number }[];
+  locked: { start: number; end: number; text: string; noteId: string; state: 'ok' | 'violated' }[];
+  availability: { available: boolean; reason: string | null; enable: boolean };
+  historyOpen: boolean;
 }
 
 const RESOLV_CONF = 'nameserver 127.0.0.1\noptions timeout:1 attempts:1\n';
@@ -625,6 +657,14 @@ export class BlApp {
     throw new Error(`deck ${fileName} not ready; windows: ${JSON.stringify(last.map((w) => [w.fileName, w.handshakes, w.deckUrl]))}\n${this.logs.slice(-40).join('\n')}`);
   }
 
+  /** Phase 2: what Edit holds for a window (main's undo stack, history list, locked spans, availability). */
+  async editInfo(docId: string): Promise<EditInfo | null> {
+    return await this.electronApp.evaluate((_e, id) => {
+      const t = (globalThis as unknown as { __blTest?: { edit?(id: string): unknown } }).__blTest;
+      return t?.edit ? (JSON.parse(JSON.stringify(t.edit(id))) as never) : null;
+    }, docId);
+  }
+
   /** Opens a file in the running app (as a second launch would) and returns its docId. */
   async open(file: string, prot = false): Promise<string | null> {
     return await this.electronApp.evaluate(
@@ -870,6 +910,29 @@ export class DeckView {
     const r = await this.rect(selector);
     if (!r) throw new Error(`no element ${selector}`);
     await this.click(r.x + r.w / 2, r.y + r.h / 2);
+  }
+
+  /**
+   * A real click on the text of the element matching `selector`: the middle of the first line box of its first
+   * non-blank text (Phase 2: Edit opens a field only on text, never on an element's empty area). `where` picks the
+   * start, middle or end of that line box.
+   */
+  async clickText(selector: string, where: 'start' | 'middle' | 'end' = 'middle'): Promise<void> {
+    await this.eval(`(function(){var e=document.querySelector(${JSON.stringify(selector)}); if (e && e.scrollIntoView) e.scrollIntoView({block:'center'});})()`);
+    const r = await this.eval<{ x: number; y: number; w: number; h: number } | null>(
+      `(function(){var e=document.querySelector(${JSON.stringify(selector)});if(!e)return null;var w=document.createTreeWalker(e,4);var t;while((t=w.nextNode())&&!t.data.trim()){}if(!t)return null;var g=document.createRange();g.selectNodeContents(t);var b=g.getClientRects()[0];return b?{x:b.left,y:b.top,w:b.width,h:b.height}:null;})()`,
+    );
+    if (!r) throw new Error(`no text in ${selector}`);
+    const x = where === 'start' ? r.x + 2 : where === 'end' ? r.x + r.w - 2 : r.x + r.w / 2;
+    // The page's CSS pixels are the view's times its zoom (Fit zooms a deck's view, 6.9; sendInputEvent takes the
+    // view's coordinates).
+    const zoom = await this.e.evaluate(({ webContents }, id) => webContents.fromId(id)?.getZoomFactor() ?? 1, this.wcId);
+    await this.click(x * zoom, (r.y + r.h / 2) * zoom);
+  }
+
+  /** The edit overlay's state in test builds (preload edit-controller testState, the isolated world). */
+  async editState<T = Record<string, unknown>>(): Promise<T> {
+    return JSON.parse(await this.isolated<string>('JSON.stringify(globalThis.__blTestEdit ? globalThis.__blTestEdit.state() : null)', 999)) as T;
   }
 
   /** A key press (keyDown, char for printable keys without command modifiers, keyUp). */

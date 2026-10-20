@@ -8,8 +8,10 @@ one-pagers that AI tools produce. Think Adobe Acrobat Reader, but for HTML.
 - **Edit:** click text and type; the change is written straight into the HTML, nothing else touched.
 - **Hand off to Claude Code:** notes go to the agent as an anchored change list.
 
-Status: **Phase 1 (Reader) built.** Its exit gate is measured in
-[docs/PHASE1-RESULTS.md](docs/PHASE1-RESULTS.md); the criterion left is Josh's week of real use on a Mac build
+Status: **Phase 2 (Edit) built.** Its exit gate is measured in
+[docs/PHASE2-RESULTS.md](docs/PHASE2-RESULTS.md); the criterion left is Josh finishing 3 real decks with Edit on a
+Mac build (see [Real use of Edit on a Mac](#real-use-of-edit-on-a-mac)). Phase 1 (Reader) is measured in
+[docs/PHASE1-RESULTS.md](docs/PHASE1-RESULTS.md); its week of real use is also Mac work
 (see [Dogfooding on a Mac](#dogfooding-on-a-mac)). See [SPEC.md](SPEC.md) for the build spec,
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module boundaries,
 [docs/PHASE0-FINDINGS.md](docs/PHASE0-FINDINGS.md) for what the spike settled,
@@ -47,6 +49,37 @@ Status: **Phase 1 (Reader) built.** Its exit gate is measured in
   Apps) in the install mode's hive, never changes the extensions' own default (you choose Blueline in Default
   Apps), and removes exactly that on uninstall; a per-machine install also removes the per-user registration an
   earlier per-user install left. On macOS the app declares the file types itself.
+
+## What Edit does (Phase 2)
+
+- **Edit mode** (Cmd+3, or the mode switch): available when the build has the Edit capability and the file is
+  Trusted or you pressed Enable editing in Protected view; otherwise the mode switch and Cmd+3 say why. Edit shows
+  the deck with reduced motion and pauses its animations. Hover outlines show what you can edit: solid for text
+  Blueline can place exactly, dashed for text it finds in several places. Press the text to place a caret (the press
+  never reaches the deck, so it does not advance the slide or follow a link), type, and press Enter (Esc cancels;
+  clicking elsewhere commits). Only that piece of text changes in the file: Blueline writes the smallest splice into
+  the HTML text or the script or JSON string the page shows, with the file's own encoding, escapes and line endings,
+  and verifies the new file before it replaces the old one. Pasted and dictated line breaks become spaces; smart
+  punctuation (Settings › General, on by default) curls your quotes only where the text already uses curly ones.
+  A badge warns when the edit adds a line, overflows its box or leaves a widow, and "Showing source case" when the
+  deck shows the text in another case than the file stores.
+- **Dashed text** opens a picker: each place the text appears, with ±40 characters of context and its line, and a
+  warning when the deck also uses the text as a key. Text that is not editable (numbers a script computes, text
+  Blueline cannot place) says "Not editable".
+- **When a write cannot be placed** (the file changed meanwhile and the text is no longer unique, markup would be
+  needed, and the like), your exact words are kept as a `verbatim` note, and the file is left exactly as it was.
+- **"Saved · deck.html:142"** with **Undo**, and "· also changes N other places" when one piece of text shows in
+  several places. Outside a text field, Cmd+Z and Cmd+Shift+Z undo and redo your edits byte for byte, even after
+  another program changed the file elsewhere; when the change touched your edit, Blueline says "Can't undo in
+  place" and offers **Make a note**. Inside a field, Cmd+Z is the field's own undo.
+- **History** (File › History): Blueline keeps the file as it was before each of its writes (the newest 100) and
+  each external change it saw; **Restore** shows the diff and how many later edits and external changes it
+  discards, and asks first.
+- **Notes list** (the right panel in Review and Edit): each edit and verbatim note with before → after, its slide
+  and line, and **Copy**. Each edit note locks its text; a later change by another program to that text is flagged.
+- **External changes while you edit** (an agent saving the deck): the edit lands on its text or becomes a note, the
+  other change is kept, and the page reloads once the field closes.
+- **Your name** on notes: the name chip in the toolbar.
 
 Licensing is proposed and pending confirmation: see [LICENSING.md](LICENSING.md).
 Never install or run Blueline through `npx blueline` (SPEC 9.5): that npm name belongs to an unrelated package.
@@ -185,6 +218,31 @@ npm run dist                 # → release/Blueline-0.0.0-arm64.dmg and release/
      pages); results in `test-results/parity/`. See docs/PHASE1-RESULTS.md, "What to recheck on Josh's Mac".
    - Present (Cmd+Option+P) on the real display, and Print to a real printer.
 
+## Real use of Edit on a Mac
+
+Phase 2's last exit criterion: Josh finishes 3 real decks using only Edit for text changes. Build and install as in
+[Dogfooding on a Mac](#dogfooding-on-a-mac), then:
+
+1. For each of the 3 decks, make every text change in Edit (Cmd+3, click the text, type, Enter): no text editor and
+   no agent for text. Use the picker when it appears, and Cmd+Z outside a field.
+2. Check what the Linux container could not: typing with press-and-hold accents and other input methods; Wispr Flow
+   dictation into a field (line breaks become spaces); macOS text substitutions (smart quotes and dashes) against
+   Settings › General › Smart punctuation; Cmd+Z inside a field and outside it; clicking away with the window active
+   and inactive (a click elsewhere commits only while the window is active).
+3. Edit a downloaded (quarantined) deck after Enable editing: `xattr -l` shows the same `com.apple.quarantine` value
+   and any Finder tags after the write, and the deck opens again with its trust decision.
+4. While a deck is open in Edit, have the agent (or another editor) change something else in it, then keep
+   editing: the deck reloads after the field closes, and both changes are there. Also once in an iCloud Drive or
+   Dropbox folder.
+5. Once, restore a deck from File › History to an earlier time, and check the diff it shows.
+6. After each deck: a diff against a copy shows only the edited text, and the deck renders in a browser as before.
+7. Note per deck: the number of edits and of verbatim notes (the notes list), every "Not editable" text and every
+   note's reason (counts and labels only when shared), any write to the wrong place (must be none), any external
+   change lost (must be none), and the time from Enter to "Saved" on a large deck.
+
+Pass: all 3 decks finished this way, no wrong-place write, no lost change. docs/PHASE2-RESULTS.md, "What to recheck
+on Josh's Mac", lists the rest.
+
 ## Test
 
 ```sh
@@ -195,7 +253,12 @@ npm run test:parity      # builds, then the exit gate's committed check (test/pa
 npm run parity -- --committed --perf --trust both --pdf   # render and PDF parity on every committed fixture (about an hour)
 npm run first-paint      # first paint of the generated 2 MB deck, warm and cold
 npm run package:smoke    # builds, packs an unpacked test build (local Electron), checks the shell, trust bar and check --auto on it
+npm run test:reader-only # Phase 2 gate: a copy of the tree without packages/editor, built reader-only, its suites without @edit
+npm run fuzz             # Phase 2 gate: 1,000 seeded edits in Chromium on the committed fixtures (about 18 min); --local for your decks
 ```
+
+Tests that need the Edit capability carry `@edit` in their title (Playwright) or live in `test/unit/editor/` or a
+`*.edit.test.ts` file (vitest), so the reader-only gate can leave them out.
 
 The E2E and security suites start their own Xvfb displays on Linux, one per Playwright worker, so tests that
 use the clipboard never share one. Run as root, the security suite runs the
@@ -231,6 +294,7 @@ Phase 0 results are in docs/PHASE0-FINDINGS.md (and this file's history).
   ([fixtures/README.md](fixtures/README.md)).
 - `fixtures/expected/`: coverage baselines, written by `blueline map <deck> --report --json`.
 - `fixtures/security/`: the security fixtures ([fixtures/security/README.md](fixtures/security/README.md)).
+- `fixtures/edit/`: the deck the Edit overlay's E2E tests drive ([fixtures/edit/README.md](fixtures/edit/README.md)).
 - `fixtures/map/`, `fixtures/matching/`, `fixtures/input/`, `fixtures/slides/`: the review's reproduction decks
   for the walk and probe, matching, the deck preload's input handling, and slide detection (each folder's
   tests are named in [fixtures/README.md](fixtures/README.md)).

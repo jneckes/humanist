@@ -17,6 +17,7 @@ import {
 } from '@blueline/core/ipc';
 import { FilesDeckToMain, type DeckBusy, type ViewStateReply } from '@blueline/core/ipc-files';
 import { ViewsDeckToMain, type DesignReport, type PageStep, type WheelPan } from '@blueline/core/ipc-views';
+import { EditDeckToMain, type EditBegin, type EditBusy, type EditCandidatesRequest, type EditCommit, type EditUndoRequest } from '@blueline/core/ipc-edit';
 import { validateDropRefused } from './drop';
 import { validateDeckBusy, validateViewStateApplied, validateViewStateReply } from './view-state';
 import { validateDesignReport, validatePageStep, validateWheelPan } from './views';
@@ -24,6 +25,11 @@ import {
   DeckIpc,
   ShellIpc,
   validateDiag,
+  validateEditBegin,
+  validateEditBusy,
+  validateEditCandidates,
+  validateEditCommit,
+  validateEditUndo,
   validateFocus,
   validateLink,
   validateMode,
@@ -60,6 +66,16 @@ export interface DeckViewHandlers {
   pageStep?(from: DeckSender, p: PageStep): void;
   /** Added by views (6.9): a wheel the page did not use, over a deck view larger than the window. */
   wheel?(from: DeckSender, p: WheelPan): void;
+  /** Added by main-wiring (Phase 2, core/ipc-edit.ts): a field opened (P2-7). */
+  editBegin?(from: DeckSender, p: EditBegin): void;
+  /** Added by main-wiring: a field closed with a commit (9.2 Committing an edit 5). */
+  editCommit?(from: DeckSender, p: EditCommit): void;
+  /** Added by main-wiring: the picker's candidates (P2-8). */
+  editCandidates?(from: DeckSender, p: EditCandidatesRequest): void;
+  /** Added by main-wiring: the toast's Undo (P2-14). */
+  editUndo?(from: DeckSender, p: EditUndoRequest): void;
+  /** Added by main-wiring: a field is open, a commit in flight (6.6). */
+  editBusy?(from: DeckSender, p: EditBusy): void;
 }
 
 const handlers = new Map<number, DeckViewHandlers>();
@@ -101,6 +117,12 @@ export function deckRouter(): DeckIpc {
   d.on(ViewsDeckToMain.design, validateDesignReport, route('design'), { kinds: ['deck'] });
   d.on(ViewsDeckToMain.pageStep, validatePageStep, route('pageStep'), { kinds: ['deck'] });
   d.on(ViewsDeckToMain.wheel, validateWheelPan, route('wheel'), { kinds: ['deck'] });
+  // Phase 2 (Edit): the kinds are ipc-guard's DECK_CHANNEL_KINDS (the visible deck; the Diagnostics deck may only ask).
+  d.on(EditDeckToMain.begin, validateEditBegin, route('editBegin'));
+  d.on(EditDeckToMain.commit, validateEditCommit, route('editCommit'));
+  d.on(EditDeckToMain.candidates, validateEditCandidates, route('editCandidates'));
+  d.on(EditDeckToMain.undo, validateEditUndo, route('editUndo'));
+  d.on(EditDeckToMain.busy, validateEditBusy, route('editBusy'));
   deck = d;
   return d;
 }

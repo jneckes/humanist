@@ -232,8 +232,8 @@ export function candidateContext(src: string, start: number, end: number): strin
   if (mid.length > room) {
     const head = clamp(start + Math.floor(room / 2), false) - start;
     const tail = end - clamp(end - Math.floor(room / 2), true);
-    mid = mid.slice(0, head) + '…' + mid.slice(mid.length - tail);
+    mid = mid.slice(0, head) + '\u2026' + mid.slice(mid.length - tail);
   }
-  const text = (from > 0 ? '…' : '') + src.slice(from, start) + mid + src.slice(end, to) + (to < src.length ? '…' : '');
+  const text = (from > 0 ? '\u2026' : '') + src.slice(from, start) + mid + src.slice(end, to) + (to < src.length ? '\u2026' : '');
   return text.replace(/[\r\n\t\f]/g, ' ');
 }

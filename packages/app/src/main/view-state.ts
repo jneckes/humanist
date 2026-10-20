@@ -275,13 +275,23 @@ export interface ReloadCoordinatorDeps {
  */
 export const RESTORE_MAX_MS = 30_000;
 
-/** What holds a deferred reload back: an active edit (until it commits or cancels), a card (until it closes). */
-export type ReloadBlocker = 'edit' | 'card';
+/**
+ * What holds a deferred reload back: an active edit (until it commits or cancels, and its commit is answered), a
+ * card (until it closes), and a write of Blueline's own in flight for this window (Phase 2: a reload between a
+ * commit and its write would show the page without the edit).
+ */
+export type ReloadBlocker = 'edit' | 'card' | 'write';
 
 export type ReloadPhase = 'idle' | 'deferred' | 'reloading';
 
 export class ReloadCoordinator {
   private busy: DeckBusy = { edit: false, card: 'none' };
+  /** Phase 2 (core/ipc-edit EditBusy): a field is open, or its commit has not been answered. */
+  private editBusy = { edit: false, committing: false };
+  /** Phase 2: Blueline's own writes in flight for this window. */
+  private writing = 0;
+  /** In-place reloads (Allow network, reduced motion) waiting for the page to be idle (whenIdle). */
+  private idleWaiters: (() => void)[] = [];
   /** The newest version waiting to be shown, or null. */
   private pending: string | null = null;
   private readonly blockers = new Set<ReloadBlocker>();
@@ -364,10 +374,68 @@ export class ReloadCoordinator {
   }
 
   /**
+   * Phase 2: the deck preload's EditBusy (validated): a field is open, or its commit is in flight. Either holds a
+   * reload back, like DeckBusy.edit (6.6: "reloads when the edit commits or cancels").
+   */
+  setEditBusy(b: { edit: boolean; committing: boolean }): void {
+    if (this.disposed) return;
+    this.editBusy = { edit: b.edit, committing: b.committing };
+    this.evaluate();
+  }
+
+  /** Phase 2: one of Blueline's own writes for this window started (true) or ended (false). */
+  setWriting(on: boolean): void {
+    if (this.disposed) return;
+    this.writing = Math.max(0, this.writing + (on ? 1 : -1));
+    this.evaluate();
+  }
+
+  /**
+   * Phase 2 (9.2 Write protocol step 6; 9.2 Strategy 2 step 5): Blueline wrote `version` on top of `basedOn`. When
+   * the page showed `basedOn` and the write needs no reload (an html-text write typed into this page, which shows
+   * it already), the page now shows `version`; otherwise the page reloads to it under the deferral rules (a
+   * literal write once the field closes, an absorbed external change, an undo the page cannot patch).
+   */
+  noteOwnWrite(o: { basedOn: string; version: string; reload: boolean }): void {
+    if (this.disposed) return;
+    if (!o.reload && !this.running && this.shown === o.basedOn && this.pending === null) {
+      this.shown = o.version;
+      this.evaluate();
+      return;
+    }
+    this.requestReload(o.version);
+  }
+
+  /** The version the deck view shows (or is loading). */
+  get showing(): string {
+    return this.shown;
+  }
+
+  /**
+   * Resolves when nothing holds a reload back (no field open, no commit or own write in flight, no card with
+   * unsaved input), at once when nothing does: the in-place reloads (Allow network, reduced motion on entering
+   * Edit) wait for it too (Phase 2: "reloads deferred while a field is open or a commit is in flight").
+   */
+  whenIdle(): Promise<void> {
+    if (this.disposed || !this.blocked()) return Promise.resolve();
+    return new Promise((resolve) => this.idleWaiters.push(resolve));
+  }
+
+  private blocked(): boolean {
+    return this.busy.edit || this.editBusy.edit || this.editBusy.committing || this.busy.card === 'dirty' || this.writing > 0;
+  }
+
+  private releaseIdle(): void {
+    if (this.idleWaiters.length === 0 || (!this.disposed && this.blocked())) return;
+    for (const w of this.idleWaiters.splice(0)) w();
+  }
+
+  /**
    * The page went away (a crash, or a load main started for another reason): it holds no edit and no card now,
    * and restores nothing any more (the state it was restoring stays the one to save until the next capture).
    */
   resetBusy(): void {
+    this.editBusy = { edit: false, committing: false };
     this.setBusy({ edit: false, card: 'none' });
   }
 
@@ -386,6 +454,8 @@ export class ReloadCoordinator {
     this.disposed = true;
     this.pending = null;
     this.blockers.clear();
+    // In-place reloads that waited go ahead and find the window closed.
+    for (const w of this.idleWaiters.splice(0)) w();
   }
 
   private setDeferred(on: boolean): void {
@@ -404,6 +474,7 @@ export class ReloadCoordinator {
    * the card closes, not when its input is sent, so a reload never closes a card the user is still in.
    */
   private evaluate(): void {
+    this.releaseIdle();
     if (this.disposed || this.running) return;
     if (this.pending === null) {
       this.blockers.clear();
@@ -417,10 +488,12 @@ export class ReloadCoordinator {
       this.setDeferred(false);
       return;
     }
-    if (this.busy.edit) this.blockers.add('edit');
+    if (this.busy.edit || this.editBusy.edit || this.editBusy.committing) this.blockers.add('edit');
     else this.blockers.delete('edit');
     if (this.busy.card === 'dirty') this.blockers.add('card');
     else if (this.busy.card === 'none') this.blockers.delete('card');
+    if (this.writing > 0) this.blockers.add('write');
+    else this.blockers.delete('write');
     if (this.blockers.size > 0) {
       this.setDeferred(true);
       return;
@@ -441,6 +514,7 @@ export class ReloadCoordinator {
       this.reloads++;
       // The new page has no edit and no card of its own yet; the restored card reports itself (busy) again.
       this.busy = { edit: false, card: 'none' };
+      this.editBusy = { edit: false, committing: false };
       if (this.disposed) return;
       if (state) this.applyState(state);
     } catch (e) {

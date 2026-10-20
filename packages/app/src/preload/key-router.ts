@@ -25,7 +25,12 @@ export type TextFieldKind = 'card' | 'edit' | 'other';
 export interface KeyContext {
   appMode: AppMode;
   textField: TextFieldKind | null;
+  /** Edit's ambiguity picker is open (6.3, P2-8): it takes the arrows, Enter, digits and Esc. */
+  picker?: boolean;
 }
+
+/** What a key does in the open picker: move the highlight, choose (the highlighted item or item n), or close. */
+export type PickerKey = { move: 1 | -1 } | { choose: number | 'current' } | 'cancel';
 
 export type ShortcutAction =
   | 'tool-select'
@@ -53,7 +58,9 @@ export type KeyAction =
   /** Review/Edit: ArrowLeft and ArrowRight are forwarded to the deck untouched. */
   | { kind: 'forward' }
   /** Review/Edit: any other key is kept from the deck (stopImmediatePropagation and preventDefault). */
-  | { kind: 'swallow' };
+  | { kind: 'swallow' }
+  /** Edit's open picker: its key, kept from the deck (stopImmediatePropagation and preventDefault). */
+  | { kind: 'picker'; key: PickerKey };
 
 const TOOL_BY_CODE: Record<string, ShortcutAction> = {
   Digit1: 'tool-pen',
@@ -97,6 +104,9 @@ export function classifyKey(k: KeyInput, ctx: KeyContext): KeyAction {
   // Step 3: Meta, Ctrl or Alt chords pass through untouched (Wispr Flow's Cmd+V must never fire a shortcut).
   if (k.meta || k.ctrl || k.alt) return { kind: 'pass' };
 
+  // Edit's picker (P2-8) has its own keys while it is open; nothing else runs and the deck sees none of them.
+  if (ctx.picker && ctx.appMode === 'edit') return pickerKey(k);
+
   // Step 4: Read mode gives every key to the deck.
   if (ctx.appMode === 'read') return { kind: 'pass' };
 
@@ -127,6 +137,18 @@ export function classifyKey(k: KeyInput, ctx: KeyContext): KeyAction {
   return { kind: 'swallow' };
 }
 
+/** The picker's keys: ↑/↓ (and Tab, Shift+Tab) move, Enter chooses, 1–9 choose that row, Esc closes; others are swallowed. */
+function pickerKey(k: KeyInput): KeyAction {
+  const key = (p: PickerKey): KeyAction => ({ kind: 'picker', key: p });
+  if (k.code === 'ArrowDown' || (k.code === 'Tab' && !k.shift)) return key({ move: 1 });
+  if (k.code === 'ArrowUp' || (k.code === 'Tab' && k.shift)) return key({ move: -1 });
+  if (isEnter(k.code)) return k.repeat ? { kind: 'swallow' } : key({ choose: 'current' });
+  if (k.code === 'Escape') return k.repeat ? { kind: 'swallow' } : key('cancel');
+  const digit = /^(?:Digit|Numpad)([1-9])$/.exec(k.code);
+  if (digit && !k.repeat) return key({ choose: Number(digit[1]) - 1 });
+  return { kind: 'swallow' };
+}
+
 export interface KeyRouterDeps {
   /** Current app mode (Read until main's init arrives). */
   appMode(): AppMode;
@@ -138,6 +160,10 @@ export interface KeyRouterDeps {
   onDecision?(e: KeyboardEvent, action: KeyAction, consumed: boolean): void;
   /** A trusted key the deck was given in a mode where it may move the deck (6.7 Index replay). */
   onDeckKey?(e: KeyboardEvent): void;
+  /** Edit's picker is open (P2-8). */
+  pickerOpen?(): boolean;
+  /** A key for the open picker. */
+  onPickerKey?(key: PickerKey, e: KeyboardEvent): void;
 }
 
 /**
@@ -176,9 +202,9 @@ export class KeyRouter {
         repeat: e.repeat,
         composing: e.isComposing,
       },
-      { appMode: this.deps.appMode(), textField: this.deps.textFieldOf(t) },
+      { appMode: this.deps.appMode(), textField: this.deps.textFieldOf(t), picker: this.deps.pickerOpen?.() ?? false },
     );
-    const consumed = action.kind === 'text' || action.kind === 'shortcut' || action.kind === 'swallow';
+    const consumed = action.kind === 'text' || action.kind === 'shortcut' || action.kind === 'swallow' || action.kind === 'picker';
     if (action.kind !== 'ignore') this.lastDownStopped = consumed;
     if (consumed) {
       e.stopImmediatePropagation();
@@ -188,6 +214,7 @@ export class KeyRouter {
     this.deps.onDecision?.(e, action, consumed);
     if (action.kind === 'text' && action.handle) this.deps.onAction(action.handle, e);
     else if (action.kind === 'shortcut') this.deps.onAction(action.action, e);
+    else if (action.kind === 'picker') this.deps.onPickerKey?.(action.key, e);
     else if ((action.kind === 'pass' || action.kind === 'forward') && e.isTrusted && !e.metaKey && !e.ctrlKey && !e.altKey) {
       this.deps.onDeckKey?.(e);
     }

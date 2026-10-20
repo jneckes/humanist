@@ -84,6 +84,17 @@ describe('cleanupCommit (9.2 Committing an edit step 3, 6.3)', () => {
   it('keeps tabs, emoji and other characters', () => {
     expect(cleanupCommit('a', 'a\t\u{1F680} & <b>')).toBe('a\t\u{1F680} & <b>');
   });
+
+  it('keeps the line breaks and NBSPs a run had between two changes made in one commit', () => {
+    // A <pre> run changed before and after its own line break: the region between them is untouched.
+    expect(cleanupCommit('one\ntwo', 'one!\ntwo!')).toBe('one!\ntwo!');
+    expect(cleanupCommit('a\r\nb', 'A\r\nB')).toBe('A\r\nB');
+    expect(cleanupCommit('10\u00A0km to go', '12\u00A0km to run')).toBe('12\u00A0km to run');
+    expect(cleanupCommit('x\u200By', 'X\u200BY')).toBe('X\u200BY');
+    // When the edit adds one on top of those the run had, the position rule decides alone, as for one change.
+    expect(cleanupCommit('one\ntwo', 'one!\ntw\no!')).toBe('one! tw o!');
+    expect(cleanupCommit('a\u00A0b c', 'A\u00A0b\u00A0C')).toBe('A\u00A0b C');
+  });
 });
 
 describe('smartPunctuation (6.3)', () => {
@@ -100,6 +111,10 @@ describe('smartPunctuation (6.3)', () => {
   it('changes nothing in a run with only straight quotes, and leaves untouched text alone', () => {
     expect(smartPunctuation('say "hi"', 'say "hi" now')).toBe('say "hi" now');
     expect(smartPunctuation('\u201Cx\u201D "old"', '\u201Cx\u201D "old" new')).toBe('\u201Cx\u201D "old" new');
+  });
+
+  it('leaves a straight quote the run had between two changes alone', () => {
+    expect(smartPunctuation('\u201Cx\u201D a "b" c', '\u201Cx\u201D A "b" C')).toBe('\u201Cx\u201D A "b" C');
   });
 
   it('opens after whitespace, brackets, dashes and at the start; closes after letters and punctuation', () => {

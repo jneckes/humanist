@@ -272,7 +272,7 @@ describe('lockForRun', () => {
   const end = src.indexOf('</p>');
 
   it('takes the source text from src, or a value that is already the source slice', () => {
-    expect(lockForRun('n-0001', { start, end, value: 'Café & bar' }, src)).toEqual({
+    expect(lockForRun('n-0001', { start, end, value: 'Caf\u00E9 & bar' }, src)).toEqual({
       start,
       end,
       text: 'Caf&eacute; &amp; bar',
@@ -283,7 +283,7 @@ describe('lockForRun', () => {
   });
 
   it('refuses a decoded value whose length shows it, and bad ranges', () => {
-    expect(() => lockForRun('n-0001', { start, end, value: 'Café & bar' })).toThrow(RangeError);
+    expect(() => lockForRun('n-0001', { start, end, value: 'Caf\u00E9 & bar' })).toThrow(RangeError);
     expect(() => lockForRun('n-0001', { start: 5, end: 2, value: '' })).toThrow(RangeError);
     expect(() => lockForRun('n-0001', { start: 0, end: 999, value: '' }, src)).toThrow(RangeError);
   });

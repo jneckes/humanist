@@ -256,6 +256,14 @@ export class ViewHooks {
     this.deps.send(ViewsDeckToMain.design, r);
   }
 
+  /**
+   * Reports the busy state now if it changed (Phase 2: called when an edit field opens or closes and when its
+   * commit is sent or answered, so a reload can never land between a press and the next poll, 6.6).
+   */
+  reportBusyNow(): void {
+    this.reportBusy();
+  }
+
   private reportBusy(): void {
     const ui = this.deps.ui();
     if (!ui) return;

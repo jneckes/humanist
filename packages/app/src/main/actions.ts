@@ -21,13 +21,13 @@ export type AppAction =
   | 'toggle-rail'
   | 'about-protected'
   | 'settings'
-  | 'welcome';
+  | 'welcome'
+  // Added by main-wiring (Phase 2): File › History… (9.2 Undo and redo 4; P2-11).
+  | 'history';
 
 /** Menu items whose feature belongs to a later phase: a toast says when it arrives. */
 export const PHASE_STUBS: Readonly<Partial<Record<AppAction, string>>> = Object.freeze({
   send: 'Send to Claude Code arrives in Phase 4.',
-  undo: 'Undo for edits and marks arrives in Phase 2.',
-  redo: 'Redo for edits and marks arrives in Phase 2.',
 });
 
 /** 6.8 Save (Review): the explanation the first Cmd+S on your own document shows, once. */

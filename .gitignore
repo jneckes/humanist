@@ -13,3 +13,5 @@ fixtures/local/*
 # blueline map probe copies (SPEC 9.7)
 .*.bl-probe.html
 .blueline/
+# vitest json reporter output
+.vitest/

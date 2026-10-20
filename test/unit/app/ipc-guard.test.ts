@@ -1,6 +1,7 @@
 // The IPC guard (9.1 "Main treats every message from a deck view as written by the page").
 import { describe, expect, it } from 'vitest';
 import { DeckToMain, ShellToMain } from '@blueline/core/ipc';
+import { EditDeckToMain } from '@blueline/core/ipc-edit';
 import {
   DECK_CHANNEL_KINDS,
   DECK_VALIDATORS,
@@ -16,7 +17,15 @@ import {
   validateDetectResult,
   validateDiag,
   validateDiagRecord,
+  validateEditBegin,
+  validateEditBusy,
+  validateEditCandidates,
+  validateEditCommit,
+  validateEditUndo,
   validateFocus,
+  validateHistoryId,
+  validateNoteIdArg,
+  validateToastAction,
   validateLink,
   validateMode,
   validateNoArgs,
@@ -246,9 +255,10 @@ describe('rate limiting', () => {
 });
 
 describe('validators', () => {
-  it('have one entry per DeckToMain channel', () => {
-    expect(Object.keys(DECK_VALIDATORS).sort()).toEqual(Object.values(DeckToMain).sort());
-    expect(Object.keys(DECK_CHANNEL_KINDS).sort()).toEqual(Object.values(DeckToMain).sort());
+  it('have one entry per DeckToMain channel, the edit channels included (Phase 2)', () => {
+    const all = [...Object.values(DeckToMain), ...Object.values(EditDeckToMain)].sort();
+    expect(Object.keys(DECK_VALIDATORS).sort()).toEqual(all);
+    expect(Object.keys(DECK_CHANNEL_KINDS).sort()).toEqual(all);
   });
 
   it('ready ignores its payload', () => {
@@ -575,5 +585,92 @@ describe('shell channels', () => {
     router.registerShell(shell, { windowKey: 'w1' });
     shell.destroy();
     await expect(ipc.invoke(ShellToMain.setMode, ev(shell), 'read')).rejects.toThrow('Refused');
+  });
+});
+
+// ------------------------------------------------------------------------------------------- Phase 2: edit channels
+
+describe('edit channel validators (core/ipc-edit.ts; P2-7)', () => {
+  const V = 'a'.repeat(64);
+  const target = { css: 'main > h1', text: 'Hello', role: 'heading', stamp: 'bl-3' };
+  const edit = { kind: 'edit', runId: 'h:bl-3:0', beforeText: 'Hello', afterText: 'Hello there' };
+  const commit = { fieldId: 1, version: V, result: edit, target, slide: 2, alsoPlaces: 0 };
+
+  it('begin: a field id, a version, distinct run ids of the two forms', () => {
+    expect(validateEditBegin({ fieldId: 1, version: V, runIds: ['h:bl-3:0', 'l:12:0', 'h:bl-3:0'], extra: 1 })).toEqual({ ok: true, value: { fieldId: 1, version: V, runIds: ['h:bl-3:0', 'l:12:0'] } });
+    for (const bad of [
+      { fieldId: -1, version: V, runIds: [] },
+      { fieldId: 1.5, version: V, runIds: [] },
+      { fieldId: 1, version: 'A'.repeat(64), runIds: [] },
+      { fieldId: 1, version: V, runIds: ['../x'] },
+      { fieldId: 1, version: V, runIds: ['h:bl-3'] },
+      { fieldId: 1, version: V, runIds: Array.from({ length: 513 }, (_, i) => `h:bl-${i}:0`) },
+      { fieldId: 1, version: V },
+      JSON.parse(`{"fieldId":1,"version":"${V}","runIds":[],"__proto__":{"x":1}}`),
+    ]) {
+      expect(validateEditBegin(bad).ok, JSON.stringify(bad).slice(0, 80)).toBe(false);
+    }
+  });
+
+  it('commit: the result kinds, texts within EDIT_LIMITS (UTF-8, no lone surrogate), a pick only with an edit', () => {
+    const v = validateEditCommit({ ...commit, extra: 'dropped', path: '/etc/passwd' });
+    expect(v).toEqual({ ok: true, value: commit });
+    expect(validateEditCommit({ ...commit, result: { kind: 'verbatim', before: 'a', after: 'b', why: 'across-runs' } }).ok).toBe(true);
+    expect(validateEditCommit({ ...commit, result: { kind: 'noop' } }).ok).toBe(true);
+    expect(validateEditCommit({ ...commit, pick: { kind: 'substring', nodeBefore: 'b', nodeAfter: 'c' } }).ok).toBe(true);
+    expect(validateEditCommit({ ...commit, slide: null, target: { ...target, css: '', stamp: null } }).ok).toBe(true);
+    const big = 'x'.repeat(256 * 1024 + 1);
+    for (const bad of [
+      { ...commit, result: { ...edit, kind: 'write' } },
+      { ...commit, result: { ...edit, afterText: big } },
+      { ...commit, result: { ...edit, afterText: 'é'.repeat(130 * 1024) } },
+      { ...commit, result: { ...edit, afterText: 'a\uD800' } },
+      { ...commit, result: { ...edit, runId: 'h:bl-1:0:extra' } },
+      { ...commit, result: { kind: 'verbatim', before: 'a', after: 'b', why: 'because' } },
+      { ...commit, result: { kind: 'noop' }, pick: { kind: 'equal', nodeBefore: 'a', nodeAfter: 'b' } },
+      { ...commit, pick: { kind: 'guess', nodeBefore: 'a', nodeAfter: 'b' } },
+      { ...commit, target: { ...target, role: 'Heading!' } },
+      { ...commit, target: { ...target, stamp: 'x' } },
+      { ...commit, slide: 10_000 },
+      { ...commit, alsoPlaces: 10_001 },
+      { ...commit, version: 'x' },
+      { ...commit, record: { start: 0 } },
+    ]) {
+      const r = validateEditCommit(bad);
+      if (r.ok) {
+        // Unknown fields (a record, a path) are dropped, never kept.
+        expect(Object.keys(r.value).sort()).toEqual(['alsoPlaces', 'fieldId', 'result', 'slide', 'target', 'version']);
+      } else expect(r.ok).toBe(false);
+    }
+    expect(validateEditCommit({ ...commit, result: { ...edit, afterText: big } }).ok).toBe(false);
+    expect(validateEditCommit({ ...commit, result: { ...edit, afterText: String.fromCharCode(0xd800) } }).ok).toBe(false);
+  });
+
+  it('candidates, undo and busy', () => {
+    expect(validateEditCandidates({ fieldId: 2, version: V, runIds: ['h:bl-1:0'] })).toEqual({ ok: true, value: { fieldId: 2, version: V, runIds: ['h:bl-1:0'] } });
+    expect(validateEditCandidates({ fieldId: 2, version: V, runIds: Array.from({ length: 51 }, (_, i) => `l:${i}:0`) }).ok).toBe(false);
+    expect(validateEditUndo({ token: '0123456789abcdef0123456789abcdef' }).ok).toBe(true);
+    for (const token of ['short', 'x'.repeat(65), '../../a', 42, { record: 1 }]) expect(validateEditUndo({ token }).ok).toBe(false);
+    expect(validateEditUndo({ token: '0'.repeat(32), record: { start: 0 } })).toEqual({ ok: true, value: { token: '0'.repeat(32) } });
+    expect(validateEditBusy({ edit: true, committing: false })).toEqual({ ok: true, value: { edit: true, committing: false } });
+    expect(validateEditBusy({ edit: 'yes', committing: false }).ok).toBe(false);
+  });
+
+  it("the edit channels are the deck view's (the Diagnostics deck may only ask); render views never", () => {
+    for (const ch of Object.values(EditDeckToMain)) expect(DECK_CHANNEL_KINDS[ch]).not.toContain('render');
+    expect(DECK_CHANNEL_KINDS[EditDeckToMain.begin]).toEqual(['deck']);
+    expect(DECK_CHANNEL_KINDS[EditDeckToMain.undo]).toEqual(['deck']);
+    expect(DECK_CHANNEL_KINDS[EditDeckToMain.commit]).toEqual(['deck', 'diagnostics']);
+  });
+
+  it('shell: a toast action names a 32-hex token and an action id; Copy a note id; Restore a history id', () => {
+    expect(validateToastAction(['0123456789abcdef0123456789abcdef', 'make-note'])).toEqual({ ok: true, value: { token: '0123456789abcdef0123456789abcdef', actionId: 'make-note' } });
+    expect(validateToastAction(['0123456789abcdef0123456789abcdef']).ok).toBe(false);
+    expect(validateToastAction(['0123456789ABCDEF0123456789abcdef', 'make-note']).ok).toBe(false);
+    expect(validateToastAction(['0123456789abcdef0123456789abcdef', 'Make Note']).ok).toBe(false);
+    expect(validateNoteIdArg(['n-0003'])).toEqual({ ok: true, value: 'n-0003' });
+    expect(validateNoteIdArg(['../n-0003']).ok).toBe(false);
+    expect(validateHistoryId(['h-12'])).toEqual({ ok: true, value: 'h-12' });
+    for (const id of ['h-', 'h-1/..', 'x', 7]) expect(validateHistoryId([id]).ok).toBe(false);
   });
 });

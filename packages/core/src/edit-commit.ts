@@ -39,9 +39,11 @@ export interface FieldRun {
  *   - across-runs:  the changed span crosses a run boundary or an inline element (9.2 step 4);
  *   - outside-runs: the change lies in text of the field that is not a recorded run;
  *   - boundary:     an insertion or deletion at a run boundary, and no caret run decides where it goes;
- *   - invalid:      the field's runs do not fit its text, or the text holds a lone surrogate.
+ *   - invalid:      the field's runs do not fit its text, or the text holds a lone surrogate;
+ *   - page-changed: the page changed or removed the field while it was open (P2-17: "what was typed becomes a
+ *                   verbatim note"). commitField never returns it; the overlay does.
  */
-export type VerbatimWhy = 'emptied' | 'run-emptied' | 'across-runs' | 'outside-runs' | 'boundary' | 'invalid';
+export type VerbatimWhy = 'emptied' | 'run-emptied' | 'across-runs' | 'outside-runs' | 'boundary' | 'invalid' | 'page-changed';
 
 export const VERBATIM_WHYS: readonly VerbatimWhy[] = Object.freeze([
   'emptied',
@@ -50,6 +52,7 @@ export const VERBATIM_WHYS: readonly VerbatimWhy[] = Object.freeze([
   'outside-runs',
   'boundary',
   'invalid',
+  'page-changed',
 ]);
 
 export type CommitResult =
@@ -102,7 +105,7 @@ function wellFormed(s: string): string {
     if (isHigh(c) && isLow(s.charCodeAt(i + 1))) {
       out += s[i] + s[i + 1];
       i++;
-    } else out += isHigh(c) || isLow(c) ? '�' : s[i];
+    } else out += isHigh(c) || isLow(c) ? '\uFFFD' : s[i];
   }
   return out;
 }
@@ -118,7 +121,7 @@ function cpBefore(s: string, end: number): number {
  * double quotes, a straight `"` typed after `prev` becomes U+201C exactly when it opens.
  */
 function opensAfter(prev: string): boolean {
-  return smartPunctuation('“', '“' + prev + '"').endsWith('“');
+  return smartPunctuation('\u201C', '\u201C' + prev + '"').endsWith('\u201C');
 }
 
 /** Smart punctuation on one run (6.3): the run's own text decides which quotes convert; `prev` is the field's character before it. */
@@ -132,11 +135,14 @@ function smartRun(runBefore: string, runAfter: string, prev: string): string {
 /** The field's runs, sorted, after checking that each fits the field's text. null when one does not. */
 function checkRuns(before: string, runs: FieldRun[]): FieldRun[] | null {
   if (!Array.isArray(runs)) return null;
+  for (const r of runs) {
+    if (!r || typeof r.runId !== 'string' || r.runId === '' || typeof r.value !== 'string') return null;
+    if (!Number.isInteger(r.start) || !Number.isInteger(r.end)) return null;
+  }
   const out = runs.slice().sort((a, b) => a.start - b.start || a.end - b.end);
   let last = 0;
   for (const r of out) {
-    if (!r || typeof r.runId !== 'string' || r.runId === '' || typeof r.value !== 'string') return null;
-    if (!Number.isInteger(r.start) || !Number.isInteger(r.end) || r.start < last || r.start >= r.end || r.end > before.length) return null;
+    if (r.start < last || r.start >= r.end || r.end > before.length) return null;
     if (before.slice(r.start, r.end) !== r.value) return null;
     // A run never starts or ends inside a surrogate pair: a text node holds whole code points.
     if (isLow(before.charCodeAt(r.start)) || (r.end < before.length && isLow(before.charCodeAt(r.end)))) return null;
@@ -145,49 +151,42 @@ function checkRuns(before: string, runs: FieldRun[]): FieldRun[] | null {
   return out;
 }
 
-/** One way to read the change: replace field[a, b) with `text`. */
-interface Placement {
-  a: number;
-  b: number;
-  text: string;
+/**
+ * The equivalent readings of the change: replacing field[a, a + len) with cleaned[a, a + len + delta) for every a
+ * in [lo, hi] that is a code point boundary. changedSpan takes the longest common prefix, so a pure insertion or
+ * deletion is placed as far right as it can go (hi); inserting "b" into "ab|bc" at index 1 or 2 gives the same
+ * text, and so does deleting either "b". Sliding left one whole code point at a time while the text stays the
+ * same finds lo, so the caret's run can take the change when one of the readings lies in it (9.2 step 4). Any
+ * reading's new text is the cleaned field's own slice at that place. A replacement has one reading (lo = hi).
+ * Linear in the field's length: a page cannot make the commit slow with long repeated text.
+ */
+interface Readings {
+  lo: number;
+  hi: number;
+  /** Length of the replaced range in the field's old text (0 for an insertion). */
+  len: number;
+  /** Length of the text that replaces it. */
+  ins: number;
 }
 
-/**
- * Every equivalent reading of the changed span, the one changedSpan found first. changedSpan takes the longest
- * common prefix, so a pure insertion or deletion is placed as far right as it can go; inserting "b" into
- * "ab|bc" at index 1 or 2 gives the same text, and so does deleting either "b". Sliding left one whole code point
- * at a time lists the others, so the caret's run can take the change when one of them lies in it (9.2 step 4).
- * A replacement has one reading.
- */
-function placements(before: string, after: string): Placement[] {
+function readingsOf(before: string, after: string): Readings {
   const span = changedSpan(before, after);
-  const text = after.slice(span.start, span.endAfter);
-  const out: Placement[] = [{ a: span.start, b: span.endBefore, text }];
-  if (text.length > 0 && span.endBefore === span.start) {
-    // Pure insertion of `text` at q: q - k is equivalent while the code point before q ends `text` (rotate it).
-    let q = span.start;
-    let t = text;
-    while (q > 0) {
-      const n = cpBefore(before, q);
-      const cp = before.slice(q - n, q);
-      if (!t.endsWith(cp)) break;
-      q -= n;
-      t = cp + t.slice(0, t.length - n);
-      out.push({ a: q, b: q, text: t });
-    }
-  } else if (text.length === 0 && span.endBefore > span.start) {
-    // Pure deletion of [a, b): [a - k, b - k) is equivalent while the code point before a ends the deleted text.
-    let a = span.start;
-    let b = span.endBefore;
-    while (a > 0) {
-      const n = cpBefore(before, a);
-      if (before.slice(a - n, a) !== before.slice(b - n, b)) break;
-      a -= n;
-      b -= n;
-      out.push({ a, b, text: '' });
+  const len = span.endBefore - span.start;
+  const ins = span.endAfter - span.start;
+  let lo = span.start;
+  if ((len === 0) !== (ins === 0)) {
+    // A pure insertion (or deletion) of k units at q equals one at q - n when the code point before q equals the
+    // code point that ends the inserted (deleted) text: after[q - n + k, q + k) for an insertion, before[q - n + k,
+    // q + k) for a deletion.
+    const text = len === 0 ? after : before;
+    const k = len === 0 ? ins : len;
+    while (lo > 0) {
+      const n = cpBefore(before, lo);
+      if (text.slice(lo - n + k, lo + k) !== before.slice(lo - n, lo)) break;
+      lo -= n;
     }
   }
-  return out;
+  return { lo, hi: span.start, len, ins };
 }
 
 /** The unmapped stretches of the field: text between, before or after the recorded runs. */
@@ -202,9 +201,13 @@ function gapsOf(length: number, runs: FieldRun[]): { start: number; end: number 
   return gaps;
 }
 
-/** A segment (run or gap) can hold a placement: a range inside it, or an insertion inside it or at its edges. */
-function holds(seg: { start: number; end: number }, p: Placement): boolean {
-  return seg.start <= p.a && p.b <= seg.end;
+/**
+ * The rightmost reading a segment (a run or a gap) can hold, or null: a range must lie inside it, an insertion
+ * inside it or at its edges. Segment edges are code point boundaries, and so is every reading in [lo, hi].
+ */
+function fit(seg: { start: number; end: number }, r: Readings): number | null {
+  const a = Math.min(r.hi, seg.end - r.len);
+  return a >= Math.max(r.lo, seg.start) ? a : null;
 }
 
 // ----------------------------------------------------------------------------------------- commitField
@@ -233,27 +236,26 @@ export function commitField(i: CommitInput, opts: { smartPunctuation: boolean })
   if (cleaned.length === 0 || isWhitespaceOnly(cleaned)) return verbatim('emptied');
 
   // Step 4: which run holds the change.
-  const ps = placements(before, cleaned);
-  const gaps = gapsOf(before.length, runs);
-  const owned: { run: FieldRun; p: Placement }[] = [];
-  let inGap = false;
-  for (const p of ps) {
-    for (const r of runs) if (holds(r, p)) owned.push({ run: r, p });
-    if (gaps.some((g) => holds(g, p))) inGap = true;
+  const rd = readingsOf(before, cleaned);
+  const owners: { run: FieldRun; a: number }[] = [];
+  for (const r of runs) {
+    const a = fit(r, rd);
+    if (a !== null) owners.push({ run: r, a });
   }
-  let pick: { run: FieldRun; p: Placement } | null = null;
-  // The caret's run wins among the readings that fit it (the rightmost such, the one closest to changedSpan's).
-  if (i.caretRunId !== null && typeof i.caretRunId === 'string') pick = owned.find((o) => o.run.runId === i.caretRunId) ?? null;
+  const inGap = gapsOf(before.length, runs).some((g) => fit(g, rd) !== null);
+  let pick: { run: FieldRun; a: number } | null = null;
+  // The caret's run wins among the readings that fit it (the rightmost, the one closest to changedSpan's).
+  if (typeof i.caretRunId === 'string') pick = owners.find((o) => o.run.runId === i.caretRunId) ?? null;
   if (!pick) {
-    const distinct = new Set(owned.map((o) => o.run));
-    if (distinct.size === 1 && !inGap) pick = owned[0];
-    else if (distinct.size > 1 || (distinct.size === 1 && inGap)) return verbatim('boundary');
+    if (owners.length === 1 && !inGap) pick = owners[0];
+    else if (owners.length > 1 || (owners.length === 1 && inGap)) return verbatim('boundary');
     // No run holds any reading: unmapped text (an insertion always sits in some stretch of the field), or a span
     // that crosses from one run into the next or into unmapped text.
-    else return verbatim(inGap || ps[0].a === ps[0].b ? 'outside-runs' : 'across-runs');
+    else return verbatim(inGap || rd.len === 0 ? 'outside-runs' : 'across-runs');
   }
-  const { run, p } = pick;
-  let afterText = run.value.slice(0, p.a - run.start) + p.text + run.value.slice(p.b - run.start);
+  const { run, a } = pick;
+  // Any reading's new text is the cleaned field's own slice at that place.
+  let afterText = run.value.slice(0, a - run.start) + cleaned.slice(a, a + rd.ins) + run.value.slice(a + rd.len - run.start);
   if (opts.smartPunctuation) afterText = smartRun(run.value, afterText, run.start > 0 ? before[run.start - 1] : '');
   if (afterText === run.value) return { kind: 'noop' };
   // 6.3: an edit that empties a run (or leaves only white space) removes a text node: a structural change.

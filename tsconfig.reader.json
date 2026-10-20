@@ -1,0 +1,24 @@
+// The reader-only typecheck (P2-15; SPEC 9.6 "Read and Review must build and run with packages/editor removed";
+// 10 Phase 2 "Reader-only build"). scripts/reader-only-check.mjs runs `tsc -p tsconfig.reader.json` in a copy of the
+// tree that has no packages/editor and whose node_modules has no @blueline/editor, so any file below that imports
+// the editor fails here. Tests that need the editor live in test/unit/editor/ or are named *.edit.test.ts;
+// test/unit/editor/mapper-findings.test.ts imports core only and is kept.
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "paths": {
+      "@blueline/core": ["./packages/core/src/index.ts"],
+      "@blueline/core/*": ["./packages/core/src/*"]
+    }
+  },
+  "include": ["packages/core/src/**/*.ts", "packages/app/src/**/*.ts", "packages/cli/src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"],
+  "files": ["test/unit/editor/mapper-findings.test.ts"],
+  "exclude": [
+    "node_modules",
+    "**/dist/**",
+    "packages/editor/**",
+    "test/unit/editor/**",
+    "**/*.edit.test.ts"
+  ]
+}

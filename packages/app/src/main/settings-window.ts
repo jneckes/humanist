@@ -17,9 +17,8 @@
 //
 // Phase 2 adds Settings › General › Smart punctuation (6.3: "default on; toggle in settings"): the default in
 // config.json (config.ts GeneralSettings), which a document uses unless its Session.settings sets its own. Its
-// channel is declared here with the others and answered only for the Settings shell; onGeneralSettingsChanged
-// lets main tell the open decks. The channel and the state field live here, not in core/ipc-trust.ts, until
-// that contract takes them (see SETTINGS_GENERAL_CHANNELS).
+// channel (SettingsToMain.setSmartPunctuation) is declared here with the others and answered only for the
+// Settings shell; onGeneralSettingsChanged lets main tell the open decks.
 
 import { app, BrowserWindow, dialog, nativeTheme, session } from 'electron';
 import * as os from 'node:os';
@@ -38,17 +37,14 @@ export const SETTINGS_KEY = 'settings';
 export const SETTINGS_URL = `${SHELL_ORIGIN}/settings.html`;
 const SHELL_PARTITION = 'shell';
 
-/**
- * Settings › General's channel (Settings shell → main, `ipcRenderer.invoke`). preload/settings.ts invokes the
- * same name (a unit test holds them together); it belongs in core/ipc-trust.ts SettingsToMain.
- */
+/** Settings › General's channels, a view of core's SettingsToMain (kept for the callers that name them so). */
 export const SETTINGS_GENERAL_CHANNELS = Object.freeze({
   /** (on: boolean) → void. 6.3 Smart punctuation, the default for documents without their own setting. */
-  setSmartPunctuation: 'bl:settings:set-smart-punctuation',
+  setSmartPunctuation: SettingsToMain.setSmartPunctuation,
 });
 
-/** SettingsState as main sends it: core's fields, plus Settings › General's (null: not offered here). */
-export type SettingsWindowState = SettingsState & { smartPunctuation: boolean | null };
+/** SettingsState as main sends it (Settings › General's smartPunctuation is null when not offered here). */
+export type SettingsWindowState = SettingsState;
 
 // ---------------------------------------------------------------------------------------------------
 // Validators (ipc-guard.ts style: argument lists rebuilt, nothing but the expected primitives accepted)
@@ -195,7 +191,7 @@ export function installSettingsWindow(deps: SettingsWindowDeps): SettingsControl
     await deps.settings.resetAllowlist();
     w.push();
   });
-  r.handle(SETTINGS_GENERAL_CHANNELS.setSmartPunctuation, validateSmartPunctuation, async (from, on) => {
+  r.handle(SettingsToMain.setSmartPunctuation, validateSmartPunctuation, async (from, on) => {
     const w = win(from);
     if (!deps.general) throw new Error('Refused');
     await deps.general.setSmartPunctuation(on);

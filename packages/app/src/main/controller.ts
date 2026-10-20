@@ -11,10 +11,13 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { BrowserWindow, app, dialog, shell, webContents as allWebContents } from 'electron';
 import type { AppMode, Capabilities } from '@blueline/core/ipc';
+import type { EditorModule } from '@blueline/core/capabilities';
+import type { NameResult } from '@blueline/core/ipc-files';
 import { PROTECTED_VIEW_HELP, protectedViewHelpText } from '@blueline/core/ipc-trust';
 import type { Person } from '@blueline/core/types';
 import { PHASE_STUBS, SAVE_EXPLANATION, SAVE_RECEIVED_PHASE5, type AppAction } from './actions';
-import type { ConfigStore } from './config';
+import { smartPunctuationDefault, type ConfigStore } from './config';
+import { EditRegistry } from './edit-session';
 import { DocumentRegistry, OpenError, loadDocument, newDocumentId, trustedDocumentId, type BlDocument, type OpenDecision } from './documents';
 import { openDiagnostics } from './diagnostics';
 import { resolveOpenTrust, toTrustDecision, type TrustSettings } from './folders';
@@ -52,6 +55,17 @@ export interface ControllerDeps {
   noteMode?(realpath: string, mode: AppMode): void;
   /** Added by views: the focused window's state changed; the app menu is rebuilt (index.ts). */
   onMenuState?(): void;
+  /**
+   * Phase 2: the editor bundle (dist/editor.cjs, editor-loader.ts), null in a reader-only build (the capability
+   * seam, 9.6: main codes against EditorModule and never imports @blueline/editor).
+   */
+  editor?: EditorModule | null;
+  /** Phase 2 (6.8): the name chip; identity.ts Identity. */
+  identity?: {
+    setName(raw: unknown): Promise<NameResult>;
+    trackSession(s: { updatePerson(p: Person): boolean; save(): unknown }): () => void;
+    onChange(fn: (p: Person) => void): () => void;
+  };
 }
 
 export interface OpenOptions {
@@ -89,8 +103,21 @@ export class AppController {
   /** Error dialogs still on screen. */
   private readonly dialogs = new Set<Promise<unknown>>();
   private menuTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Phase 2 (P2-3): one write queue and serial lane per file, shared by its windows, kept across a D-1 reopen. */
+  readonly edits: EditRegistry;
 
-  constructor(private readonly deps: ControllerDeps) {}
+  constructor(private readonly deps: ControllerDeps) {
+    this.edits = new EditRegistry({
+      editor: deps.editor ?? null,
+      userData: deps.userData,
+      capEdit: () => deps.capabilities.edit,
+      log: (m) => deps.log(m),
+    });
+    // 6.8: a new name shows on every open deck's cards and every name chip.
+    deps.identity?.onChange((p) => {
+      for (const w of this.all()) w.userNameChanged(p.name);
+    });
+  }
 
   /**
    * Every open document window. A window that is closing is left out (finding 23): its deck view is closed in
@@ -128,6 +155,10 @@ export class AppController {
       readingWidth: v.readingWidth,
       railHidden: v.railHidden,
       presenting: v.presenting,
+      // Phase 2: View › Edit is off when Edit is not available (6.3, 6.10); History needs the Edit capability.
+      editAvailable: w.editAvailability().available,
+      history: this.deps.capabilities.edit,
+      historyOpen: w.historyShown,
     };
   }
 
@@ -310,6 +341,8 @@ export class AppController {
       // then leaves the other document alone.
       this.registry.add(doc);
       const file = sessionFileFor(this.deps.userData, doc.fileKey);
+      // Phase 2: a write of this file still in its lane (a closed or reopening window's) makes its note first.
+      await this.edits.idle(doc.realpath);
       // 6.8 One writer (finding 24): a recently closed window of this file may still be writing its session.json.
       // Read it only after that write landed (SessionStore.open also waits for any store's write of the file).
       await Promise.all([...this.stores].filter((s) => s.file === file).map((s) => s.idle()));
@@ -351,6 +384,9 @@ export class AppController {
         reopen: (w, r) => void this.reopen(w, r),
         protectedRequested: o.protected,
         restore: o.restore,
+        edits: this.edits,
+        smartPunctuationDefault: () => smartPunctuationDefault(config.get()),
+        setName: this.deps.identity ? (raw) => this.deps.identity!.setName(raw) : undefined,
       });
     } catch (e) {
       this.registry.remove(doc);
@@ -361,7 +397,13 @@ export class AppController {
     if (win.closing) return win;
     this.windows.set(keys, win);
     this.stores.add(store);
-    win.win.once('closed', () => void store.idle().then(() => this.stores.delete(store)));
+    // 6.8: the session's people entry follows the user's name while the window is open.
+    const w = win;
+    const untrack = this.deps.identity?.trackSession({ updatePerson: (p) => w.notes.updatePerson(p), save: () => store.save() });
+    win.win.once('closed', () => {
+      untrack?.();
+      void store.idle().then(() => this.stores.delete(store));
+    });
     // 6.1 Open Recent: every successful open (and app.addRecentDocument on macOS and Windows, recent.ts).
     void this.deps.recent?.add(doc.realpath).catch((e: unknown) => this.deps.log(`recent.json: ${e instanceof Error ? e.message : String(e)}`));
     this.menuChanged();
@@ -390,21 +432,34 @@ export class AppController {
     while (this.dialogs.size > 0) await Promise.all([...this.dialogs]);
   }
 
-  /** A session, config, trust.json or recent.json write is pending or running. */
+  /** A deck write, history snapshot, session, config, trust.json or recent.json write is pending or running. */
   writesPending(): boolean {
     return (
-      this.deps.config.busy || [...this.stores].some((s) => s.busy) || this.deps.trustStore?.busy === true || this.deps.recent?.busy === true
+      this.edits.busy ||
+      this.deps.config.busy ||
+      [...this.stores].some((s) => s.busy) ||
+      this.deps.trustStore?.busy === true ||
+      this.deps.recent?.busy === true
     );
   }
 
-  /** Resolves when every session, config, trust.json and recent.json write has finished (before quitting). */
+  /**
+   * Resolves when every deck write and history snapshot, then every session, config, trust.json and recent.json
+   * write has finished (before quitting): a write that lands makes its note, whose session write comes after.
+   */
   async idle(): Promise<void> {
+    await this.edits.idle();
     await Promise.all([
       ...[...this.stores].map((s) => s.idle()),
       this.deps.config.idle(),
       this.deps.trustStore?.idle() ?? Promise.resolve(),
       this.deps.recent?.idle() ?? Promise.resolve(),
     ]);
+  }
+
+  /** Settings › General changed the smart punctuation default: decks with no setting of their own follow (6.3). */
+  generalSettingsChanged(): void {
+    for (const w of this.all()) w.settingsChanged();
   }
 
   /**
@@ -498,7 +553,7 @@ export class AppController {
         return;
       case 'undo':
       case 'redo': {
-        // 6.2 / 9.2 step 5: inside a text field, native undo for that field; otherwise app undo (Phase 2).
+        // 6.2 / 9.2 step 5: inside a text field, native undo for that field; otherwise app undo (P2-10).
         // Edit › Undo is a custom item, so on macOS Cmd+Z reaches a field only through it (finding 21). Blueline's
         // own pages (the shell's Find bar, Settings, the welcome or Open window, Diagnostics) get native undo only
         // while an editable element has focus; outside a text field it is app undo, the same as a deck view
@@ -515,7 +570,8 @@ export class AppController {
           else focusedWc.redo();
           return;
         }
-        w.toast(PHASE_STUBS[action]!, 'info');
+        // P2-10: app undo and redo of the document's own writes.
+        void w.appUndo(action);
         return;
       }
     }
@@ -567,6 +623,10 @@ export class AppController {
       case 'reading-width':
         w.toggleReadingWidth();
         return;
+      case 'history':
+        // P2-11: File › History… shows the list of snapshots in the rail.
+        w.toggleHistory();
+        return;
       default: {
         const stub = PHASE_STUBS[action];
         if (stub) w.toast(stub, 'info');
@@ -589,8 +649,8 @@ export class AppController {
 
   /**
    * Undo/redo on one of Blueline's own pages (not a deck view): native undo only while an editable element has
-   * focus; outside a text field it is app undo (finding 21 re-verification; SPEC 6.2). The document window's
-   * shell shows the Phase 2 stub there; a form window (Settings, welcome/Open, Diagnostics) has no app undo.
+   * focus; outside a text field it is app undo (finding 21 re-verification; SPEC 6.2): the document window's
+   * shell undoes its document's writes (P2-10); a form window (Settings, welcome/Open, Diagnostics) has no app undo.
    */
   private async undoOnBluelinePage(wc: Electron.WebContents, action: 'undo' | 'redo', w: DocWindow | null): Promise<void> {
     let editable = false;
@@ -609,8 +669,8 @@ export class AppController {
       else wc.redo();
       return;
     }
-    // Outside a text field, Cmd+Z is app undo. Only the document window's shell has one in Phase 1 (the stub).
-    if (w && !w.isDestroyed() && wc === w.win.webContents) w.toast(PHASE_STUBS[action]!, 'info');
+    // Outside a text field, Cmd+Z is app undo: the document window's shell undoes its document's writes (P2-10).
+    if (w && !w.isDestroyed() && wc === w.win.webContents) await w.appUndo(action);
   }
 
   /**

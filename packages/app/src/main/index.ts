@@ -17,14 +17,14 @@ import type { CommandResult } from '@blueline/core/ipc';
 import { assetsDir, servedDirs } from './app-paths';
 import { parseAppArgs, parseParentArg, validateSecondInstanceData, type ParsedArgs, type SecondInstanceData } from './args';
 import { chooseWithDialog, createCliInstallEnv, runInstallCommandLineTool, type CliInstallUi } from './cli-install';
-import { ConfigStore } from './config';
+import { ConfigStore, configGeneralSettings } from './config';
 import { AppController } from './controller';
 import { interruptDiagnostics, openDiagnostics } from './diagnostics';
 import { dropResultText, installDropHandler } from './drop';
 import { loadEditorDetailed } from './editor-loader';
 import { SAMPLE_FILE, configFirstRunSettings, installFirstRun, secondLaunchFocus, type FirstRunController } from './first-run';
 import { TrustSettings } from './folders';
-import { gitUserName, osUserName, resolvePerson } from './identity';
+import { Identity, gitUserName, osUserName, resolvePerson } from './identity';
 import { runMapCommand } from './map-command';
 import { runPdfCommand } from './pdf-command';
 import { installAppMenu } from './menu';
@@ -414,6 +414,10 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
     const cfg = config.load();
     const { person, patch } = resolvePerson(cfg, { gitName: () => gitUserName(), osName: () => osUserName() });
     if (patch) void config.update(patch);
+    // 6.8: the one Person every window signs notes with; the name chip changes it in place (the id never changes).
+    const identity = new Identity(person, config, log);
+    // 6.3 Smart punctuation's default (Settings › General), in config.json.
+    const general = configGeneralSettings(config);
     let blockPort: number;
     try {
       blockPort = await pickClosedLoopbackPort();
@@ -455,6 +459,9 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
     };
     const controller = new AppController({
       capabilities: editor.capabilities,
+      // Phase 2: the editor bundle itself (null in a reader-only build); main codes against EditorModule (9.6).
+      editor: editor.editor,
+      identity,
       paths,
       userData,
       config,
@@ -515,6 +522,9 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
       devTools,
       // The setting that changed: a folder change shapes no open window's policy, so it rebuilds no render product.
       onTrustSettingsChanged: (change) => controller.trustSettingsChanged(change),
+      // Phase 2: Settings › General › Smart punctuation (6.3); open decks without a setting of their own follow.
+      general,
+      onGeneralSettingsChanged: () => controller.generalSettingsChanged(),
       log,
       test: TEST,
     });
@@ -544,9 +554,8 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
       shellDir: paths.shellDir,
       platform: process.platform,
       devTools,
-      onNameChanged: (n) => {
-        person.name = n;
-      },
+      // 6.8: first run stored the name; every window and open session follows (identity.ts).
+      onNameChanged: (n) => identity.adoptName(n),
       log,
       test: TEST,
     });
@@ -578,8 +587,8 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
     noFileStart();
   });
 
-  // Notes are written atomically; a write still in flight finishes before the process exits (at most 3 s).
-  // With nothing pending, quitting is not delayed at all.
+  // Deck writes, history snapshots and notes are written atomically; a write still in flight finishes before the
+  // process exits (at most 3 s). With nothing pending, quitting is not delayed at all.
   let quitting = false;
   app.on('before-quit', (e) => {
     if (quitting || !controllerRef || !controllerRef.writesPending()) return;
@@ -650,6 +659,30 @@ function exposeTestHooks(controller: AppController): void {
       if (!w) throw new Error('no such window');
       const io = w.doc.io(() => true);
       await io.atomicWrite(new TextEncoder().encode(text), io.sha256(await io.read()));
+    },
+    /**
+     * Phase 2 concurrency gate (test/e2e/edit-gate-concurrency.spec.ts): on this document's next deck write, after
+     * its temp file has the bytes and attributes and before the re-hash (9.2 Atomic write step 3), `base64`'s bytes
+     * replace the deck as another program would save them. True when armed.
+     */
+    onceBeforeRehash: (docId: string, base64: string) => {
+      const w = controller.all().find((x) => x.doc.docId === docId);
+      if (!w || typeof base64 !== 'string') return false;
+      return w.doc.armTestWriteInside(new Uint8Array(Buffer.from(base64, 'base64')));
+    },
+    /** Phase 2: what Edit holds for a window (read-only): the undo stack's size, the history list, the locks. */
+    edit: (docId: string) => {
+      const w = controller.all().find((x) => x.doc.docId === docId);
+      if (!w) return null;
+      return {
+        version: w.doc.version,
+        knownHash: w.doc.knownHash,
+        undo: w.edit.undo.size,
+        history: w.edit.history().entries,
+        locked: JSON.parse(JSON.stringify(w.edit.locks())) as unknown,
+        availability: w.editAvailability(),
+        historyOpen: w.historyShown,
+      };
     },
   };
 }

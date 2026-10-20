@@ -15,6 +15,9 @@
 // `npm run test:e2e` (global setup starts Xvfb on Linux). BL_E2E_APP_DIR runs the maps with another build of
 // the app (a folder with package.json and dist/), e.g. a copy of the build before a fix.
 
+// Tests tagged @edit assert results of the mutation probe, which writes through the editor (dist/editor.cjs): the
+// reader-only gate (npm run test:reader-only, P2-15) leaves them out.
+
 import { expect, test } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -106,7 +109,7 @@ const failureFor = (j: MapJson, text: string) => j.report.probe.failures.find((f
 
 // ------------------------------------------------------------------------------------------- finding 28
 
-test('builds.html: key-gated build steps are walked through and counted, and the probe replays them (D-j; real decks)', async () => {
+test('builds.html: key-gated build steps are walked through and counted, and the probe replays them (D-j; real decks) @edit', async () => {
   // Slide 1 shows two build points, one per key press, before ArrowRight moves the deck. The walk collects
   // after every press that changes nothing (it may show a build step), presses again, and reaches all five
   // slides; the probe's replay makes the same presses, so the build points are checked like any text.
@@ -131,7 +134,7 @@ for (const [name, nodes] of [
   ['resume', 8],
   ['firstvisit', 3],
 ] as const) {
-  test(`${name}.html: every probe load gets a fresh origin and starts on slide 1, so every exact node passes (finding 30)`, async () => {
+  test(`${name}.html: every probe load gets a fresh origin and starts on slide 1, so every exact node passes (finding 30) @edit`, async () => {
     test.setTimeout(300_000);
     const { code, j, stderr } = mapJson(copyDeck(name));
     expect(j.report.probe.failures).toEqual([]);
@@ -143,7 +146,7 @@ for (const [name, nodes] of [
 
 // ------------------------------------------------------------------------------------------- finding 31
 
-test('hiddendup.html: the sentinel also lands in a display:none copy the walk never counted, so the heading fails the probe (finding 31)', async () => {
+test('hiddendup.html: the sentinel also lands in a display:none copy the walk never counted, so the heading fails the probe (finding 31) @edit', async () => {
   test.setTimeout(300_000);
   const { code, j } = mapJson(copyDeck('hiddendup'));
   const f = failureFor(j, 'Quarterly results for the board');
@@ -153,7 +156,7 @@ test('hiddendup.html: the sentinel also lands in a display:none copy the walk ne
   expect(code).toBe(1);
 });
 
-test('reveal-fragment.html: a sentinel in an opacity-0 fragment fails the heading, while reveal-hash (clipped live region) still passes (finding 31, F17)', async () => {
+test('reveal-fragment.html: a sentinel in an opacity-0 fragment fails the heading, while reveal-hash (clipped live region) still passes (finding 31, F17) @edit', async () => {
   test.setTimeout(400_000);
   const frag = mapJson(copyDeck('reveal-fragment'));
   expect(failureFor(frag.j, 'Grow revenue by forty percent')?.why).toContain('does not count');
@@ -172,7 +175,7 @@ test('reveal-fragment.html: a sentinel in an opacity-0 fragment fails the headin
 
 // ------------------------------------------------------------------------------------------- finding 32
 
-test('shadow.html: open shadow-root and srcdoc-frame text is counted as none (subdocument), never probed (finding 32)', async () => {
+test('shadow.html: open shadow-root and srcdoc-frame text is counted as none (subdocument), never probed (finding 32) @edit', async () => {
   test.setTimeout(300_000);
   const { code, j, stderr } = mapJson(copyDeck('shadow'));
   const sub = j.runs.filter((r) => r.reason === 'subdocument').map((r) => r.text);
@@ -187,7 +190,7 @@ for (const [name, where] of [
   ['sentinel-shadow', 'shadow root'],
   ['sentinel-frame', 'frame'],
 ] as const) {
-  test(`${name}.html: a sentinel that lands in a ${where} fails the probed node (finding 32)`, async () => {
+  test(`${name}.html: a sentinel that lands in a ${where} fails the probed node (finding 32) @edit`, async () => {
     test.setTimeout(300_000);
     const { code, j } = mapJson(copyDeck(name));
     expect(j.runs.find((r) => r.text === 'Quarterly revenue grew this year')).toMatchObject({ confidence: 'none', reason: 'subdocument' });
@@ -210,7 +213,7 @@ test('crossframe.html: a visible cross-origin frame is listed as uncounted visib
 
 // ------------------------------------------------------------------------------------------- finding 33
 
-test('stopimm.html: a page window-capture listener that stops every keydown cannot make the walk fall back to synthetic keys (finding 33)', async () => {
+test('stopimm.html: a page window-capture listener that stops every keydown cannot make the walk fall back to synthetic keys (finding 33) @edit', async () => {
   test.setTimeout(300_000);
   const { code, j, stderr } = mapJson(copyDeck('stopimm'));
   expect(j.report.slides).toMatchObject({ count: 5, reached: 5, keys: 'input' });
@@ -224,7 +227,7 @@ for (const [name, kind, total] of [
   ['longscroll', 'scroll', 83],
   ['longsingle', 'single', 81],
 ] as const) {
-  test(`${name}.html: the ${kind} walk scrolls through the whole document and counts all ${total} text nodes once (finding 34, D-j)`, async () => {
+  test(`${name}.html: the ${kind} walk scrolls through the whole document and counts all ${total} text nodes once (finding 34, D-j) @edit`, async () => {
     test.setTimeout(600_000);
     const { code, j, stderr } = mapJson(copyDeck(name));
     expect(j.report.slides.kind).toBe(kind);

@@ -406,3 +406,81 @@ describe('Phase 1 (views): the app trust decision, an external change, a file th
     expect(doc.editable()).toBe(true);
   });
 });
+
+describe('Phase 2: own writes (P2-2)', () => {
+  const DECK = '<!doctype html><html><head><title>One</title></head><body><h1>Hello</h1></body></html>';
+  const NEXT = '<!doctype html><html><head><title>Two</title></head><body><h1>Hello there</h1></body></html>';
+  const make = (p: string) => new BlDocument({ docId: 'abcdef0123456789', path: p, realpath: p, bytes: new Uint8Array(fs.readFileSync(p)), trust: { trust: 'trusted', reason: null, marker: null }, received: false });
+
+  it('adoptOwnWrite takes the written bytes and map without mapping again: version, knownHash, title, served copy', async () => {
+    const p = write('adopt.html', DECK);
+    const doc = make(p);
+    const bytes = new TextEncoder().encode(NEXT);
+    const version = sha256Hex(bytes);
+    const { buildMap } = await import('../../../packages/core/src/mapper');
+    const map = buildMap(NEXT, { version, utf8: true });
+    doc.adoptOwnWrite(bytes, map, NEXT);
+    expect(doc.version).toBe(version);
+    expect(doc.knownHash).toBe(version);
+    expect(doc.map).toBe(map);
+    expect(doc.title).toBe('Two');
+    expect(doc.contentHash).toBe(version);
+    expect(new TextDecoder().decode((await doc.documentBody()).body)).toContain('Hello there');
+    // A map of other bytes is refused (it would serve the wrong stamps).
+    expect(() => doc.adoptOwnWrite(new TextEncoder().encode(DECK), map, DECK)).toThrow(/not of these bytes/);
+    doc.release();
+    expect(() => doc.adoptOwnWrite(bytes, map, NEXT)).toThrow(/closed/);
+  });
+
+  it('the DeckIO names its write as own before the rename and forgets it after (the watcher ignores it meanwhile)', async () => {
+    const p = write('own.html', DECK);
+    const doc = make(p);
+    const bytes = new TextEncoder().encode(NEXT);
+    const h = sha256Hex(bytes);
+    const io = doc.io(() => true);
+    expect(doc.isOwnWrite(h)).toBe(false);
+    await io.atomicWrite(bytes, sha256Hex(new TextEncoder().encode(DECK)));
+    expect(fs.readFileSync(p, 'utf8')).toBe(NEXT);
+    expect(doc.knownHash).toBe(h);
+    expect(doc.isOwnWrite(h)).toBe(false);
+    // A refused write never names its hash.
+    const io2 = make(p).io(() => false);
+    await expect(io2.atomicWrite(new TextEncoder().encode('x'), h)).rejects.toThrow(/not available/);
+  });
+
+  it('the concurrency gate hook lands an external write inside the next deck write only in test builds', async () => {
+    const p = write('inside.html', DECK);
+    const doc = make(p);
+    const saved = process.env.BLUELINE_TEST;
+    try {
+      delete process.env.BLUELINE_TEST;
+      expect(doc.armTestWriteInside(new TextEncoder().encode('external'))).toBe(false);
+      process.env.BLUELINE_TEST = '1';
+      expect(doc.armTestWriteInside(new TextEncoder().encode('external'))).toBe(true);
+      const err = await doc
+        .io(() => true)
+        .atomicWrite(new TextEncoder().encode(NEXT), sha256Hex(new TextEncoder().encode(DECK)))
+        .catch((e: Error) => e);
+      // 9.2 Atomic write step 3: the re-hash sees the external write, and the write aborts (the queue requeues).
+      expect((err as Error).name).toBe('WriteConflictError');
+      expect(fs.readFileSync(p, 'utf8')).toBe('external');
+      expect(fs.readdirSync(path.dirname(p)).some((f) => f.startsWith('.bl-'))).toBe(false);
+    } finally {
+      if (saved === undefined) delete process.env.BLUELINE_TEST;
+      else process.env.BLUELINE_TEST = saved;
+    }
+  });
+
+  it('contentHashOfBytes equals contentHashOf with a map (the notes block left out)', async () => {
+    const { contentHashOfBytes } = await import('../../../packages/app/src/main/documents');
+    const { buildMap } = await import('../../../packages/core/src/mapper');
+    const { decodeDeck } = await import('../../../packages/core/src/text');
+    const withBlock = '<!doctype html><html><body><p>x</p><script type="application/vnd.blueline+json" id="blueline-notes" data-version="1">{}</script></body></html>';
+    for (const src of [DECK, withBlock]) {
+      const bytes = new TextEncoder().encode(src);
+      const v = sha256Hex(bytes);
+      expect(contentHashOfBytes(bytes, v)).toBe(contentHashOf(decodeDeck(bytes), buildMap(src, { version: v, utf8: true }), v));
+    }
+    expect(contentHashOfBytes(new TextEncoder().encode(withBlock), 'v')).not.toBe('v');
+  });
+});

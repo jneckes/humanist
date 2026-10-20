@@ -33,7 +33,25 @@ import {
   type WalkBlock,
   type WalkNode,
 } from '@blueline/core/ipc';
-import type { MarkShape, MarkTool, SlideNavKind } from '@blueline/core/types';
+import type { EditPick, MarkShape, MarkTool, SlideNavKind } from '@blueline/core/types';
+import {
+  COMMIT_KINDS,
+  EDIT_LIMITS,
+  EDIT_TOKEN_RE,
+  EditDeckToMain,
+  PICK_KINDS,
+  RUN_ID_RE,
+  VERBATIM_WHYS,
+  VERSION_RE,
+  type EditBegin,
+  type EditBusy,
+  type EditCandidatesRequest,
+  type EditCommit,
+  type EditTarget,
+  type EditUndoRequest,
+} from '@blueline/core/ipc-edit';
+import type { CommitResult, VerbatimWhy } from '@blueline/core/edit-commit';
+import { SHELL_EDIT_LIMITS } from '@blueline/core/ipc';
 
 // ---------------------------------------------------------------------------------------------------
 // Limits
@@ -528,7 +546,138 @@ export const validateCollectResult: Validator<CollectResult> = (p) =>
     return { nodes, blocks };
   });
 
-/** The validator for each DeckToMain channel. */
+// ---------------------------------------------------------------------------------------------------
+// Edit channels (Phase 2; core/ipc-edit.ts; P2-7)
+// ---------------------------------------------------------------------------------------------------
+//
+// None of them names a path, a write record or a file offset (9.1): a field id the preload counts, the version its
+// page shows, run ids of that version's map (format only: the handler checks they exist in that version and were
+// the field's), texts with the EDIT_LIMITS byte limits, a token main issued. Whether a message is taken at all
+// (Edit mode, editing allowed, capabilities.edit, trusted input) is the handler's decision, made at that moment.
+
+function fieldId(v: unknown, what: string): number {
+  return int(v, 0, EDIT_LIMITS.fieldId, what);
+}
+
+function version(v: unknown, what: string): string {
+  return matching(v, VERSION_RE, 64, what);
+}
+
+function runId(v: unknown, what: string): string {
+  return matching(v, RUN_ID_RE, EDIT_LIMITS.runId, what);
+}
+
+/** A list of distinct run ids (duplicates are dropped; the order is kept). */
+function runIds(v: unknown, max: number, what: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  list(v, max, what).forEach((x, i) => {
+    const id = runId(x, `${what}[${i}]`);
+    if (!seen.has(id)) {
+      seen.add(id);
+      out.push(id);
+    }
+  });
+  return out;
+}
+
+function editText(v: unknown, what: string): string {
+  return str(v, EDIT_LIMITS.text, what);
+}
+
+function editTarget(v: unknown, what: string): EditTarget {
+  const r = record(v, what);
+  const stamp = r('stamp');
+  return {
+    // The overlay sends '' when the element's path is too long to keep (dom-walk cssPath).
+    css: str(r('css'), EDIT_LIMITS.targetCss, `${what}.css`),
+    text: str(r('text'), EDIT_LIMITS.targetText, `${what}.text`),
+    role: matching(r('role'), ROLE, EDIT_LIMITS.targetRole, `${what}.role`),
+    stamp: stamp === null ? null : matching(stamp, STAMP, 12, `${what}.stamp`),
+  };
+}
+
+function commitResult(v: unknown, what: string): CommitResult {
+  const r = record(v, what);
+  const kind = oneOf(r('kind'), COMMIT_KINDS, `${what}.kind`);
+  if (kind === 'noop') return { kind };
+  if (kind === 'verbatim') {
+    return {
+      kind,
+      before: editText(r('before'), `${what}.before`),
+      after: editText(r('after'), `${what}.after`),
+      why: oneOf(r('why'), VERBATIM_WHYS as readonly VerbatimWhy[], `${what}.why`),
+    };
+  }
+  return {
+    kind,
+    runId: runId(r('runId'), `${what}.runId`),
+    beforeText: editText(r('beforeText'), `${what}.beforeText`),
+    afterText: editText(r('afterText'), `${what}.afterText`),
+  };
+}
+
+/** EditDeckToMain.begin: EditBegin. */
+export const validateEditBegin: Validator<EditBegin> = (p) =>
+  run(() => {
+    const r = record(p, 'begin');
+    return {
+      fieldId: fieldId(r('fieldId'), 'begin.fieldId'),
+      version: version(r('version'), 'begin.version'),
+      runIds: runIds(r('runIds'), EDIT_LIMITS.runIds, 'begin.runIds'),
+    };
+  });
+
+/** EditDeckToMain.commit: EditCommit. A pick goes only with an edit (it says how that edit's run was chosen). */
+export const validateEditCommit: Validator<EditCommit> = (p) =>
+  run(() => {
+    const r = record(p, 'commit');
+    const result = commitResult(r('result'), 'commit.result');
+    const slide = r('slide');
+    const out: EditCommit = {
+      fieldId: fieldId(r('fieldId'), 'commit.fieldId'),
+      version: version(r('version'), 'commit.version'),
+      result,
+      target: editTarget(r('target'), 'commit.target'),
+      slide: slide === null ? null : int(slide, 0, EDIT_LIMITS.slide - 1, 'commit.slide'),
+      alsoPlaces: int(r('alsoPlaces'), 0, EDIT_LIMITS.alsoPlaces, 'commit.alsoPlaces'),
+    };
+    const pick = r('pick');
+    if (pick !== undefined) {
+      if (result.kind !== 'edit') fail('commit.pick: only with an edit');
+      const pr = record(pick, 'commit.pick');
+      const kind: EditPick['kind'] = oneOf(pr('kind'), PICK_KINDS, 'commit.pick.kind');
+      out.pick = { kind, nodeBefore: editText(pr('nodeBefore'), 'commit.pick.nodeBefore'), nodeAfter: editText(pr('nodeAfter'), 'commit.pick.nodeAfter') };
+    }
+    return out;
+  });
+
+/** EditDeckToMain.candidates: EditCandidatesRequest. */
+export const validateEditCandidates: Validator<EditCandidatesRequest> = (p) =>
+  run(() => {
+    const r = record(p, 'candidates');
+    return {
+      fieldId: fieldId(r('fieldId'), 'candidates.fieldId'),
+      version: version(r('version'), 'candidates.version'),
+      runIds: runIds(r('runIds'), EDIT_LIMITS.candidates, 'candidates.runIds'),
+    };
+  });
+
+/** EditDeckToMain.undo: EditUndoRequest (a token main issued; the record stays in main, P2-7). */
+export const validateEditUndo: Validator<EditUndoRequest> = (p) =>
+  run(() => {
+    const r = record(p, 'undo');
+    return { token: matching(r('token'), EDIT_TOKEN_RE, EDIT_LIMITS.token, 'undo.token') };
+  });
+
+/** EditDeckToMain.busy: EditBusy. */
+export const validateEditBusy: Validator<EditBusy> = (p) =>
+  run(() => {
+    const r = record(p, 'busy');
+    return { edit: bool(r('edit'), 'busy.edit'), committing: bool(r('committing'), 'busy.committing') };
+  });
+
+/** The validator for each DeckToMain channel (the edit channels included, Phase 2). */
 export const DECK_VALIDATORS = Object.freeze({
   [DeckToMain.ready]: validateReady,
   [DeckToMain.focus]: validateFocus,
@@ -538,9 +687,18 @@ export const DECK_VALIDATORS = Object.freeze({
   [DeckToMain.note]: validateNote,
   [DeckToMain.diag]: validateDiag,
   [DeckToMain.renderReply]: validateRenderReply,
+  [EditDeckToMain.begin]: validateEditBegin,
+  [EditDeckToMain.commit]: validateEditCommit,
+  [EditDeckToMain.candidates]: validateEditCandidates,
+  [EditDeckToMain.undo]: validateEditUndo,
+  [EditDeckToMain.busy]: validateEditBusy,
 } as const);
 
-/** Which view kinds may use each DeckToMain channel by default. */
+/**
+ * Which view kinds may use each DeckToMain channel by default. The edit channels are the visible deck's: a render
+ * view has no UI, and the Diagnostics deck may only ask (its commit and picker requests are answered "refused" and
+ * "nothing", never written: diagnostics.ts).
+ */
 export const DECK_CHANNEL_KINDS: Readonly<Record<string, readonly PreloadMode[]>> = Object.freeze({
   [DeckToMain.ready]: ['deck', 'render', 'diagnostics'],
   [DeckToMain.focus]: ['deck', 'diagnostics'],
@@ -550,6 +708,11 @@ export const DECK_CHANNEL_KINDS: Readonly<Record<string, readonly PreloadMode[]>
   [DeckToMain.note]: ['deck', 'diagnostics'],
   [DeckToMain.diag]: ['diagnostics'],
   [DeckToMain.renderReply]: ['render'],
+  [EditDeckToMain.begin]: ['deck'],
+  [EditDeckToMain.commit]: ['deck', 'diagnostics'],
+  [EditDeckToMain.candidates]: ['deck', 'diagnostics'],
+  [EditDeckToMain.undo]: ['deck'],
+  [EditDeckToMain.busy]: ['deck'],
 });
 
 // ---------------------------------------------------------------------------------------------------
@@ -795,6 +958,30 @@ export const validateDiagRecord: ArgsValidator<{ stepId: string; result: 'pass' 
     };
     if (args.length === 3 && args[2] !== undefined) out.detail = str(args[2], IPC_LIMITS.diagString, 'detail');
     return out;
+  });
+
+/** ShellToMain.toastAction(token, actionId) (Phase 2, P2-14). */
+export const validateToastAction: ArgsValidator<{ token: string; actionId: string }> = (args) =>
+  run(() => {
+    if (args.length !== 2) fail('two arguments');
+    return {
+      token: matching(args[0], SHELL_EDIT_LIMITS.toastToken, 32, 'token'),
+      actionId: matching(args[1], SHELL_EDIT_LIMITS.toastAction, 32, 'actionId'),
+    };
+  });
+
+/** ShellToMain.copyNote(noteId) (P2-13). */
+export const validateNoteIdArg: ArgsValidator<string> = (args) =>
+  run(() => {
+    if (args.length !== 1) fail('one argument');
+    return matching(args[0], NOTE_ID, 48, 'noteId');
+  });
+
+/** ShellToMain.historyRestore(id) (P2-11). */
+export const validateHistoryId: ArgsValidator<string> = (args) =>
+  run(() => {
+    if (args.length !== 1) fail('one argument');
+    return matching(args[0], SHELL_EDIT_LIMITS.historyId, 32, 'id');
   });
 
 export interface ShellSender {

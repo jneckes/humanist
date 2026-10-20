@@ -15,7 +15,8 @@ import { expect, test } from '@playwright/test';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { ShellToMain } from '../../packages/core/src/ipc';
+import { DeckToMain, ShellToMain } from '../../packages/core/src/ipc';
+import { EditDeckToMain } from '../../packages/core/src/ipc-edit';
 import { Scratch, launchApp, resolveRunAs, sleep, type BlApp, type DeckView, type WinInfo } from '../helpers/app';
 import { openFixture, prepareFixtureFolder, uniqLabel, type NetConfig } from '../helpers/security';
 import { sharedDnsServer } from '../helpers/servers';
@@ -90,12 +91,30 @@ const DECK_CHANNELS = {
   note: 'bl:deck:note',
   diag: 'bl:deck:diag',
   renderReply: 'bl:render:reply',
+  // Phase 2 (Edit; core/ipc-edit.ts).
+  editBegin: 'bl:edit:begin',
+  editCommit: 'bl:edit:commit',
+  editCandidates: 'bl:edit:candidates',
+  editUndo: 'bl:edit:undo',
+  editBusy: 'bl:edit:busy',
 } as const;
 
+/** The page's version and a run of it, as the overlay holds them (so a forged commit names real ones). */
+interface PageFacts {
+  version: string;
+  runId: string;
+  text: string;
+  stamp: string;
+}
+
 /** The forged payloads for one channel: wrong types, oversized, poisoned keys, and other-document claims. */
-function forgedPayloads(): { channel: string; payloads: unknown[] }[] {
+function forgedPayloads(page: PageFacts): { channel: string; payloads: unknown[] }[] {
   const big = 'x'.repeat(2_000_000);
   const bigArray = (n: number) => Array.from({ length: n }, (_, i) => i);
+  const target = { css: 'h1', text: page.text, role: 'heading', stamp: page.stamp };
+  const commit = (fieldId: number, result: unknown, extra: Record<string, unknown> = {}) => ({ fieldId, version: page.version, result, target, slide: null, alsoPlaces: 0, ...extra });
+  const edit = { kind: 'edit', runId: page.runId, beforeText: page.text, afterText: `${page.text} FORGED` };
+  const record = { versionBefore: page.version, versionAfter: page.version, start: 0, rawBefore: '<!DOCTYPE', rawAfter: 'FORGED', prefix: '', suffix: '' };
   return [
     { channel: DECK_CHANNELS.ready, payloads: [{ steal: true }, 123, 'go'] },
     { channel: DECK_CHANNELS.focus, payloads: [{ textField: 'yes' }, { textField: 1 }, {}, { textField: true, extra: big }] },
@@ -139,7 +158,38 @@ function forgedPayloads(): { channel: string; payloads: unknown[] }[] {
     },
     { channel: DECK_CHANNELS.diag, payloads: [{ event: 'evil', data: {} }, { event: 'paste', data: { length: big } }, {}] },
     { channel: DECK_CHANNELS.renderReply, payloads: [{ reqId: 1, ok: true, result: { deep: { a: 1 } } }, { reqId: -1, ok: 'yes' }] },
+    // Phase 2 (P2-7): well-formed edits of the page's real version and run, with no trusted press, outside Edit, in
+    // Protected view; and the malformed and dangerous ones (a write record, a path, oversized text).
+    { channel: DECK_CHANNELS.editBegin, payloads: [{ fieldId: 1, version: page.version, runIds: [page.runId] }, { fieldId: -1, version: 'x', runIds: [] }, { fieldId: 1, version: page.version, runIds: ['../../etc/passwd'] }] },
+    {
+      channel: DECK_CHANNELS.editCommit,
+      payloads: [
+        commit(1, edit),
+        commit(1, edit, { pick: { kind: 'equal', nodeBefore: page.text, nodeAfter: 'FORGED' } }),
+        commit(2, { kind: 'verbatim', before: page.text, after: 'FORGED NOTE', why: 'across-runs' }),
+        commit(3, { kind: 'noop' }),
+        commit(1, { ...edit, afterText: big }),
+        commit(1, edit, { record, path: '/etc/passwd', docId: 'fedcba9876543210' }),
+        commit(1, { kind: 'restore', bytes: 'FORGED' }),
+      ],
+    },
+    { channel: DECK_CHANNELS.editCandidates, payloads: [{ fieldId: 1, version: page.version, runIds: [page.runId] }, { fieldId: 1, version: page.version, runIds: bigArray(60).map((i) => `h:bl-${i}:0`) }] },
+    { channel: DECK_CHANNELS.editUndo, payloads: [{ token: '0123456789abcdef0123456789abcdef' }, { token: 'x' }, { record }, { token: '0123456789abcdef0123456789abcdef', record }] },
+    { channel: DECK_CHANNELS.editBusy, payloads: [{ edit: true, committing: true }, { edit: 'yes' }, { edit: false, committing: false }] },
   ];
+}
+
+/** The overlay's page version and its first run (test builds' __blTestEdit, in the preload's isolated world). */
+async function pageFacts(deck: DeckView): Promise<PageFacts> {
+  const end = Date.now() + 20_000;
+  while (Date.now() < end) {
+    const raw = await deck.isolated<string>('JSON.stringify(globalThis.__blTestEdit ? globalThis.__blTestEdit.state(true) : null)', 999);
+    const st = JSON.parse(raw) as { pageVersion: string | null; map?: { runs: { id: string; stamp: string; value: string }[] } | null } | null;
+    const run = st?.map?.runs.find((r) => r.value.trim().length > 0);
+    if (st?.pageVersion && run) return { version: st.pageVersion, runId: run.id, text: run.value, stamp: run.stamp };
+    await sleep(200);
+  }
+  throw new Error('the overlay never had its map');
 }
 
 /** Sends `payload` on `channel` from the preload's isolated world (world 999), as a compromised page would. */
@@ -203,6 +253,12 @@ const SHELL_ARGS: Record<string, unknown[]> = {
   [ShellToMain.diagSave]: [],
   [ShellToMain.dismissBanner]: [],
   [ShellToMain.popupMenu]: ['trust-overflow', 10, 10],
+  // Phase 2 (main-wiring): toast buttons, Copy, the name chip, the history list.
+  [ShellToMain.toastAction]: ['0123456789abcdef0123456789abcdef', 'make-note'],
+  [ShellToMain.copyNote]: ['n-0001'],
+  [ShellToMain.setName]: ['Forged Name'],
+  [ShellToMain.historyClose]: [],
+  [ShellToMain.historyRestore]: ['h-1'],
 };
 
 /**
@@ -276,8 +332,13 @@ test('forged payloads on every deck channel write no file and change no state', 
     const folderSnap = snapshot(session.folder.dir);
     const userDataSnap = snapshot(session.app.userData);
 
+    // Every deck channel main declares has forged payloads here (a new channel without them fails the test).
+    const page = await pageFacts(session.deck);
+    const payloadSets = forgedPayloads(page);
+    const covered = new Set(payloadSets.map((p) => p.channel));
+    expect([...Object.values(DeckToMain), ...Object.values(EditDeckToMain)].filter((c) => !covered.has(c)), 'a deck channel has no forged payloads').toEqual([]);
+
     // Send every forged payload on every channel.
-    const payloadSets = forgedPayloads();
     let sent = 0;
     for (const set of payloadSets) {
       for (const p of set.payloads) {

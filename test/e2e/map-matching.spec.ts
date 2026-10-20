@@ -9,6 +9,9 @@
 // map command fills. Decks are copied to temp folders, so the probe copy never lands in the repository. Run
 // with `npm run test:e2e` (global setup starts Xvfb on Linux).
 
+// Tests tagged @edit assert results of the mutation probe, which writes through the editor (dist/editor.cjs): the
+// reader-only gate (npm run test:reader-only, P2-15) leaves them out.
+
 import { expect, test } from '@playwright/test';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -80,7 +83,7 @@ const CASES: { deck: string; finding: string; notExact: string[]; control: strin
 ];
 
 for (const c of CASES) {
-  test(`${c.deck}.html (finding ${c.finding}): no named node is exact, and no probe fails`, async () => {
+  test(`${c.deck}.html (finding ${c.finding}): no named node is exact, and no probe fails @edit`, async () => {
     test.setTimeout(300_000);
     const deck = copyDeck(c.deck);
     const before = sha256(deck);

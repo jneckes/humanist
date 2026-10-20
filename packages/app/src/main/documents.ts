@@ -10,6 +10,7 @@ import { randomBytes } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { buildMap } from '@blueline/core/mapper';
+import { findNotesBlock } from '@blueline/core/notes-block';
 import { buildServedCopy } from '@blueline/core/served';
 import { decodeDeck, encodeDeck, encodeLatin1, type DecodedDeck } from '@blueline/core/text';
 import type { TrustState } from '@blueline/core/ipc';
@@ -159,6 +160,18 @@ export function contentHashOf(decoded: DecodedDeck, map: DeckMap, version: strin
   return sha256Hex(decoded.utf8 ? encodeDeck(stripped) : encodeLatin1(stripped));
 }
 
+/**
+ * contentHashOf for bytes main has no map of (a version the write queue read, P2-11's snapshots): the notes block
+ * is found the way the mapper finds it (notes-block.ts), without building a map.
+ */
+export function contentHashOfBytes(bytes: Uint8Array, version: string): string {
+  const decoded = decodeDeck(bytes);
+  const nb = findNotesBlock(decoded.src);
+  if (!nb) return version;
+  const stripped = decoded.src.slice(0, nb.start) + decoded.src.slice(nb.end);
+  return sha256Hex(decoded.utf8 ? encodeDeck(stripped) : encodeLatin1(stripped));
+}
+
 export interface DocumentInit {
   docId: string;
   /** The path as the user gave it (absolute). */
@@ -225,10 +238,20 @@ export class BlDocument implements ServedDoc {
   private readonly servedCache = new Map<boolean, Uint8Array>();
   private bytesRead: Uint8Array;
   private released = false;
-  /** The content (bytes read, their decoding, map and hashes): replaced by replaceContent on an external change. */
+  /**
+   * The content (bytes read, their decoding, map and hashes): replaced by replaceContent on an external change and
+   * by adoptOwnWrite after Blueline's own write (P2-2).
+   */
   private content: { decoded: DecodedDeck; version: string; map: DeckMap; contentHash: string; title: string };
   /** The file is gone from its path (9.2 Watcher): the window keeps the last version, read-only. */
   private goneNow = false;
+  /**
+   * P2-2: hashes of Blueline's own writes between their rename and the moment knownHash takes them (a slow
+   * directory fsync): the watcher ignores them too (isOwnWrite).
+   */
+  private readonly ownPending = new Set<string>();
+  /** BLUELINE_TEST only (index.ts __blTest.onceBeforeRehash): an external write landed inside the next deck write. */
+  private testWriteInside: Uint8Array | null = null;
 
   constructor(init: DocumentInit) {
     if (!isDocumentId(init.docId)) throw new Error('invalid docId');
@@ -283,8 +306,8 @@ export class BlDocument implements ServedDoc {
    * the deck view to reload, with the new version"). The document now serves `bytes`: their decoding, map,
    * hashes and served copies replace the old ones, and knownHash is the new version. The docId, partition and
    * trust stay: window.ts calls this only after 6.10 decided the same trust for the new bytes (D-1); a different
-   * decision opens the file again as a new BlDocument. Transforming locked spans is Phase 4.
-   * Throws (and keeps the old content) when the new bytes cannot be mapped.
+   * decision opens the file again as a new BlDocument. The locked spans are transformed by the caller
+   * (edit-session.ts, section 8). Throws (and keeps the old content) when the new bytes cannot be mapped.
    */
   replaceContent(bytes: Uint8Array): void {
     if (this.released) throw new Error(`${this.fileName} was closed`);
@@ -293,6 +316,28 @@ export class BlDocument implements ServedDoc {
     this.bytesRead = bytes;
     this.servedCache.clear();
     this.knownHash = next.version;
+  }
+
+  /**
+   * P2-2: Blueline's own write landed (9.2 Write protocol step 6). The document takes the bytes the write queue
+   * renamed in, with the map the queue built of them (`src` is their decoding): no second buildMap. Its version,
+   * hashes and title follow, the served copy of every later load is the written file, and knownHash is the new
+   * version. Never takes a version back: the queue writes only on top of the file it read.
+   */
+  adoptOwnWrite(bytes: Uint8Array, map: DeckMap, src: string): void {
+    if (this.released) throw new Error(`${this.fileName} was closed`);
+    if (map.version !== sha256Hex(bytes)) throw new Error('adoptOwnWrite: the map is not of these bytes');
+    const decoded: DecodedDeck = { utf8: true, src, bom: src.charCodeAt(0) === 0xfeff, lineEnding: map.lineEnding };
+    this.content = { decoded, version: map.version, map, contentHash: contentHashOf(decoded, map, map.version), title: extractTitle(src) };
+    this.bytesRead = bytes;
+    this.servedCache.clear();
+    this.knownHash = map.version;
+    this.ownPending.delete(map.version);
+  }
+
+  /** P2-2: `hash` is one of Blueline's own writes that knownHash has not taken yet (the watcher ignores it). */
+  isOwnWrite(hash: string): boolean {
+    return this.ownPending.has(hash);
   }
 
   /** 9.2 Watcher: the file is gone from its path (true), or back (false). */
@@ -383,8 +428,19 @@ export class BlDocument implements ServedDoc {
         if (!this.editing) return `${this.fileName} is in Protected view: enable editing first`;
         return null;
       },
+      // P2-2: known as Blueline's own before the rename, so a slow fsync never makes it look external.
+      expectOwn: {
+        before: (hash) => this.ownPending.add(hash),
+        failed: (hash) => this.ownPending.delete(hash),
+      },
       onWritten: (hash) => {
         this.knownHash = hash;
+        this.ownPending.delete(hash);
+      },
+      write: {
+        // BLUELINE_TEST only: the concurrency gate's write inside the atomic write, after the temp file has its
+        // bytes and attributes and before the re-hash (9.2 Atomic write step 3), as another program saves.
+        prepareTemp: () => this.landTestWrite(),
       },
     });
     return {
@@ -396,6 +452,27 @@ export class BlDocument implements ServedDoc {
         await rebindAfterOwnWrite(realpath, before);
       },
     };
+  }
+
+  /**
+   * BLUELINE_TEST only (index.ts exposes it as __blTest.onceBeforeRehash for the Phase 2 concurrency gate): the next
+   * deck write of this document finds `bytes` saved over the file by "another program" between its temp file and
+   * its re-hash, so the write must abort and be requeued. Refused outside test builds.
+   */
+  armTestWriteInside(bytes: Uint8Array): boolean {
+    if (process.env.BLUELINE_TEST !== '1') return false;
+    this.testWriteInside = new Uint8Array(bytes);
+    return true;
+  }
+
+  private async landTestWrite(): Promise<void> {
+    const bytes = this.testWriteInside;
+    if (!bytes) return;
+    this.testWriteInside = null;
+    // A rename-replace, as editors and agents save; not through Blueline's writer (no marker copy, no knownHash).
+    const tmp = path.join(this.folderReal, `.bl-test-external-${randomBytes(6).toString('hex')}.tmp`);
+    await fs.promises.writeFile(tmp, bytes, { mode: 0o644 });
+    await fs.promises.rename(tmp, this.realpath);
   }
 
   /** The served copy (9.1 Serving): stamps, notes block removed, resource hints removed while Protected. */

@@ -53,6 +53,12 @@ describe('preload-shell', async () => {
         'onIndexReady',
         'onFindOpen',
         'onScrollTo',
+        // Phase 2 (main-wiring): toast buttons, Copy, the name chip, the history list.
+        'toastAction',
+        'copyNote',
+        'setName',
+        'historyClose',
+        'historyRestore',
       ].sort(),
     );
     for (const n of names) expect(typeof (api as unknown as Record<string, unknown>)[n]).toBe('function');
@@ -92,6 +98,22 @@ describe('preload-shell', async () => {
       [ViewsShellToMain.findClosed],
     ]);
     expect(windowListeners.sort()).toEqual(['dragenter', 'dragover', 'drop']);
+  });
+
+  it('Phase 2 calls (toast buttons, Copy, the name chip, history) invoke their own channels with their own arguments', async () => {
+    invoke.mockClear();
+    await api.toastAction('0123456789abcdef0123456789abcdef', 'make-note');
+    await api.copyNote('n-0003');
+    await api.setName('Josh');
+    await api.historyClose();
+    await api.historyRestore('h-4');
+    expect(invoke.mock.calls).toEqual([
+      [ShellToMain.toastAction, '0123456789abcdef0123456789abcdef', 'make-note'],
+      [ShellToMain.copyNote, 'n-0003'],
+      [ShellToMain.setName, 'Josh'],
+      [ShellToMain.historyClose],
+      [ShellToMain.historyRestore, 'h-4'],
+    ]);
   });
 
   it('callbacks receive the payload, never the IPC event', () => {

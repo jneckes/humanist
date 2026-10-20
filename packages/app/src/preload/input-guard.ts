@@ -21,6 +21,13 @@
 // and fires a trusted `input` with no beforeinput, so a deck could otherwise write the user's note. Every
 // real edit fires beforeinput first: typing, IME composition (insertCompositionText), paste and Wispr Flow's
 // simulated Cmd+V (insertFromPaste), drop, cut, spellcheck replacement, native undo and redo.
+//
+// Phase 2 (P2-7): the Edit field is a page element made contenteditable, so its events reach window with their
+// real target in the page, not the host. The guard treats them the same way: a trusted event whose real target is
+// inside the active field (or, for selectionchange, a selection inside it) goes to the field's own handling
+// (edit-input.ts filter and gate) and is then stopped at window capture, so page listeners neither see nor cancel
+// what the author types, pastes or dictates there. The field's beforeinput filter may preventDefault; the guard
+// itself never does.
 
 import { listen } from './listeners';
 
@@ -51,6 +58,12 @@ export interface InputGuardDeps {
   host(): EventTarget | null;
   /** The overlay's own handling of a trusted event from inside it (runs before the event is stopped). */
   onOverlayEvent(e: Event): void;
+  /** The deck element that is the open edit field (contenteditable), or null (P2-7). */
+  field?(): Element | null;
+  /** The field's own handling of a trusted event from inside it (runs before the event is stopped). */
+  onFieldEvent?(e: Event): void;
+  /** A native undo or redo aimed at an earlier edit field (P2-9): cancelled and stopped. */
+  foreignHistory?(e: Event): boolean;
 }
 
 export class InputGuard {
@@ -69,17 +82,45 @@ export class InputGuard {
   handle(e: Event): void {
     // The page's own synthetic events are its business (9.1: the preload ignores untrusted input).
     if (!e.isTrusted) return;
-    const host = this.deps.host();
-    if (!host) return;
-    // Seen from window, composedPath()[0] of an event inside the closed shadow root is the host itself.
     const path = e.composedPath();
-    if ((path.length > 0 ? path[0] : e.target) !== host) return;
+    const real = path.length > 0 ? path[0] : e.target;
+    const host = this.deps.host();
+    // Seen from window, composedPath()[0] of an event inside the closed shadow root is the host itself.
+    if (host && real === host) {
+      try {
+        this.deps.onOverlayEvent(e);
+      } finally {
+        e.stopImmediatePropagation();
+      }
+      return;
+    }
+    if (this.deps.foreignHistory?.(e)) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      return;
+    }
+    const field = this.deps.field?.() ?? null;
+    if (!field || !inField(field, real, e)) return;
     try {
-      this.deps.onOverlayEvent(e);
+      this.deps.onFieldEvent?.(e);
     } finally {
       e.stopImmediatePropagation();
     }
   }
+}
+
+/**
+ * True when the event belongs to the open field: its real target is the field or inside it, or, for
+ * selectionchange (fired at the document), the selection's anchor is inside it.
+ */
+function inField(field: Element, real: EventTarget | null, e: Event): boolean {
+  if (e.type === 'selectionchange') {
+    const doc = field.ownerDocument;
+    const a = doc.defaultView?.getSelection()?.anchorNode ?? null;
+    return !!a && (a === field || field.contains(a));
+  }
+  const n = real as Node | null;
+  return !!n && typeof n.nodeType === 'number' && (n === field || field.contains(n));
 }
 
 // ------------------------------------------------------------------------------------------- card text
@@ -103,14 +144,8 @@ export interface InputLike {
 const DELETE_BACKWARD = new Set(['deleteContentBackward', 'deleteWordBackward', 'deleteSoftLineBackward', 'deleteHardLineBackward']);
 const DELETE_FORWARD = new Set(['deleteContentForward', 'deleteWordForward', 'deleteSoftLineForward', 'deleteHardLineForward']);
 
-interface Armed {
-  inputType: string;
-  data: string | null;
-  /** The textarea's value and selection when the beforeinput fired (before the edit). */
-  value: string;
-  start: number;
-  end: number;
-}
+/** The card's arm: the textarea's value and selection when the beforeinput fired (before the edit). */
+type Armed = ArmedInput;
 
 /**
  * Accepts a card edit only when a trusted beforeinput for the textarea came just before its input, in the
@@ -184,7 +219,7 @@ export class CardInputGate {
     const a = this.armed;
     this.armed = null;
     const value = this.field().value;
-    if (e.isTrusted && a && matches(a, e, value)) {
+    if (e.isTrusted && a && matchesArmed(a, e, value)) {
       this.accepted = value;
       return true;
     }
@@ -208,8 +243,22 @@ export function restoredCaret(cur: string, prev: string): number {
   return prev.length - s;
 }
 
-/** Whether an input event is the edit its armed beforeinput announced. */
-function matches(a: Armed, e: InputLike, value: string): boolean {
+/** A trusted beforeinput the gate armed with, and the text and selection at that moment. */
+export interface ArmedInput {
+  inputType: string;
+  data: string | null;
+  /** The field's text and selection when the beforeinput fired (before the edit). */
+  value: string;
+  start: number;
+  end: number;
+}
+
+/**
+ * Whether an input event is the edit its armed beforeinput announced: the same type, the same data for an
+ * insertion, and for a deletion at a collapsed caret, text removed next to that caret in its direction and nothing
+ * inserted. Shared by the card's gate and the Edit field's (edit-input.ts FieldInputGate).
+ */
+export function matchesArmed(a: ArmedInput, e: InputLike, value: string): boolean {
   if (a.inputType !== e.inputType) return false;
   if (a.data !== null && typeof e.data === 'string' && a.data !== e.data) return false;
   if (a.start !== a.end) return true;

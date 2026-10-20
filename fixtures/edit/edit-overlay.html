@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Edit overlay fixture</title>
+<style>
+  body { margin: 12px 24px; font: 18px/1.35 system-ui, sans-serif; color: #111; background: #fff; }
+  h1 { font-size: 28px; margin: 0 0 6px; }
+  h2.upper { text-transform: uppercase; font-size: 20px; margin: 4px 0; }
+  p { margin: 4px 0; }
+  .box { width: 260px; height: 50px; border: 1px solid #999; }
+  .box p { margin: 0; }
+  .narrow { width: 320px; }
+  .noselect { user-select: none; -webkit-user-select: none; }
+  .spin, .still { display: inline-block; width: 16px; height: 16px; animation: spin 2s linear infinite; }
+  .spin { background: #36c; }
+  .still { background: #c63; animation-play-state: paused; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<h1 id="title">Quarterly review</h1>
+<p id="inline">Hello <b>bold</b> world</p>
+<p id="link-p"><a id="link" href="https://example.com/next">Visit the site</a></p>
+<h2 id="upper" class="upper">Source case heading</h2>
+<div class="box" id="box"><p id="fit">Short text in a box</p></div>
+<p id="narrow" class="narrow">Six words fill this one line</p>
+<p id="noselect" class="noselect">Unselectable slide text</p>
+<p id="anim"><span class="spin" id="spin"></span> <span class="still" id="still"></span></p>
+<p id="toc"></p>
+<p id="twin"></p>
+<p id="rep1"></p>
+<p id="rep2"></p>
+<p id="count"></p>
+<svg width="300" height="36" id="chart"><text id="svgtext" x="4" y="26" font-size="20">Chart label</text></svg>
+<script>
+  // The page's own capture listeners count what reaches it: a press that opens a field, and the field's input,
+  // never should (P2-7, P2-17). Registered after the preload's, as any page listener is.
+  var seen = {};
+  ['pointerdown', 'mousedown', 'mouseup', 'click', 'beforeinput', 'input', 'paste', 'keydown', 'selectstart'].forEach(function (t) {
+    seen[t] = 0;
+    window.addEventListener(t, function (e) {
+      seen[t]++;
+      document.documentElement.setAttribute('data-seen-' + t, String(seen[t]));
+      // A deck that cancels text selection, as many do: it must not stop selecting in an edit field.
+      if (t === 'selectstart') e.preventDefault();
+    }, true);
+  });
+  // A contents line copied from the heading: another element's stamped text (stamp-other, dashed).
+  document.getElementById('toc').textContent = document.getElementById('title').textContent;
+  // Two literals with the same text: ambiguous (duplicate, dashed), the picker lists both.
+  var twinA = 'Twin text';
+  var twinB = 'Twin text';
+  document.getElementById('twin').textContent = Math.random() < 2 ? twinA : twinB;
+  // One literal shown in two places: both exact; an edit of one "also changes 1 other place".
+  var label = 'Repeated label';
+  document.getElementById('rep1').textContent = label;
+  document.getElementById('rep2').textContent = label;
+  // Computed text: not editable.
+  document.getElementById('count').textContent = 'Slide ' + 1 + ' of ' + 5;
+</script>
+</body>
+</html>

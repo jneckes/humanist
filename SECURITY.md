@@ -180,6 +180,86 @@ Known limits added by Phase 1:
 - The local dogfooding build (`npm run dist` without signing credentials) is signed ad hoc, without the hardened
   runtime, and not notarized. It is for the machine that built it, not for distribution.
 
+## What Phase 2 added (Edit)
+
+Phase 2 is the first time Blueline writes the user's file. The rule is the same as before: nothing a deck sends is
+trusted. A deck view never names a path, a file offset or a write record; it can only ask main to change the text of
+one run of the version it shows, and only right after the user pressed a key or the mouse in it.
+
+- **The edit channels** (deck view → main, `core/ipc-edit.ts`): `bl:edit:begin` (a field opened: its id, the page's
+  version, the run ids of its text nodes), `bl:edit:commit` (the field's result: a run id with the run's whole text
+  before and after, or the field's text for a verbatim note, plus the target's CSS path and text for the note),
+  `bl:edit:candidates` (the picker asks for the candidates of runs the matcher named), `bl:edit:undo` (the toast's
+  Undo: a 128-bit token, never a record) and `bl:edit:busy`. Main answers each only from the deck view's main frame
+  and rebuilds every payload field by field (`ipc-guard.ts`): sizes in UTF-8 bytes, no lone surrogates, run ids,
+  versions and tokens by format, kinds from fixed lists, at most 512 run ids per field and 50 per picker request.
+  Main → deck: the result, the candidates (built by main from its own map of that version: ±40 characters of
+  context, the line, a key warning), and what an app undo changed.
+- **The trusted-input rule (P2-7).** Main takes a `begin` only in Edit, with Edit available (the Edit capability,
+  editing allowed, a UTF-8 file that is still there), and only when the deck view received a real press within the
+  last 2 s: Electron's `input-event`, which reports only input the browser process dispatched (the OS, or main's own
+  `sendInputEvent`), never a page script's. Each press opens at most one field. A `commit` is taken only for a field
+  main accepted, for the version that field opened on, and for an edit only to one of that field's runs; then main
+  checks Edit (or that Edit was left while the field was open), the capability and editing allowed **at that
+  moment**, and the queue checks them once more just before the rename (`canWrite`). Anything else is dropped before
+  the queue, without a note or a session write (only a field main accepted is told its commit was refused), so a
+  forged message changes nothing on disk or in app data.
+  The picker's request and the toast's Undo need Edit and a press within 2 s too.
+- **What a write can be.** Main turns a commit into an `EditRequest` (version, run id, the run's text before and
+  after); the write queue re-reads the file, finds the run by that version's map (by its text and 32 characters of
+  context when the file changed), plans the smallest splice inside that run, encodes it (`&` and `<` as references in
+  HTML text; the 9.2 escapes in a literal; `<` or `&` into a plain literal, which a page may set as HTML, becomes a
+  note instead), and verifies the exact bytes before they are renamed in: the run holds the new text, nothing else
+  moved, no new parse error, and for literals the script still parses, the literal cooks to the new text and the
+  script ranges are unchanged (decision P2-1). A bad file never lands. Whatever the queue cannot place or verify
+  becomes a `verbatim` note with the user's exact words, and the file stays byte-identical.
+- **What a deck cannot make Blueline write:** anything outside one run's text; markup (it is always encoded or
+  escaped); a write in Read or Review, in Protected view before Enable editing, in a reader-only build, or to a file
+  that is not UTF-8; a write to another file (main writes only the realpath it opened); an undo record (main holds
+  the records; the deck names a token, and main checks it is the window's latest undoable write); a history restore
+  (the shell's history list only, after a native confirmation). **What it can:** a compromised page in a Trusted (or
+  Enable-editing) file in Edit can, within 2 s of a real press of the user's, open a field and commit a change to one
+  run of the version shown, or press the toast's Undo. Such a write is still exactly one run's text, verified, an
+  edit note with its lock, undoable byte for byte and in the history (Known limits below).
+- **The edit field's input gate** (P2-7, P2-9), like the note card's: capture listeners registered at preload start
+  keep page listeners from seeing the field's keys, input, paste, drop, composition and selection events. The field
+  accepts a change only when a trusted `beforeinput` announced it; a change made any other way (a page's
+  `document.execCommand`, a script setting the text) is put back, and native undo is then off for that field.
+  Native undo and redo work only within the field's own steps, so Cmd+Z in a field never reaches an earlier,
+  already written edit. A press that opens a field never reaches the page (no click-to-advance, no link). If the
+  page re-renders or removes the open field, what was typed becomes a verbatim note.
+- **History** (P2-11): before every write of the deck (edit, undo, redo, Restore), the bytes it replaces are kept in
+  `<userData>/files/<fileKey>/history/<sha256>.html`, files mode 0600 in a 0700 folder, the newest 100 within
+  256 MiB per document, deduplicated by sha256, listed in an `index.json` written atomically. A Protected document's
+  snapshots carry its internet marker (macOS and Windows; 9.9), so a snapshot opened from Finder opens Protected.
+  A snapshot is read back only when its size and sha256 match its name, so a damaged or swapped file is never
+  restored. `blueline map`'s probe writes through a queue with no history.
+- **New shell calls** (`bl:shell:*`): a toast button (main-minted token and action id, checked against the toast
+  shown last), Copy of a note (main writes the clipboard; the shell has no clipboard permission), the name chip,
+  and the history list's close and Restore. Each is refused from a deck view (`test/security/forged-ipc.spec.ts`).
+  Settings › General › Smart punctuation (`bl:settings:set-smart-punctuation`) is answered only for the Settings
+  window's own shell (`test/security/trust-ipc.spec.ts`).
+
+`test/security/edit-forged.spec.ts` forges every edit message from a Trusted deck in Edit (begin, commit with an
+edit, a verbatim note, a pick and a no-op, candidates, undo tokens, busy) and from a Protected one right after a
+real click: nothing is written, no note appears; the positive control (a real click, keys and Enter) writes, and
+replaying its real token with no press does nothing. `forged-ipc.spec.ts` covers every deck and shell channel,
+the edit ones included.
+
+Known limits added by Phase 2:
+
+- **A page can ride a real press.** As above: for 2 s after a real press in Edit, a compromised page can commit a
+  change to one run, or press the toast's Undo (main cannot see where in the page the press landed). The change is
+  limited, recorded and undoable; turning Edit off (Read) closes it.
+- **A page can move the selection inside an open field** (within one run), and the user's next keystroke replaces
+  it, as with the note card. Text inserted through the accessibility API fires no `beforeinput`, so the field
+  refuses it. Wispr Flow pastes with Cmd+V, which works.
+- **The window between the re-hash and the rename** (9.2 Atomic write): another program's write that lands after
+  Blueline re-hashed the deck and before it renamed its temp file over it is lost. A write any time before the
+  re-hash is caught, and Blueline's write is requeued on top of it.
+- **History snapshots on Linux** carry no marker (Linux has none), so a Protected document's snapshot opened
+  directly from the history folder opens Trusted there, as an unmarked download does.
+
 ## Known channels in Protected view
 
 SPEC 9.9 measures "zero escapes" against the security suite (`npm run test:security`). The suite finds two

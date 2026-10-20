@@ -126,3 +126,35 @@ describe('classifyKey (6.2 single-letter keys)', () => {
     expect(classifyKey(key('Escape'), ctx('review', 'other'))).toEqual({ kind: 'text', handle: null });
   });
 });
+
+describe("classifyKey: Edit's picker (P2-8)", () => {
+  const picker = (textField: KeyContext['textField'] = null): KeyContext => ({ appMode: 'edit', textField, picker: true });
+
+  it('takes the arrows, Tab, Enter, digits and Esc, and keeps every other key from the deck', () => {
+    expect(classifyKey(key('ArrowDown'), picker())).toEqual({ kind: 'picker', key: { move: 1 } });
+    expect(classifyKey(key('ArrowUp'), picker())).toEqual({ kind: 'picker', key: { move: -1 } });
+    expect(classifyKey(key('Tab'), picker())).toEqual({ kind: 'picker', key: { move: 1 } });
+    expect(classifyKey(key('Tab', { shift: true }), picker())).toEqual({ kind: 'picker', key: { move: -1 } });
+    expect(classifyKey(key('Enter'), picker())).toEqual({ kind: 'picker', key: { choose: 'current' } });
+    expect(classifyKey(key('NumpadEnter'), picker())).toEqual({ kind: 'picker', key: { choose: 'current' } });
+    expect(classifyKey(key('Digit1'), picker())).toEqual({ kind: 'picker', key: { choose: 0 } });
+    expect(classifyKey(key('Numpad9'), picker())).toEqual({ kind: 'picker', key: { choose: 8 } });
+    expect(classifyKey(key('Escape'), picker())).toEqual({ kind: 'picker', key: 'cancel' });
+    for (const code of ['KeyN', 'KeyJ', 'Slash', 'ArrowLeft', 'ArrowRight', 'Digit0', 'Space', 'PageDown']) {
+      expect(classifyKey(key(code), picker()), code).toEqual({ kind: 'swallow' });
+    }
+  });
+
+  it('a held Enter, Esc or digit does nothing more; modifier chords and untrusted keys are as everywhere', () => {
+    expect(classifyKey(key('Enter', { repeat: true }), picker())).toEqual({ kind: 'swallow' });
+    expect(classifyKey(key('Escape', { repeat: true }), picker())).toEqual({ kind: 'swallow' });
+    expect(classifyKey(key('Digit2', { repeat: true }), picker())).toEqual({ kind: 'swallow' });
+    expect(classifyKey(key('KeyV', { meta: true }), picker())).toEqual({ kind: 'pass' });
+    expect(classifyKey(key('ArrowDown', { isTrusted: false }), picker())).toEqual({ kind: 'ignore' });
+  });
+
+  it("a text field keeps its keys, and the picker is only Edit's", () => {
+    expect(classifyKey(key('Enter'), picker('edit'))).toEqual({ kind: 'text', handle: 'commit-edit' });
+    expect(classifyKey(key('ArrowDown'), { appMode: 'review', textField: null, picker: true })).toEqual({ kind: 'swallow' });
+  });
+});

@@ -1,34 +1,31 @@
 // Diagnostics hooks (section 10, Phase 0, Diagnostics window; `--bl-mode=diagnostics`). The Diagnostics deck
 // runs the real key router, mode switching, card and ink; these hooks add DeckToMain.diag events the
 // Diagnostics window records, and the heading that becomes contenteditable="plaintext-only" on click with
-// the 9.2 beforeinput rules (Committing an edit, steps 1-2) and the 6.3 source-case reset. Nothing here
-// writes the file: the heading edit is a probe of input events only.
+// the 9.2 beforeinput rules (Committing an edit, steps 1-2, shared with Edit's field: edit-input.ts) and the 6.3
+// source-case reset. Nothing here writes the file: the heading edit is a probe of input events only. In Edit
+// mode the real edit controller owns clicks (edit-controller.ts), so the heading answers only in Read and Review.
 
 import { DeckToMain, type DiagEvent } from '@blueline/core/ipc';
+import { FieldHistory, affectedRanges, classifyInput, insertedText, lineBreaksToSpaces, rangeFacts } from './edit-input';
 import type { KeyAction } from './key-router';
 import { listen } from './listeners';
 
 type DiagData = Record<string, string | number | boolean | null>;
 export type DiagSend = (event: DiagEvent['event'], data: DiagData) => void;
 
-/** 9.2 Committing an edit, step 2: the input types an edit field accepts; insertParagraph commits. */
-export const ALLOWED_INPUT_TYPES = new Set([
-  'insertText',
-  'insertReplacementText',
-  'insertFromPaste',
-  'insertFromDrop',
-  'deleteContentBackward',
-  'deleteContentForward',
-  'deleteWordBackward',
-  'deleteWordForward',
-  'deleteByCut',
-]);
+/** 9.2 Committing an edit, step 2 (edit-input.ts holds the list; re-exported for the Diagnostics probes). */
+export { ALLOWED_INPUT_TYPES } from './edit-input';
 
 /** What the router needs from an edit field (6.2: Enter and Esc for the active edit). */
 export interface ActiveEdit {
   readonly element: Element;
   commit(): void;
   cancel(): void;
+  /**
+   * A trusted input-family event from inside the field (beforeinput, input, paste, composition, …). The input
+   * guard calls it at window capture and then stops the event, so page listeners never see it (P2-7).
+   */
+  onInputEvent?(e: Event): void;
 }
 
 /** `<seq>` of `data-bl-key-log="<seq>:<key>:<isTrusted>"` written by the deck's own capture listeners, or null. */
@@ -121,6 +118,7 @@ export class DiagnosticsHeading implements ActiveEdit {
   private textNode: Text | null = null;
   private saved: { transform: [string, string]; caps: [string, string] } | null = null;
   private active = false;
+  private history = new FieldHistory();
 
   constructor(
     readonly element: HTMLElement,
@@ -129,19 +127,24 @@ export class DiagnosticsHeading implements ActiveEdit {
     private readonly onChange: (edit: ActiveEdit | null) => void,
     private readonly badge: (text: string | null) => void = () => {},
   ) {
-    element.addEventListener('beforeinput', (e) => this.onBeforeInput(e as InputEvent));
-    element.addEventListener('paste', (e) => {
-      if (!this.active || !e.isTrusted) return;
-      const text = (e as ClipboardEvent).clipboardData?.getData('text/plain') ?? '';
-      this.send('paste', { length: text.length });
-    });
-    element.addEventListener('input', (e) => {
-      if (!this.active || !e.isTrusted) return;
-      this.send('heading-input', { value: cap(element.textContent ?? '') });
-    });
+    // beforeinput, input and paste reach the heading through the input guard (onInputEvent), which stops them at
+    // window capture; blur is not part of that family.
     element.addEventListener('blur', () => {
       if (this.active) this.commit();
     });
+  }
+
+  /** The input guard's call for a trusted event inside the heading while it is active (P2-7). */
+  onInputEvent(e: Event): void {
+    if (!this.active || !e.isTrusted) return;
+    if (e.type === 'beforeinput') this.onBeforeInput(e as InputEvent);
+    else if (e.type === 'paste') {
+      const text = (e as ClipboardEvent).clipboardData?.getData('text/plain') ?? '';
+      this.send('paste', { length: text.length });
+    } else if (e.type === 'input') {
+      this.history.accepted((e as InputEvent).inputType);
+      this.send('heading-input', { value: cap(this.element.textContent ?? '') });
+    }
   }
 
   get isActive(): boolean {
@@ -167,6 +170,7 @@ export class DiagnosticsHeading implements ActiveEdit {
     }
     el.setAttribute('contenteditable', 'plaintext-only');
     this.active = true;
+    this.history = new FieldHistory();
     el.focus({ preventScroll: true });
     const doc = el.ownerDocument;
     const sel = this.win.getSelection();
@@ -209,39 +213,36 @@ export class DiagnosticsHeading implements ActiveEdit {
     this.onChange(null);
   }
 
-  /** 9.2 Committing an edit, step 2. */
+  /** 9.2 Committing an edit, step 2, with Edit's shared rules (edit-input.ts classifyInput). */
   private onBeforeInput(e: InputEvent): void {
     if (!this.active) return;
-    this.send('beforeinput', { inputType: e.inputType, data: e.data === null ? null : cap(e.data), trusted: e.isTrusted });
-    if (!e.isTrusted) {
-      e.preventDefault();
-      return;
-    }
-    if (e.inputType === 'insertParagraph') {
-      e.preventDefault();
-      this.commit();
-      return;
-    }
-    if (!ALLOWED_INPUT_TYPES.has(e.inputType)) {
-      e.preventDefault();
-      return;
-    }
-    // Any target range that starts or ends outside the active text node is refused.
-    const node = this.textNode;
-    for (const r of e.getTargetRanges()) {
-      const ok = (c: Node) => c === node || c === this.element;
-      if (!ok(r.startContainer) || !ok(r.endContainer)) {
+    const data = insertedText(e);
+    const ranges = affectedRanges(e, this.win);
+    const decision = classifyInput({
+      inputType: e.inputType,
+      trusted: e.isTrusted,
+      cancelable: e.cancelable,
+      range: ranges ? rangeFacts(ranges, this.element) : null,
+      data,
+      undoAllowed: this.history.undoAllowed(this.element.textContent ?? '', this.original),
+      redoAllowed: this.history.redoAllowed(),
+    });
+    this.send('beforeinput', { inputType: e.inputType, data: data === null ? null : cap(data), trusted: e.isTrusted, decision });
+    switch (decision) {
+      case 'commit':
         e.preventDefault();
+        this.commit();
         return;
-      }
-    }
-    // Pasted and dropped line breaks become spaces.
-    if (e.inputType === 'insertFromPaste' || e.inputType === 'insertFromDrop') {
-      const text = e.dataTransfer?.getData('text/plain') ?? e.data ?? '';
-      if (/[\r\n\u2028\u2029]/.test(text)) {
+      case 'block':
+        if (e.cancelable) e.preventDefault();
+        return;
+      case 'rewrite':
+        // Pasted and dropped line breaks become spaces.
         e.preventDefault();
-        this.element.ownerDocument.execCommand('insertText', false, text.replace(/\r\n|[\r\n\u2028\u2029]/g, ' '));
-      }
+        this.element.ownerDocument.execCommand('insertText', false, lineBreaksToSpaces(data ?? ''));
+        return;
+      case 'allow':
+        return;
     }
   }
 }

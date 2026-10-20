@@ -26,6 +26,11 @@ export const SettingsToMain = {
   removeAllowlistHost: 'bl:settings:remove-allowlist-host',
   /** () → void. Back to the 9.9 list. */
   resetAllowlist: 'bl:settings:reset-allowlist',
+  /**
+   * (on) → void. Settings › General › Editing › Smart punctuation (6.3): the default for documents that have no
+   * setting of their own (Phase 2). Refused while main does not offer it (SettingsState.smartPunctuation null).
+   */
+  setSmartPunctuation: 'bl:settings:set-smart-punctuation',
 } as const;
 
 /** main → Settings shell (`webContents.send`). */
@@ -90,6 +95,8 @@ export interface SettingsState {
   allowlist: string[];
   /** The allowlist is 9.9's list, unedited. */
   allowlistIsDefault: boolean;
+  /** Settings › General › Smart punctuation (6.3), the default for documents; null while main does not offer it. */
+  smartPunctuation: boolean | null;
 }
 
 /** The API the Settings preload exposes as window.blueline (named, typed functions only; 9.1). */
@@ -104,6 +111,7 @@ export interface SettingsApi {
   addAllowlistHost(host: string): Promise<HostResult>;
   removeAllowlistHost(host: string): Promise<void>;
   resetAllowlist(): Promise<void>;
+  setSmartPunctuation(on: boolean): Promise<void>;
 }
 
 /** Limits main enforces on Settings calls (and the shell's inputs mirror). */

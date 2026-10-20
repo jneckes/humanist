@@ -210,7 +210,7 @@ describe('Settings channels: only the Settings window’s own shell is answered'
   const eventFrom = (wc: { id: number; mainFrame: unknown }) => ({ sender: wc, senderFrame: wc.mainFrame });
   const call = (channel: string, event: unknown, ...args: unknown[]) => fake.handlers.get(channel)!(event, ...args);
 
-  const allChannels = () => [...Object.values(SettingsToMain), ...Object.values(SETTINGS_GENERAL_CHANNELS)];
+  const allChannels = () => Object.values(SettingsToMain);
 
   it('declares every SettingsToMain channel and Settings › General’s', () => {
     for (const c of allChannels()) expect(fake.handlers.has(c), c).toBe(true);
@@ -390,8 +390,8 @@ describe('preload-settings (9.1: named functions only)', () => {
       [SettingsToMain.addAllowlistHost, 'a.example'],
       [SettingsToMain.removeAllowlistHost, 'a.example'],
       [SettingsToMain.resetAllowlist],
-      // The preload's own copy of the channel name is main's (settings-window.ts SETTINGS_GENERAL_CHANNELS).
-      [SETTINGS_GENERAL_CHANNELS.setSmartPunctuation, false],
+      // Settings › General › Smart punctuation (core/ipc-trust.ts SettingsToMain.setSmartPunctuation).
+      [SettingsToMain.setSmartPunctuation, false],
     ]);
     const got: unknown[] = [];
     api.onState((s: unknown) => got.push(s));

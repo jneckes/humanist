@@ -134,7 +134,10 @@ export interface AtomicWriteOptions {
    * renamed file has it, and a mark that fails leaves the target as it was (review finding 30).
    */
   prepareTemp?: (temp: string) => Promise<void> | void;
-  /** Tests: runs right before the rename (to simulate a concurrent writer). */
+  /**
+   * Runs right after the re-hash and right before the rename: createDeckIO records the write's hash there
+   * (P2-2); tests simulate a concurrent writer with it.
+   */
   beforeRename?: () => Promise<void> | void;
 }
 
@@ -255,7 +258,13 @@ export interface DeckIOOptions {
   refuse?: () => string | null;
   /** Runs after a successful write with the new bytes' hash (the watcher's knownHash, 9.2 step 6). */
   onWritten?: (hash: string) => void;
-  /** Passed to atomicWriteFile (tests). */
+  /**
+   * P2-2: runs right before the rename with the new bytes' hash, so the watcher already knows the write as
+   * Blueline's own even when the rename's directory fsync is slow (it waits only 150 + 50 ms). `failed` runs
+   * when the rename did not happen after all.
+   */
+  expectOwn?: { before(hash: string): void; failed(hash: string): void };
+  /** Passed to atomicWriteFile (tests; the E2E hook that lands an external write inside the atomic write). */
   write?: Omit<AtomicWriteOptions, 'expectHash'>;
 }
 
@@ -268,8 +277,25 @@ export function createDeckIO(realpath: string, opts: DeckIOOptions = {}): DeckIO
       if (typeof expectHash !== 'string' || !/^[0-9a-f]{64}$/.test(expectHash)) throw new Error('atomicWrite: expectHash must be a sha256');
       const why = opts.refuse?.() ?? null;
       if (why) throw new Error(why);
-      await atomicWriteFile(realpath, bytes, { ...opts.write, expectHash });
-      opts.onWritten?.(sha256Hex(bytes));
+      const hash = sha256Hex(bytes);
+      let expected = false;
+      try {
+        await atomicWriteFile(realpath, bytes, {
+          ...opts.write,
+          expectHash,
+          beforeRename: async () => {
+            await opts.write?.beforeRename?.();
+            if (opts.expectOwn) {
+              opts.expectOwn.before(hash);
+              expected = true;
+            }
+          },
+        });
+      } catch (e) {
+        if (expected) opts.expectOwn?.failed(hash);
+        throw e;
+      }
+      opts.onWritten?.(hash);
     },
     sha256: sha256Hex,
   };

@@ -5,6 +5,9 @@
 // Decks are copied to temp folders first, so the probe copy (`.<name>.bl-probe.html`) never lands in the
 // repository and runs never collide. Run with `npm run test:e2e` (global setup starts Xvfb on Linux).
 
+// Tests tagged @edit assert results of the mutation probe, which writes through the editor (dist/editor.cjs): the
+// reader-only gate (npm run test:reader-only, P2-15) leaves them out.
+
 import { expect, test } from '@playwright/test';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -75,7 +78,7 @@ function leftovers(dir: string): string[] {
   return fs.readdirSync(dir).filter((f) => f.includes('.bl-probe.') || f.startsWith('.bl-write-'));
 }
 
-test('entities.html: every exact node passes the probe, the copy is removed and the original is untouched', async () => {
+test('entities.html: every exact node passes the probe, the copy is removed and the original is untouched @edit', async () => {
   test.setTimeout(300_000);
   const deck = copyDeck('entities');
   const before = sha256(deck);
@@ -101,7 +104,7 @@ test('entities.html: every exact node passes the probe, the copy is removed and 
   expect(t.stdout).toMatch(/Not exact \(6\)/);
 });
 
-test('--min-coverage sets the exit code', async () => {
+test('--min-coverage sets the exit code @edit', async () => {
   test.setTimeout(300_000);
   const single = map([copyDeck('single'), '--min-coverage', '0.95']);
   expect(single.code, single.stderr.slice(-2000)).toBe(0);
@@ -127,7 +130,7 @@ test('a windows-1252 deck: every node none (not-utf8), no probe, never written',
   expect(leftovers(path.dirname(deck))).toEqual([]);
 });
 
-test('a probe copy already next to the deck is never overwritten', async () => {
+test('a probe copy already next to the deck is never overwritten @edit', async () => {
   test.setTimeout(120_000);
   const deck = copyDeck('single');
   const stale = path.join(path.dirname(deck), '.single.bl-probe.html');
@@ -142,7 +145,7 @@ test('a probe copy already next to the deck is never overwritten', async () => {
   expect(map([deck, '--min-coverage', '0.5']).code).toBe(1);
 });
 
-test('Ctrl+C during the probe removes the probe copy and leaves the original untouched', async () => {
+test('Ctrl+C during the probe removes the probe copy and leaves the original untouched @edit', async () => {
   test.setTimeout(180_000);
   const deck = copyDeck('reveal-hash');
   const dir = path.dirname(deck);
@@ -249,7 +252,7 @@ function intentProblems(ex: Expect, j: MapJson): string[] {
   return out;
 }
 
-test('coverage baselines and fixture intents: no committed deck drops more than 1 point below fixtures/expected, and every .expect.json entry holds', async () => {
+test('coverage baselines and fixture intents: no committed deck drops more than 1 point below fixtures/expected, and every .expect.json entry holds @edit', async () => {
   test.setTimeout(1_800_000);
   const failures: string[] = [];
   for (const f of fs.readdirSync(EXPECTED).filter((x) => x.endsWith('.json')).sort()) {
@@ -280,7 +283,7 @@ test('coverage baselines and fixture intents: no committed deck drops more than 
   expect(failures).toEqual([]);
 });
 
-test('a deck that calls alert() and confirm() and holds beforeunload neither hangs the run nor fails the probe', async () => {
+test('a deck that calls alert() and confirm() and holds beforeunload neither hangs the run nor fails the probe @edit', async () => {
   test.setTimeout(120_000);
   // Hidden render windows turn dialogs off (they would block the page, and app.exit, forever), and a load's
   // console errors start at its commit (the previous page's blocked beforeunload prompt is not a new error).

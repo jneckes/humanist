@@ -237,6 +237,47 @@ describe('createDeckIO (core/capabilities DeckIO)', () => {
   });
 });
 
+describe('createDeckIO expectOwn (P2-2)', () => {
+  it('names the write before the rename, and takes it back when the rename does not happen', async () => {
+    const p = file('expect.html', 'one');
+    const calls: string[] = [];
+    let seenAtRename: string[] = [];
+    const io = createDeckIO(p, {
+      expectOwn: { before: (h) => calls.push(`before ${h.slice(0, 8)}`), failed: (h) => calls.push(`failed ${h.slice(0, 8)}`) },
+      onWritten: (h) => calls.push(`written ${h.slice(0, 8)}`),
+      write: {
+        beforeRename: () => {
+          seenAtRename = calls.slice();
+        },
+      },
+    });
+    const two = sha256Hex(enc('two')).slice(0, 8);
+    await io.atomicWrite(enc('two'), sha256Hex(enc('one')));
+    // The test's own beforeRename runs first, then the hash is named, then the rename, then onWritten.
+    expect(seenAtRename).toEqual([]);
+    expect(calls).toEqual([`before ${two}`, `written ${two}`]);
+    calls.length = 0;
+    // A conflict aborts before the rename: nothing is named.
+    await expect(io.atomicWrite(enc('three'), sha256Hex(enc('one')))).rejects.toMatchObject({ name: 'WriteConflictError' });
+    expect(calls).toEqual([]);
+    // A rename that fails (the target became a folder) takes the name back.
+    const q = file('expect2.html', 'a');
+    const io2 = createDeckIO(q, {
+      expectOwn: { before: (h) => calls.push(`before ${h.slice(0, 8)}`), failed: (h) => calls.push(`failed ${h.slice(0, 8)}`) },
+      write: {
+        beforeRename: () => {
+          fs.rmSync(q);
+          fs.mkdirSync(q);
+          fs.writeFileSync(path.join(q, 'x'), 'x');
+        },
+      },
+    });
+    await expect(io2.atomicWrite(enc('b'), sha256Hex(enc('a')))).rejects.toThrow();
+    const b = sha256Hex(enc('b')).slice(0, 8);
+    expect(calls).toEqual([`before ${b}`, `failed ${b}`]);
+  });
+});
+
 describe('CoalescingWriter', () => {
   it('runs one write at a time and writes only the newest state when writes pile up', async () => {
     const target = path.join(dir, 'sub', 'session.json');

@@ -3,19 +3,23 @@
 // core is imported by subpath so parse5 and acorn stay out of this bundle.
 //
 // Modes (process.argv `--bl-mode=`): `deck` (the visible view: overlay, key router, card, ink, link and focus
-// reports, slide adapter, the views' hooks), `render` (offscreen render windows: the render agent only, no UI,
-// no key router) and `diagnostics` (the deck view of the Diagnostics window: `deck` plus DeckToMain.diag hooks).
+// reports, slide adapter, the views' hooks, Edit mode), `render` (offscreen render windows: the render agent only,
+// no UI, no key router) and `diagnostics` (the deck view of the Diagnostics window: `deck` plus DeckToMain.diag
+// hooks).
 //
 // It talks to main only over ipcRenderer and exposes NOTHING to the page: no contextBridge, no globals in
 // the main world. Test builds (`--bl-test=1`) put ipcRenderer on the isolated world's globalThis as
-// __blTestIpc, so the security suite can send forged payloads as a compromised renderer would.
+// __blTestIpc, so the security suite can send forged payloads as a compromised renderer would, and Edit's overlay
+// state as __blTestEdit (read-only), for the E2E tests.
 
 import { ipcRenderer, webFrame } from 'electron';
 import { DeckToMain, MainToDeck, type AppMode, type DeckInit, type MapUpdate, type RenderReply } from '@blueline/core/ipc';
 import { FilesDeckToMain, MainToDeckFiles } from '@blueline/core/ipc-files';
 import { MainToDeckViews } from '@blueline/core/ipc-views';
+import { MainToDeckEdit } from '@blueline/core/ipc-edit';
+import { ScriptTouchTracker } from '@blueline/core/dom-walk';
 import { parsePreloadArgs } from './env';
-import { KeyRouter, type KeyAction, type ShortcutAction, type TextFieldKind } from './key-router';
+import { KeyRouter, type KeyAction, type PickerKey, type ShortcutAction, type TextFieldKind } from './key-router';
 import { InputGuard } from './input-guard';
 import { DeckUi } from './deck-ui';
 import { guardChildFrames, guardDeckFileDrops, guardFrameDrops } from './drop-guard';
@@ -60,11 +64,21 @@ function runDeckPreload(): void {
     onDecision(e: KeyboardEvent, action: KeyAction, consumed: boolean): void;
     overlayHost(): EventTarget;
     onOverlayEvent(e: Event): void;
+    pickerOpen(): boolean;
+    onPickerKey(k: PickerKey): void;
+    fieldElement(): Element | null;
+    onFieldEvent(e: Event): void;
+    foreignHistory(e: Event): boolean;
   }
 
   let bridge: RouterBridge | null = null;
   let ui: DeckUi | null = null;
   let hooks: ViewHooks | null = null;
+
+  // P2-6: Edit matches DOM nodes as `blueline map`'s render walk does, which needs to know which text nodes page
+  // scripts changed. The tracker observes the DOM from now on, before any page script runs (as the render
+  // agent's does in render mode).
+  const tracker = env.mode !== 'render' ? new ScriptTouchTracker(document) : null;
 
   // 6.2 / 9.1: the capture-phase keydown listener is registered first, synchronously at preload start, before
   // any page script runs, so it is the first keydown listener on window in either world.
@@ -82,6 +96,8 @@ function runDeckPreload(): void {
         hooks?.onKeyDecision(e, a);
       },
       onDeckKey: (e) => bridge?.onDeckKey(e),
+      pickerOpen: () => bridge?.pickerOpen() ?? false,
+      onPickerKey: (k) => bridge?.onPickerKey(k),
     }).install();
     // 6.1, 9.1: a file dragged onto the deck view never reaches the page, and the view never navigates to it; main
     // only hears that one was refused (no path, name or count), and says where to drop it.
@@ -95,6 +111,10 @@ function runDeckPreload(): void {
     new InputGuard(window, {
       host: () => bridge?.overlayHost() ?? null,
       onOverlayEvent: (e) => bridge?.onOverlayEvent(e),
+      // P2-7: the Edit field is a deck element; its input events are the field's alone too.
+      field: () => bridge?.fieldElement() ?? null,
+      onFieldEvent: (e) => bridge?.onFieldEvent(e),
+      foreignHistory: (e) => bridge?.foreignHistory(e) ?? false,
     }).install();
     hooks = new ViewHooks(window, {
       send,
@@ -122,9 +142,13 @@ function runDeckPreload(): void {
         if (channel === DeckToMain.slides) h.onSlides();
       },
       diagnostics: env.mode === 'diagnostics',
+      tracker,
+      onBusyChange: () => h.reportBusyNow(),
     });
     ui = deckUi;
     bridge = deckUi;
+    // Test builds only, as __blTestIpc: Edit's overlay state for the E2E tests (edit-controller.ts testState).
+    if (env.test) (globalThis as Record<string, unknown>).__blTestEdit = { state: (withMap?: boolean) => deckUi.edit.testState(withMap === true) };
     ipcRenderer.on(MainToDeck.init, (_e, p: unknown) => {
       deckUi.applyInit(p as DeckInit);
       h.onInit();
@@ -134,12 +158,19 @@ function runDeckPreload(): void {
     ipcRenderer.on(MainToDeck.notes, (_e, p: unknown) => deckUi.applyNotes(p));
     ipcRenderer.on(MainToDeck.chrome, (_e, p: unknown) => deckUi.applyChrome(p));
     ipcRenderer.on(MainToDeck.closeCard, () => deckUi.closeCard());
+    // Phase 2: Settings › General's smart punctuation (6.3) and the name chip (6.8) changed after the init.
+    ipcRenderer.on(MainToDeck.settings, (_e, p: unknown) => deckUi.applySettings(p));
+    ipcRenderer.on(MainToDeck.userName, (_e, p: unknown) => deckUi.applyUserName(p));
     // 6.6 Reload: the view state around a reload (files-lifecycle's channels), and 6.9's navigation.
     ipcRenderer.on(MainToDeckFiles.captureViewState, (_e, p: unknown) => h.capture(p));
     ipcRenderer.on(MainToDeckFiles.applyViewState, (_e, p: unknown) => h.apply(p));
     ipcRenderer.on(MainToDeckViews.goto, (_e, p: unknown) => void h.goto(p));
     ipcRenderer.on(MainToDeckViews.navReplay, (_e, p: unknown) => h.setReplay(p));
     ipcRenderer.on(MainToDeckViews.pan, (_e, p: unknown) => h.setPan(p));
+    // Edit (Phase 2): what main did with a commit, the picker's candidates, an app undo or redo to show.
+    ipcRenderer.on(MainToDeckEdit.result, (_e, p: unknown) => deckUi.edit.onResult(p));
+    ipcRenderer.on(MainToDeckEdit.candidates, (_e, p: unknown) => deckUi.edit.onCandidates(p));
+    ipcRenderer.on(MainToDeckEdit.applied, (_e, p: unknown) => deckUi.edit.onApplied(p));
   }
 
   // Handshake: main answers with MainToDeck.init (deck and diagnostics) and then follows the app mode.

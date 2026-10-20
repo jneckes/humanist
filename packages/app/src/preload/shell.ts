@@ -16,13 +16,12 @@ import {
   type ShellApi,
   type ShellMenu,
   type ShellState,
+  type ShellToast,
 } from '@blueline/core/ipc';
 import { FilesShellChannels } from '@blueline/core/ipc-files';
 import { RenderShellChannels, type FindResponse, type ShellIndexReady, type ShellThumb } from '@blueline/core/ipc-render';
 import { MainToShellViews, ViewsShellToMain, type ShellCommand } from '@blueline/core/ipc-views';
 import { installShellFileDrop } from './drop-guard';
-
-type Toast = { text: string; kind: 'info' | 'warn' | 'error' };
 
 function subscribe<T>(channel: string, cb: (v: T) => void): void {
   if (typeof cb !== 'function') return;
@@ -38,7 +37,7 @@ function subscribe<T>(channel: string, cb: (v: T) => void): void {
 const api: ShellApi = {
   getState: () => ipcRenderer.invoke(ShellToMain.getState) as Promise<ShellState>,
   onState: (cb) => subscribe<ShellState>(MainToShell.state, cb),
-  onToast: (cb) => subscribe<Toast>(MainToShell.toast, cb),
+  onToast: (cb) => subscribe<ShellToast>(MainToShell.toast, cb),
   setMode: (mode: AppMode) => ipcRenderer.invoke(ShellToMain.setMode, mode) as Promise<void>,
   allowNetwork: () => ipcRenderer.invoke(ShellToMain.allowNetwork) as Promise<void>,
   enableEditing: () => ipcRenderer.invoke(ShellToMain.enableEditing) as Promise<void>,
@@ -58,6 +57,12 @@ const api: ShellApi = {
   onIndexReady: (cb) => subscribe<ShellIndexReady>(RenderShellChannels.indexReady, cb),
   onFindOpen: (cb) => subscribe<undefined>(MainToShellViews.findOpen, () => cb()),
   onScrollTo: (cb) => subscribe<{ x: number; y: number }>(MainToShellViews.scrollTo, cb),
+  // Phase 2 (main-wiring): toast buttons, Copy, the name chip, the history list.
+  toastAction: (token: string, actionId: string) => ipcRenderer.invoke(ShellToMain.toastAction, token, actionId) as Promise<void>,
+  copyNote: (noteId: string) => ipcRenderer.invoke(ShellToMain.copyNote, noteId) as Promise<boolean>,
+  setName: (name: string) => ipcRenderer.invoke(ShellToMain.setName, name) as Promise<{ ok: boolean; name: string; reason?: string }>,
+  historyClose: () => ipcRenderer.invoke(ShellToMain.historyClose) as Promise<void>,
+  historyRestore: (id: string) => ipcRenderer.invoke(ShellToMain.historyRestore, id) as Promise<void>,
   diag: {
     getState: () => ipcRenderer.invoke(ShellToMain.diagState) as Promise<DiagState>,
     onState: (cb) => subscribe<DiagState>(MainToShell.diag, cb),

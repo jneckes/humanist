@@ -361,7 +361,9 @@ test('diagnostics: Ctrl+V sent with no gap reports the preload first for both ke
     h.wc.sendInputEvent({ type: 'keyDown', keyCode: 'X', modifiers: ['shift'] });
     h.wc.sendInputEvent({ type: 'keyUp', keyCode: 'X', modifiers: ['shift'] });
     h.wc.sendInputEvent({ type: 'keyUp', keyCode: 'Shift', modifiers: [] });
-    await h.wait(400);
+    // The reports are sent from a timer after each key; under load they can take longer than a fixed wait.
+    for (let i = 0; i < 30 && h.msgs('bl:deck:diag').filter((d: Any) => d.event === 'key-order').length < 4; i++) await h.wait(100);
+    await h.wait(100);
     return { ko: h.msgs('bl:deck:diag').filter((d: Any) => d.event === 'key-order').map((d: Any) => d.data.code + ':' + d.data.first), trace: await h.main('document.documentElement.dataset.blKeyTrace') };
   }, join(DECKS, 'reveal-hash/index.html'));
   // The deck's own trace shows its listeners ran after the router for each key (seq goes up once per key).
@@ -635,6 +637,7 @@ test('render agent: detection matches every fixture, and the walk counts each vi
       const seen = new Set();
       const n = det.ok ? det.result.count : 0;
       const errors = [];
+      let keyFallbacks = 0;
       for (let i = 0; i < n; i++) {
         if (i > 0) {
           if (det.result.navKind === 'index') {
@@ -645,7 +648,16 @@ test('render agent: detection matches every fixture, and the walk counts each vi
             await h.wait(450);
           } else {
             const g = await h.render({ type: 'goto', index: i });
-            if (!g.ok || !g.result.navigated || g.result.current !== i) errors.push(['goto', i, g]);
+            if (g.ok && g.result.navKind === 'hash' && !g.result.navigated && g.result.current === i - 1) {
+              // Decision D-7: a hash goto that does not move the deck (one that writes its hash but reads it only
+              // at load) is main's to replace with the deck's own keys. This harness has no main, so it does the
+              // same; which decks needed it is checked below.
+              keyFallbacks++;
+              h.wc.focus();
+              h.wc.sendInputEvent({ type: 'keyDown', keyCode: 'Right' });
+              h.wc.sendInputEvent({ type: 'keyUp', keyCode: 'Right' });
+              await h.wait(450);
+            } else if (!g.ok || !g.result.navigated || g.result.current !== i) errors.push(['goto', i, g]);
           }
         }
         const s = await h.render({ type: 'settle' });
@@ -655,7 +667,7 @@ test('render agent: detection matches every fixture, and the walk counts each vi
         if (!s.ok || !s.result.sheetAdopted || !c.ok) errors.push(['settle/collect', i, s, c.error]);
         else for (const nd of c.result.nodes) seen.add(nd.key);
       }
-      return { det, total: seen.size, errors };
+      return { det, total: seen.size, errors, keyFallbacks };
     }, join(dirname(ef), exp.deck));
     expect(r.det.ok, exp.deck).toBe(true);
     const d = r.det.result;
@@ -665,6 +677,8 @@ test('render agent: detection matches every fixture, and the walk counts each vi
     if (exp.revealIndices) expect(d.revealIndices).toEqual(exp.revealIndices);
     if (exp.designSize) expect(d.designSize).toEqual(exp.designSize);
     expect(r.errors, exp.deck).toEqual([]);
+    // Only the write-only hash deck needs main's key fallback, on every move (fixtures/README.md).
+    expect(r.keyFallbacks, exp.deck).toBe(exp.deck === 'generic-hash-writeonly.html' ? exp.slides - 1 : 0);
     expect(r.total, exp.deck).toBeGreaterThan(0);
   }
 });

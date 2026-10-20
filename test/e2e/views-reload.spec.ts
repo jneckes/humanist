@@ -7,7 +7,7 @@
 import { expect, test } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { FIXTURES, Scratch, copyInto, launchApp, loopAround, resolveRunAs, sleep, type BlApp } from '../helpers/app';
+import { EDIT_BUILD, FIXTURES, Scratch, copyInto, launchApp, loopAround, resolveRunAs, sleep, type BlApp } from '../helpers/app';
 import { RELOAD_DEFERRED_TEXT, fileGoneText } from '../../packages/core/src/ipc-files';
 
 test.describe.configure({ mode: 'serial' });
@@ -178,8 +178,11 @@ test('a file that goes away: a banner, the last version stays read-only; it come
     fs.writeFileSync(file, bytes);
     scratch.own(file);
     await expect.poll(async () => (await w(app, deck.docId)).state.banner, { timeout: 10_000 }).toBeNull();
-    await app.run('mode-edit', deck.docId);
-    await expect.poll(async () => (await w(app, deck.docId)).appMode).toBe('edit');
+    // A reader-only build has no Edit to come back to (P2-15).
+    if (EDIT_BUILD) {
+      await app.run('mode-edit', deck.docId);
+      await expect.poll(async () => (await w(app, deck.docId)).appMode).toBe('edit');
+    }
     expect((await w(app, deck.docId)).handshakes).toBe(h);
   } finally {
     await app.close();

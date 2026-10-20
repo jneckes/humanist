@@ -18,6 +18,7 @@ import {
   Menu,
   View,
   WebContentsView,
+  clipboard,
   dialog,
   nativeTheme,
   screen,
@@ -34,17 +35,21 @@ import * as path from 'node:path';
 import {
   MainToDeck,
   MainToShell,
+  SHELL_EDIT_LIMITS,
   ShellToMain,
   type AppMode,
   type AppModeUpdate,
   type Capabilities,
   type DeckInit,
+  type DeckSettings,
   type NotesUpdate,
+  type ShellEditAvailability,
   type ShellLayout,
   type ShellMenu,
   type ShellState,
   type SlideState,
 } from '@blueline/core/ipc';
+import type { NameResult } from '@blueline/core/ipc-files';
 import { MainToDeckFiles, RELOAD_DEFERRED_TEXT, fileGoneText, type DeckBusy, type DeckViewState } from '@blueline/core/ipc-files';
 import { RenderShellChannels, type FindResponse, type ShellIndexReady, type ShellThumb, type SlideIndex } from '@blueline/core/ipc-render';
 import { PROTECTED_VIEW_HELP, protectedViewHelpText } from '@blueline/core/ipc-trust';
@@ -69,8 +74,10 @@ import { attachDeckView, shellRouter } from './channels';
 import { matchAppChord, SwallowedKeys } from './chords';
 import type { BlDocument, DocumentRegistry, OpenDecision } from './documents';
 import { DROP_REFUSED_TEXT, RefusedDropNotice } from './drop';
+import { EditRegistry, EditSession, ToastBook, shellNotes, type Adopted, type Taken, type ToastSpec } from './edit-session';
 import { findOnSlide, findResponse, highlightMatch, hitFor, validateFindArgs, validateFindShowArgs } from './find';
-import { validateNoArgs, validateSetMode, type ArgsValidator, type ShellSender } from './ipc-guard';
+import { validateSetName } from './first-run';
+import { validateHistoryId, validateNoArgs, validateNoteIdArg, validateSetMode, validateToastAction, type ArgsValidator, type ShellSender } from './ipc-guard';
 import { LEFT_RAIL_WIDTH, computeLayout, deckBounds } from './layout';
 import { DEFAULT_ALLOWLIST } from './network-policy';
 import { NotesStore } from './notes';
@@ -154,6 +161,8 @@ const LATE_MARKER_MS = 500;
  */
 const PAGE_STEP_WINDOW_MS = 2500;
 const WHEEL_WINDOW_MS = 1000;
+/** 6.10: Enable editing enters Edit when Edit was asked for (Cmd+3, the mode switch) this recently. */
+const ENABLE_EDITING_ENTERS_EDIT_MS = 120_000;
 
 export const SHELL_PARTITION = 'shell';
 export const SHELL_URL = `${SHELL_ORIGIN}/index.html`;
@@ -213,6 +222,15 @@ export interface DocWindowDeps {
   protectedRequested?: boolean;
   /** Added by batch A (D-1): what a window opened by reopen restores. */
   restore?: RestoreOptions;
+  /**
+   * Phase 2 (P2-3): the write queues and lanes of the open files, one per realpath, shared by every window and kept
+   * across a D-1 reopen (controller.ts; its editor is null in a reader-only build).
+   */
+  edits: EditRegistry;
+  /** Phase 2 (6.3 Smart punctuation): the default from Settings › General (config.json); the session's own wins. */
+  smartPunctuationDefault?(): boolean;
+  /** Phase 2 (6.8 the name chip): identity.ts Identity.setName. */
+  setName?(raw: string): Promise<NameResult>;
 }
 
 /** D-1: a window asks the controller to open its file again, with a fresh decision, where it was. */
@@ -321,6 +339,12 @@ function declareShellChannels(): void {
   r.handle(ViewsShellToMain.findClosed, validateNoArgs, (from) => win(from).closeFind());
   r.handle(RenderShellChannels.find, validateFindArgs, (from, query) => win(from).find(query));
   r.handle(RenderShellChannels.findShow, validateFindShowArgs, (from, p) => win(from).findShow(p.slide, p.matchIndex));
+  // Phase 2 (main-wiring): toast buttons (P2-14), Copy (P2-13), the name chip (6.8), the history list (P2-11).
+  r.handle(ShellToMain.toastAction, validateToastAction, (from, p) => win(from).toastAction(p.token, p.actionId));
+  r.handle(ShellToMain.copyNote, validateNoteIdArg, (from, id) => win(from).copyNote(id));
+  r.handle(ShellToMain.setName, validateSetName, (from, raw) => win(from).setName(raw));
+  r.handle(ShellToMain.historyClose, validateNoArgs, (from) => win(from).closeHistory());
+  r.handle(ShellToMain.historyRestore, validateHistoryId, (from, id) => win(from).restoreHistory(id));
 }
 
 /** The window of a shell sender's key, for other modules (tests, the Diagnostics window, the thumbnails route). */
@@ -565,7 +589,7 @@ export class DocWindow {
   private reopening = false;
   /** The shell page finished loading once; toasts before that wait in earlyToasts. */
   private shellLoaded = false;
-  private earlyToasts: { text: string; kind: 'info' | 'warn' | 'error' }[] = [];
+  private earlyToasts: ToastSpec[] = [];
   /** D-1: what this window restores (it was opened by a reopen). Cleared once applied. */
   private restoreAtOpen: RestoreOptions | null;
   /** Review finding 15: the next products of this version are built again (they were made under another policy). */
@@ -573,6 +597,18 @@ export class DocWindow {
   private rebuildStarted = false;
   /** What the render products' callbacks reach (renderTarget, startProducts); cleared when the window closes. */
   private readonly productsLive: { win: DocWindow | null } = { win: null };
+
+  // ----- Edit (Phase 2; edit-session.ts)
+  /** The deck's edit channels, app undo and redo, Copy, the history list and Restore. */
+  readonly edit: EditSession;
+  /** The shell's toasts and their buttons (P2-14). */
+  private readonly toasts = new ToastBook();
+  /** The version of the served copy the deck view's last load got (DeckInit.pageVersion, P2-5). */
+  private loadVersion: string;
+  /** Edit was asked for while editing was not allowed (6.2): Enable editing then enters it at once (6.10). */
+  private editAskedAt = 0;
+  /** The history list shows in the rail (P2-11). */
+  private historyOpen = false;
 
   private constructor(private readonly deps: DocWindowDeps) {
     const doc = deps.doc;
@@ -607,6 +643,7 @@ export class DocWindow {
       version: () => doc.version,
       slides: () => this.slides,
     });
+    this.loadVersion = doc.version;
 
     const shellSession = session.fromPartition(SHELL_PARTITION);
     if (!shellProtocolInstalled) {
@@ -706,6 +743,12 @@ export class DocWindow {
       design: (_f, p) => this.onDesign(p),
       pageStep: (_f, p) => this.onPageStep(p.dir),
       wheel: (_f, p) => this.onWheel(p.dx, p.dy),
+      // Phase 2 (core/ipc-edit.ts): every one is decided in edit-session.ts at that moment (P2-7).
+      editBegin: (_f, p) => this.edit.onBegin(p),
+      editCommit: (_f, p) => void this.edit.onCommit(p),
+      editCandidates: (_f, p) => this.edit.onCandidates(p),
+      editUndo: (_f, p) => this.edit.onUndoToken(p),
+      editBusy: (_f, p) => this.edit.onBusy(p),
     });
     this.webPolicy = installDeckWebContentsPolicy(deckWc, this.policies.view);
     // File drops are refused by the deck preload in every frame it reaches (drop-guard.ts; D-4). Chromium drag
@@ -716,11 +759,14 @@ export class DocWindow {
     deckWc.on('before-input-event', (event, input) => this.onDeckInput(event, input));
     deckWc.on('input-event', (_e, ev) => {
       if (ev.type === 'mouseWheel') this.lastWheelAt = Date.now();
+      // P2-7: the trusted presses and keys that may open an edit field (a page script makes none of these).
+      this.edit.onInput(ev.type);
     });
     deckWc.on('render-process-gone', (_e, details) => {
       deps.log(`deck renderer gone (${details.reason}) for ${doc.fileName}`);
       // The page went away: it holds no edit and no card now, so a deferred reload may go ahead (6.6).
       this.reload.resetBusy();
+      this.edit.onPageInit();
       if (details.reason !== 'clean-exit') this.toast('The document stopped working. Close it and open it again.', 'error');
     });
     deckWc.on('did-fail-load', (_e, code, desc, _url, isMainFrame) => {
@@ -765,6 +811,29 @@ export class DocWindow {
       },
       { version: doc.version },
     );
+
+    // Phase 2: Edit (edit-session.ts). The lane of this file is shared with its other windows and survives a D-1
+    // reopen (P2-3); this window is its host from now until it closes.
+    const lane = deps.edits.acquire(doc);
+    this.edit = new EditSession({
+      doc,
+      lane,
+      capabilities: deps.capabilities,
+      notes: this.notes,
+      session: deps.session,
+      reload: this.reload,
+      mode: () => this.mode,
+      sendDeck: (channel, payload) => this.sendDeck(channel, payload),
+      toast: (t) => this.showToast(t),
+      save: () => this.save(),
+      notesChanged: () => this.notesChanged(),
+      adopted: (e) => this.onOwnWrite(e),
+      taken: (e) => this.onTaken(e),
+      clipboard: (text) => clipboard.writeText(text),
+      confirm: (o) => this.confirm(o),
+      log: (m) => deps.log(m),
+    });
+    void this.edit.attach().catch((e: unknown) => deps.log(`edit: attach failed: ${errText(e)}`));
 
     this.present = new Present({
       isFullScreen: () => !this.win.isDestroyed() && this.win.isFullScreen(),
@@ -873,6 +942,8 @@ export class DocWindow {
   private async loadDeck(hash = ''): Promise<void> {
     const wc = this.liveDeck();
     if (!wc) return;
+    // P2-5: the version this load is served (DeckInit.pageVersion).
+    this.loadVersion = this.doc.version;
     try {
       await wc.loadURL(deckUrl(this.doc.docId, this.doc.fileName) + (hash.startsWith('#') ? hash : ''));
     } catch (e) {
@@ -910,8 +981,16 @@ export class DocWindow {
       mapPending: pending,
       notes: this.notes.notes.slice(),
       userName: this.deps.person().name,
+      // Phase 2 (6.3, P2-5, P2-6): the file name for the toasts, the version this load was served, the settings.
+      fileName: doc.fileName,
+      pageVersion: this.loadVersion,
+      settings: this.deckSettings(),
     };
+    // A new page: its edit field ids start again.
+    this.edit.onPageInit();
     this.sendDeck(MainToDeck.init, init);
+    // The document moved on while this page loaded (an undo, a change taken meanwhile): it shows that version next.
+    if (this.loadVersion !== doc.version) this.reload.requestReload(doc.version, { force: true });
     if (pending) this.completeMapAfterPaint(doc.map);
     this.inits++;
     // A new page has its own pan state (100%, Fill width).
@@ -1040,6 +1119,141 @@ export class DocWindow {
     void this.deps.session.save();
   }
 
+  // ------------------------------------------------------------------------------------------- Edit (Phase 2)
+
+  /** The deck's settings (6.3 Smart punctuation): the session's own, else Settings › General's default (on). */
+  private deckSettings(): DeckSettings {
+    const own = this.deps.session.session.settings?.smartPunctuation;
+    return { smartPunctuation: typeof own === 'boolean' ? own : (this.deps.smartPunctuationDefault?.() ?? true) };
+  }
+
+  /** Settings › General changed the default: a deck with no setting of its own gets it now (MainToDeck.settings). */
+  settingsChanged(): void {
+    this.sendDeck(MainToDeck.settings, this.deckSettings());
+  }
+
+  /** The name chip changed the user's name (6.8): the deck's card author and the shell's chip. */
+  userNameChanged(name: string): void {
+    this.sendDeck(MainToDeck.userName, { userName: name });
+    this.pushState();
+  }
+
+  /** Edit and verbatim notes changed (made, deleted on undo): the deck and the notes panel get them. */
+  private notesChanged(): void {
+    const update: NotesUpdate = { notes: this.notes.notes.slice() };
+    this.sendDeck(MainToDeck.notes, update);
+    this.pushState();
+  }
+
+  /** 6.3, 6.10: whether Edit can be entered now, and why not. */
+  editAvailability(): ShellEditAvailability {
+    return this.edit.availability();
+  }
+
+  /**
+   * 9.2 Write protocol step 6, P2-2, P2-4: an own write was adopted. The deck gets the new map before the result;
+   * the page shows it without a reload only when it is an html-text change of the page it shows (its own field's,
+   * or an undo it can patch); anything else reloads under 6.6's rules. A write that absorbed an external change
+   * decides trust again (D-1). Renders wait 300 ms after the write (6.7 step 1), and the products follow it.
+   */
+  private onOwnWrite(e: Adopted): void {
+    if (this.closing) return;
+    noteDocumentWrite(this.doc.fileKey);
+    this.deps.log(`own write (${e.kind}): ${this.doc.fileName} is now ${e.version.slice(0, 12)}${e.absorbed ? ` (absorbed ${e.basedOn.slice(0, 12)})` : ''}`);
+    this.sendDeck(MainToDeck.map, this.doc.utf8 ? toClientMap(this.doc.map) : null);
+    let reload: boolean;
+    if (e.kind === 'edit') reload = e.absorbed || e.strategy !== 'html-text';
+    else if (e.kind === 'undo' || e.kind === 'redo') reload = e.absorbed || e.patch === null;
+    else reload = true;
+    this.reload.noteOwnWrite({ basedOn: e.basedOn, version: e.version, reload });
+    if (e.absorbed && this.decidesTrust() && !this.reopening) this.queueTrustCheck(true);
+    cancelThumbnails(this.doc.fileKey);
+    this.startProducts(false);
+    this.pushState();
+  }
+
+  /** An external change was taken (edit-session.ts takeExternal; 9.2 Watcher step 3): the map, then the reload. */
+  private onTaken(e: Taken): void {
+    if (this.closing) return;
+    this.deps.log(`external change: ${this.doc.fileName} is now ${e.version.slice(0, 12)}`);
+    this.sendDeck(MainToDeck.map, this.doc.utf8 ? toClientMap(this.doc.map) : null);
+    this.designFromIndex = false;
+    this.reload.requestReload(this.doc.version);
+    // Thumbnails, the slide index and Find follow the new version (the shell asks Find again on indexReady).
+    cancelThumbnails(this.doc.fileKey);
+    this.startProducts(false);
+    this.pushState();
+  }
+
+  /** A native confirmation (Restore deck to <time>, P2-11). */
+  private async confirm(o: { message: string; detail: string; button: string }): Promise<boolean> {
+    if (this.win.isDestroyed()) return false;
+    const r = await dialog.showMessageBox(this.win, { type: 'warning', message: o.message, detail: o.detail, buttons: [o.button, 'Cancel'], defaultId: 1, cancelId: 1, noLink: true });
+    return r.response === 0;
+  }
+
+  /** Cmd+Z / Cmd+Shift+Z outside a text field (6.2, P2-10). */
+  appUndo(kind: 'undo' | 'redo'): Promise<void> {
+    return this.edit.appUndo(kind);
+  }
+
+  /** ShellToMain.toastAction (P2-14): a button of the toast main showed last. */
+  toastAction(token: string, actionId: string): void {
+    const run = this.toasts.take(token, actionId);
+    if (!run) {
+      this.deps.log(`toast action refused: ${actionId}`);
+      return;
+    }
+    try {
+      run();
+    } catch (e) {
+      this.deps.log(`toast action ${actionId}: ${errText(e)}`);
+    }
+  }
+
+  /** ShellToMain.copyNote (P2-13): main writes the note's text to the clipboard. */
+  copyNote(id: string): boolean {
+    const ok = this.edit.copyNote(id);
+    if (ok) this.toast('Copied', 'info');
+    return ok;
+  }
+
+  /** ShellToMain.setName (6.8 the name chip). */
+  async setName(raw: string): Promise<NameResult> {
+    if (!this.deps.setName) return { ok: false, name: this.deps.person().name, reason: 'The name cannot be changed here.' };
+    return await this.deps.setName(raw);
+  }
+
+  /** File › History… (P2-11): the history list in the rail. */
+  toggleHistory(): void {
+    if (this.historyOpen) {
+      this.closeHistory();
+      return;
+    }
+    if (this.findOpen) this.closeFind();
+    this.historyOpen = true;
+    this.relayout(true);
+    this.pushState();
+  }
+
+  closeHistory(): void {
+    if (!this.historyOpen) return;
+    this.historyOpen = false;
+    this.relayout(true);
+    this.pushState();
+  }
+
+  /** ShellToMain.historyRestore: "Restore deck to <time>" (the diff, the counts and a confirmation first). */
+  async restoreHistory(id: string): Promise<void> {
+    if (!SHELL_EDIT_LIMITS.historyId.test(id)) return;
+    await this.edit.restore(id);
+    this.pushState();
+  }
+
+  get historyShown(): boolean {
+    return this.historyOpen;
+  }
+
   /** SessionStore results (wired by the controller). */
   onSaved(e: SaveEvent): void {
     this.saveState = e.state === 'saved' ? `Saved · ${formatTime(e.at)}` : 'Not saved';
@@ -1126,27 +1340,24 @@ export class DocWindow {
    */
   setMode(mode: AppMode): boolean {
     if (mode === 'edit') {
-      if (!this.deps.capabilities.edit) {
-        this.toast('Edit is not available in this version of Blueline.', 'warn');
-        return false;
-      }
-      if (this.doc.readOnlyReason) {
-        this.toast(this.doc.readOnlyReason, 'warn');
-        return false;
-      }
-      if (this.doc.gone) {
-        this.toast(fileGoneText(this.doc.fileName), 'warn');
-        return false;
-      }
-      if (!this.doc.editingAllowed()) {
-        this.trustBarDismissed = false;
-        this.relayout();
-        this.toast('This file is in Protected view. Click Enable editing to edit it.', 'warn');
+      // 6.3: the Edit capability and editing allowed; 9.2 rule 1: UTF-8; a file that went away is read-only.
+      const a = this.edit.availability();
+      if (!a.available) {
+        if (a.enable) {
+          // 6.2 "In Protected view, Edit asks you to enable editing first": the trust bar shows its button, and
+          // Enable editing then enters Edit at once (6.10).
+          this.editAskedAt = Date.now();
+          this.trustBarDismissed = false;
+          this.relayout();
+        }
+        this.toast(a.reason ?? 'Edit is not available.', 'warn');
         return false;
       }
     }
     if (mode === this.mode) return true;
+    const from = this.mode;
     this.mode = mode;
+    this.edit.onModeChange(from, mode);
     const update: AppModeUpdate = { appMode: mode, editingAllowed: this.doc.editable() };
     this.sendDeck(MainToDeck.appMode, update);
     this.relayout();
@@ -1189,6 +1400,10 @@ export class DocWindow {
     const update: AppModeUpdate = { appMode: this.mode, editingAllowed: this.doc.editable() };
     this.sendDeck(MainToDeck.appMode, update);
     this.pushState();
+    this.viewChanged();
+    // 6.10 Enable editing "turns on Edit (6.3)": when Edit was just asked for, it opens now.
+    if (this.editAskedAt > 0 && Date.now() - this.editAskedAt < ENABLE_EDITING_ENTERS_EDIT_MS && this.edit.availability().available) this.setMode('edit');
+    this.editAskedAt = 0;
   }
 
   /**
@@ -1477,7 +1692,8 @@ export class DocWindow {
       trustBarVisible: this.trustBarVisible(),
       bannerVisible: this.bannerText() !== null,
       findBarVisible: this.findOpen,
-      railHidden: this.railHidden(),
+      // The history list lives in the rail (P2-11), so it shows the rail even when the user hid it.
+      railHidden: this.railHidden() && !this.historyOpen,
       presenting: this.present?.active === true,
     });
   }
@@ -1689,6 +1905,8 @@ export class DocWindow {
   /** Cmd+F: the Find bar opens (its results in the rail), with the caret in it. */
   openFind(): void {
     if (this.win.isDestroyed()) return;
+    // Find's results and the history list share the rail.
+    if (this.historyOpen) this.closeHistory();
     if (!this.findOpen) {
       this.findOpen = true;
       this.relayout(true);
@@ -1865,7 +2083,7 @@ export class DocWindow {
   private onShellLoaded(): void {
     this.shellLoaded = true;
     this.pushState();
-    for (const t of this.earlyToasts.splice(0)) this.toast(t.text, t.kind);
+    for (const t of this.earlyToasts.splice(0)) this.showToast(t);
     // D-1: a window opened again says why, once.
     const notice = this.restoreAtOpen?.notice;
     if (notice && this.restoreAtOpen) {
@@ -2077,21 +2295,16 @@ export class DocWindow {
    */
   private takeExternalChange(bytes: Uint8Array, version: string): void {
     if (this.closing) return;
-    try {
-      this.doc.replaceContent(bytes);
-    } catch (e) {
-      this.deps.log(`external change not taken: ${errText(e)}`);
-      this.toast(`${this.doc.fileName} changed on disk, but the new version could not be read.`, 'error');
-      return;
-    }
-    this.deps.log(`external change: ${this.doc.fileName} is now ${version.slice(0, 12)}`);
-    this.sendDeck(MainToDeck.map, this.doc.utf8 ? toClientMap(this.doc.map) : null);
-    this.designFromIndex = false;
-    this.reload.requestReload(this.doc.version);
-    // Thumbnails, the slide index and Find follow the new version (the shell asks Find again on indexReady).
-    cancelThumbnails(this.doc.fileKey);
-    this.startProducts(false);
-    this.pushState();
+    // P2-3: through the file's lane, in order with Blueline's own writes; a change an own write already absorbed,
+    // or one the watcher has seen a newer change after, is not taken (knownHash and the version never go back).
+    // The lane calls onTaken (map, reload, products) and moves the locked spans (section 8).
+    void this.edit.lane.takeExternal(this.edit, bytes, version).then(
+      (r) => {
+        if (r === 'stale') this.deps.log(`external change ${version.slice(0, 12)} of ${this.doc.fileName} not taken: a newer version is known`);
+        else if (r === 'failed' && !this.closing) this.toast(`${this.doc.fileName} changed on disk, but the new version could not be read.`, 'error');
+      },
+      (e: unknown) => this.deps.log(`external change not taken: ${errText(e)}`),
+    );
   }
 
   /**
@@ -2141,6 +2354,7 @@ export class DocWindow {
     });
     const safeHash = hash.startsWith('#') ? hash : '';
     const target = deckUrl(this.doc.docId, this.doc.fileName) + safeHash;
+    this.loadVersion = this.doc.version;
     try {
       // Loading the URL the view already shows, hash included, is a same-document fragment navigation and
       // reloads nothing. Then reload() is the reload; the page has not moved its URL to another path with
@@ -2171,7 +2385,10 @@ export class DocWindow {
    * deck that reads it in a script). Not deferred: the user asked for it, and the card a mode change closed
    * has sent its text.
    */
-  private reloadInPlace(why: string): Promise<void> {
+  private async reloadInPlace(why: string): Promise<void> {
+    // Phase 2: never while a field is open or a commit or own write is in flight (6.6): what was typed would be
+    // lost, or the page would show the version before the write.
+    await this.reload.whenIdle();
     return this.chainReload(async () => {
       if (this.closing) return;
       // The state being restored, if a restore is still running (review finding 20), else the page's.
@@ -2186,14 +2403,19 @@ export class DocWindow {
   // ------------------------------------------------------------------------------------------- state
 
   toast(text: string, kind: 'info' | 'warn' | 'error' = 'info'): void {
+    this.showToast({ text, kind });
+  }
+
+  /** A toast, with buttons when it has actions (P2-14: ToastBook gives it a token the shell's button names). */
+  showToast(t: ToastSpec): void {
     if (this.win.isDestroyed()) return;
     // A toast for a window whose shell has not loaded yet (an open that focuses a window being created, D-1's
     // notice) is shown once it has.
     if (!this.shellLoaded) {
-      this.earlyToasts.push({ text, kind });
+      this.earlyToasts.push(t);
       return;
     }
-    this.win.webContents.send(MainToShell.toast, { text, kind });
+    this.win.webContents.send(MainToShell.toast, this.toasts.show(t));
   }
 
   private trustBarVisible(): boolean {
@@ -2225,7 +2447,8 @@ export class DocWindow {
       slide: s ? { current: s.current, count: s.count, kind: s.kind, titles: s.titles.slice(0, 2000) } : null,
       saveState: this.saveState,
       layout: { ...this.layoutNow },
-      notes: this.notes.notes.map((n) => ({ id: n.id, status: n.status, kind: n.kind, text: n.text.slice(0, SHELL_NOTE_TEXT) })),
+      // P2-13: edit and verbatim notes with their texts, slide, line and lock (Copy goes through main).
+      notes: shellNotes(this.notes.notes, this.deps.session.session.locked, SHELL_NOTE_TEXT),
       banner: this.bannerText(),
       view: {
         kind: this.viewKind(),
@@ -2242,6 +2465,10 @@ export class DocWindow {
         reloadDeferred: this.reloadDeferred,
         fileGone: doc.gone,
       },
+      // Phase 2: Edit's availability (6.3, 6.10), the name chip (6.8), the history list (P2-11).
+      edit: this.edit.availability(),
+      userName: this.deps.person().name,
+      history: this.historyOpen ? this.edit.history() : null,
     };
   }
 
@@ -2306,6 +2533,10 @@ export class DocWindow {
     // live in the deck's partition and hold its protocol, so they close before the partition is retired).
     this.watcher?.close();
     this.watcher = null;
+    // Phase 2: the undo stack goes with the window (P2-10); the file's lane stays a while for a D-1 reopen (P2-3).
+    this.edit.dispose();
+    this.deps.edits.release(this.edit.lane);
+    this.toasts.clear();
     if (this.lateTrustTimer) clearTimeout(this.lateTrustTimer);
     this.lateTrustTimer = null;
     this.undecided = null;

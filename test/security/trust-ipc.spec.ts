@@ -40,6 +40,8 @@ function settingsArgs(folder: string): Record<string, unknown[]> {
     [SettingsToMain.addAllowlistHost]: ['evil.bl-attacker.test'],
     [SettingsToMain.removeAllowlistHost]: ['fonts.googleapis.com'],
     [SettingsToMain.resetAllowlist]: [],
+    // Settings › General › Smart punctuation (6.3, Phase 2): config.json's `defaults` must not change either.
+    [SettingsToMain.setSmartPunctuation]: [false],
   };
 }
 
@@ -197,7 +199,7 @@ test('the Settings page has only the named Settings functions, runs no inline sc
       };
     });
     expect(world).toEqual({
-      keys: ['addAllowlistHost', 'addFolder', 'getState', 'makeDefaultApp', 'onShowPane', 'onState', 'removeAllowlistHost', 'removeFolder', 'resetAllowlist', 'setStrictProtected'],
+      keys: ['addAllowlistHost', 'addFolder', 'getState', 'makeDefaultApp', 'onShowPane', 'onState', 'removeAllowlistHost', 'removeFolder', 'resetAllowlist', 'setSmartPunctuation', 'setStrictProtected'],
       allFunctions: true,
       require: 'undefined',
       process: 'undefined',

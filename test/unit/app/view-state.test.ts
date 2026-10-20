@@ -411,3 +411,79 @@ describe('trust on reload (review finding 0, D-1): what differs, and whether the
     expect(reopenForTrust({ ...trusted, marker: 'A' }, decided('trusted', { marker: 'B' }))).toBe(false);
   });
 });
+
+describe('ReloadCoordinator: Phase 2 (edits, own writes, in-place reloads)', () => {
+  it('a field open or a commit in flight (EditBusy) holds the reload like DeckBusy.edit', async () => {
+    const h = harness();
+    h.c.setEditBusy({ edit: false, committing: true });
+    h.c.requestReload('v2');
+    expect(h.c.waitingFor()).toEqual(['edit']);
+    h.c.setEditBusy({ edit: true, committing: false });
+    await h.settle();
+    expect(h.calls).toEqual([]);
+    h.c.setEditBusy({ edit: false, committing: false });
+    await h.finish();
+    expect(h.calls).toEqual(['capture', 'reload v2 #/3', 'apply']);
+  });
+
+  it("main's own write in flight holds it too ('write')", async () => {
+    const h = harness();
+    h.c.setWriting(true);
+    h.c.requestReload('v2');
+    expect(h.c.waitingFor()).toEqual(['write']);
+    h.c.setWriting(false);
+    await h.finish();
+    expect(h.calls).toEqual(['capture', 'reload v2 #/3', 'apply']);
+  });
+
+  it('an html-text own write of the version shown needs no reload: the page shows the new version', async () => {
+    const h = harness();
+    expect(h.c.showing).toBe('v1');
+    h.c.noteOwnWrite({ basedOn: 'v1', version: 'v2', reload: false });
+    expect(h.c.showing).toBe('v2');
+    await h.settle();
+    expect(h.calls).toEqual([]);
+    // A later external revert to v1 now reloads (it is not the version shown any more).
+    h.c.requestReload('v1');
+    await h.finish();
+    expect(h.calls).toEqual(['capture', 'reload v1 #/3', 'apply']);
+  });
+
+  it('a literal write, an absorbed change, or a write on top of a version the page does not show reloads', async () => {
+    const h = harness();
+    h.c.setEditBusy({ edit: false, committing: true });
+    h.c.noteOwnWrite({ basedOn: 'v1', version: 'v2', reload: true });
+    expect(h.c.phase).toBe('deferred');
+    h.c.setEditBusy({ edit: false, committing: false });
+    await h.finish();
+    expect(h.calls).toEqual(['capture', 'reload v2 #/3', 'apply']);
+    const g = harness();
+    g.c.noteOwnWrite({ basedOn: 'v9', version: 'v10', reload: false });
+    await g.finish();
+    expect(g.calls).toEqual(['capture', 'reload v10 #/3', 'apply']);
+  });
+
+  it('whenIdle resolves at once when nothing holds the page, else when the field, commit, write and dirty card are done', async () => {
+    const h = harness();
+    let done = false;
+    await h.c.whenIdle();
+    h.c.setBusy(BUSY(true, 'dirty'));
+    h.c.setWriting(true);
+    void h.c.whenIdle().then(() => (done = true));
+    h.c.setBusy(BUSY(false, 'dirty'));
+    await h.settle();
+    expect(done).toBe(false);
+    h.c.setBusy(BUSY(false, 'none'));
+    await h.settle();
+    expect(done).toBe(false);
+    h.c.setWriting(false);
+    await h.settle();
+    expect(done).toBe(true);
+    let disposed = false;
+    h.c.setEditBusy({ edit: true, committing: false });
+    void h.c.whenIdle().then(() => (disposed = true));
+    h.c.dispose();
+    await h.settle();
+    expect(disposed).toBe(true);
+  });
+});

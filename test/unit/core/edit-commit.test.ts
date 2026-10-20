@@ -53,20 +53,20 @@ describe('commitField: one run (9.2 step 4)', () => {
 
   it('no change, or a change the clean-up removes, is a no-op', () => {
     expect(commit(one, 'Hello world', null)).toEqual({ kind: 'noop' });
-    expect(commit(one, 'Hello​ world', null)).toEqual({ kind: 'noop' });
-    expect(commit(one, '﻿Hello world', null)).toEqual({ kind: 'noop' });
+    expect(commit(one, 'Hello\u200B world', null)).toEqual({ kind: 'noop' });
+    expect(commit(one, '\uFEFFHello world', null)).toEqual({ kind: 'noop' });
   });
 
   it("Chrome's NBSP becomes a space; the deck's own NBSP stays", () => {
-    expect(commit(one, 'Hello world ', null)).toMatchObject({ kind: 'edit', afterText: 'Hello world ' });
-    expect(commit(one, 'Hello  world', null)).toMatchObject({ kind: 'edit', afterText: 'Hello  world' });
-    const nb = field(['h:bl-1:0', '10 km']);
-    expect(commit(nb, '10 km away', null)).toMatchObject({ kind: 'edit', afterText: '10 km away' });
+    expect(commit(one, 'Hello world\u00A0', null)).toMatchObject({ kind: 'edit', afterText: 'Hello world ' });
+    expect(commit(one, 'Hello\u00A0 world', null)).toMatchObject({ kind: 'edit', afterText: 'Hello  world' });
+    const nb = field(['h:bl-1:0', '10\u00A0km']);
+    expect(commit(nb, '10\u00A0km away', null)).toMatchObject({ kind: 'edit', afterText: '10\u00A0km away' });
   });
 
   it('U+200B and U+FEFF the browser inserted are dropped', () => {
-    expect(commit(one, 'Hello​ big world', null)).toMatchObject({ kind: 'edit', afterText: 'Hello big world' });
-    expect(commit(one, 'Hello big﻿ world', null)).toMatchObject({ kind: 'edit', afterText: 'Hello big world' });
+    expect(commit(one, 'Hello\u200B big world', null)).toMatchObject({ kind: 'edit', afterText: 'Hello big world' });
+    expect(commit(one, 'Hello big\uFEFF world', null)).toMatchObject({ kind: 'edit', afterText: 'Hello big world' });
   });
 
   it('pasted or dictated CRLF, CR and LF become spaces', () => {
@@ -89,8 +89,8 @@ describe('commitField: one run (9.2 step 4)', () => {
     expect(commit(e, 'Go \u{1F681} now', null)).toMatchObject({ kind: 'edit', afterText: 'Go \u{1F681} now' });
     expect(commit(e, 'Go  now', null)).toMatchObject({ kind: 'edit', afterText: 'Go  now' });
     expect(commit(e, 'Go \u{1F680}\u{1F680} now', null)).toMatchObject({ kind: 'edit', afterText: 'Go \u{1F680}\u{1F680} now' });
-    const zwj = field(['h:bl-1:0', '\u{1F468}‍\u{1F469}']);
-    expect(commit(zwj, '\u{1F468}‍\u{1F469}‍\u{1F467}', null)).toMatchObject({ afterText: '\u{1F468}‍\u{1F469}‍\u{1F467}' });
+    const zwj = field(['h:bl-1:0', '\u{1F468}\u200D\u{1F469}']);
+    expect(commit(zwj, '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}', null)).toMatchObject({ afterText: '\u{1F468}\u200D\u{1F469}\u200D\u{1F467}' });
   });
 });
 
@@ -145,6 +145,22 @@ describe('commitField: several runs (inline markup, 6.3)', () => {
     expect(commit(em, 'go \u{1F680}\u{1F680}\u{1F680} up', 'h:bl-2:0')).toMatchObject({ runId: 'h:bl-2:0', afterText: '\u{1F680}\u{1F680} up' });
   });
 
+  it('a deleted emoji among the same emoji: the readings never split a pair', () => {
+    const f = field(['h:bl-1:0', 'a\u{1F600}'], ['h:bl-2:0', '\u{1F600}b']);
+    expect(commit(f, 'a\u{1F600}b', 'h:bl-1:0')).toEqual({ kind: 'edit', runId: 'h:bl-1:0', beforeText: 'a\u{1F600}', afterText: 'a' });
+    expect(commit(f, 'a\u{1F600}b', 'h:bl-2:0')).toEqual({ kind: 'edit', runId: 'h:bl-2:0', beforeText: '\u{1F600}b', afterText: 'b' });
+  });
+
+  it('stays linear on long repeated text (a page cannot make a commit slow)', () => {
+    const long = 'a'.repeat(200_000);
+    const f = field(['h:bl-1:0', long.slice(0, 100_000)], ['h:bl-2:0', long.slice(100_000)]);
+    const t0 = Date.now();
+    expect(commit(f, long + 'a', 'h:bl-1:0')).toMatchObject({ kind: 'edit', runId: 'h:bl-1:0', afterText: long.slice(0, 100_001) });
+    expect(commit(f, long.slice(1), 'h:bl-2:0')).toMatchObject({ kind: 'edit', runId: 'h:bl-2:0', afterText: long.slice(100_001) });
+    expect(commit(f, long + 'ab', null)).toMatchObject({ kind: 'edit', runId: 'h:bl-2:0' });
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+
   it('a deletion or replacement across runs is a verbatim note', () => {
     expect(commit(three, 'Hellold world', 'h:bl-1:0')).toEqual({ kind: 'verbatim', before: 'Hello bold world', after: 'Hellold world', why: 'across-runs' });
     expect(commit(three, 'Hello boXorld', 'h:bl-2:0')).toMatchObject({ kind: 'verbatim', why: 'across-runs' });
@@ -188,37 +204,37 @@ describe('commitField: unmapped text in the field', () => {
 
 describe('commitField: smart punctuation (6.3)', () => {
   it('converts straight quotes typed into a run that already uses curly ones, only when on', () => {
-    const q = field(['h:bl-1:0', 'It’s “fine”']);
-    expect(commit(q, 'It’s “fine”, isn\'t it "now"', null, SMART)).toMatchObject({
-      afterText: 'It’s “fine”, isn’t it “now”',
+    const q = field(['h:bl-1:0', 'It\u2019s \u201Cfine\u201D']);
+    expect(commit(q, 'It\u2019s \u201Cfine\u201D, isn\'t it "now"', null, SMART)).toMatchObject({
+      afterText: 'It\u2019s \u201Cfine\u201D, isn\u2019t it \u201Cnow\u201D',
     });
-    expect(commit(q, 'It’s “fine” "now"', null, PLAIN)).toMatchObject({ afterText: 'It’s “fine” "now"' });
+    expect(commit(q, 'It\u2019s \u201Cfine\u201D "now"', null, PLAIN)).toMatchObject({ afterText: 'It\u2019s \u201Cfine\u201D "now"' });
   });
 
   it('the run decides, not the rest of the field', () => {
-    const f = field(['h:bl-1:0', '“Quoted” '], ['h:bl-2:0', 'plain']);
-    expect(commit(f, '“Quoted” plain "x"', 'h:bl-2:0', SMART)).toMatchObject({ runId: 'h:bl-2:0', afterText: 'plain "x"' });
-    expect(commit(f, '“Quoted” "y" plain', 'h:bl-1:0', SMART)).toMatchObject({ runId: 'h:bl-1:0', afterText: '“Quoted” “y” ' });
+    const f = field(['h:bl-1:0', '\u201CQuoted\u201D '], ['h:bl-2:0', 'plain']);
+    expect(commit(f, '\u201CQuoted\u201D plain "x"', 'h:bl-2:0', SMART)).toMatchObject({ runId: 'h:bl-2:0', afterText: 'plain "x"' });
+    expect(commit(f, '\u201CQuoted\u201D "y" plain', 'h:bl-1:0', SMART)).toMatchObject({ runId: 'h:bl-1:0', afterText: '\u201CQuoted\u201D \u201Cy\u201D ' });
   });
 
   it('a quote at the start of a run opens or closes by the character before it in the field', () => {
-    const spaced = field(['h:bl-1:0', 'Say '], ['h:bl-2:0', '‘hi’']);
-    expect(commit(spaced, "Say '‘hi’", 'h:bl-2:0', SMART)).toMatchObject({ runId: 'h:bl-2:0', afterText: '‘‘hi’' });
-    const tight = field(['h:bl-1:0', 'Say'], ['h:bl-2:0', '‘hi’']);
-    expect(commit(tight, "Say'‘hi’", 'h:bl-2:0', SMART)).toMatchObject({ runId: 'h:bl-2:0', afterText: '’‘hi’' });
+    const spaced = field(['h:bl-1:0', 'Say '], ['h:bl-2:0', '\u2018hi\u2019']);
+    expect(commit(spaced, "Say '\u2018hi\u2019", 'h:bl-2:0', SMART)).toMatchObject({ runId: 'h:bl-2:0', afterText: '\u2018\u2018hi\u2019' });
+    const tight = field(['h:bl-1:0', 'Say'], ['h:bl-2:0', '\u2018hi\u2019']);
+    expect(commit(tight, "Say'\u2018hi\u2019", 'h:bl-2:0', SMART)).toMatchObject({ runId: 'h:bl-2:0', afterText: '\u2019\u2018hi\u2019' });
     // The character before is itself a curly quote: it decides opening, not whether the run uses curly quotes.
-    const after = field(['h:bl-1:0', '“'], ['h:bl-2:0', 'x']);
-    expect(commit(after, '“"x', 'h:bl-2:0', SMART)).toMatchObject({ runId: 'h:bl-2:0', afterText: '"x' });
+    const after = field(['h:bl-1:0', '\u201C'], ['h:bl-2:0', 'x']);
+    expect(commit(after, '\u201C"x', 'h:bl-2:0', SMART)).toMatchObject({ runId: 'h:bl-2:0', afterText: '"x' });
   });
 
   it('a straight quote typed over the same curly quote is a no-op', () => {
-    const q = field(['h:bl-1:0', 'a” b “']);
-    expect(commit(q, 'a" b “', null, SMART)).toEqual({ kind: 'noop' });
+    const q = field(['h:bl-1:0', 'a\u201D b \u201C']);
+    expect(commit(q, 'a" b \u201C', null, SMART)).toEqual({ kind: 'noop' });
   });
 
   it('a verbatim note holds the text cleaned and with the quotes smart punctuation would give', () => {
-    const f = field(['h:bl-1:0', '“A” '], ['h:bl-2:0', 'B']);
-    expect(commit(f, '"Z" ', 'h:bl-1:0', SMART)).toEqual({ kind: 'verbatim', before: '“A” B', after: '“Z” ', why: 'across-runs' });
+    const f = field(['h:bl-1:0', '\u201CA\u201D '], ['h:bl-2:0', 'B']);
+    expect(commit(f, '"Z"\u00A0', 'h:bl-1:0', SMART)).toEqual({ kind: 'verbatim', before: '\u201CA\u201D B', after: '\u201CZ\u201D ', why: 'across-runs' });
   });
 });
 
@@ -239,7 +255,7 @@ describe('commitField: input that does not fit', () => {
   });
 
   it('a lone surrogate is invalid, and the note holds U+FFFD in its place (a note cannot hold one)', () => {
-    expect(commit(one, 'Hel\uD83Dlo', null)).toEqual({ kind: 'verbatim', before: 'Hello', after: 'Hel�lo', why: 'invalid' });
+    expect(commit(one, 'Hel\uD83Dlo', null)).toEqual({ kind: 'verbatim', before: 'Hello', after: 'Hel\uFFFDlo', why: 'invalid' });
     expect(isWellFormedText('a\u{1F680}b')).toBe(true);
     expect(isWellFormedText('a\uDE80b')).toBe(false);
     expect(isWellFormedText('a\uD83D')).toBe(false);
@@ -288,10 +304,10 @@ describe('liftToRun (9.2 Strategy 2 step 4; P2-8)', () => {
   });
 
   it('normalized: NFC differences are exact only at word edges', () => {
-    const decomposed = 'Café open';
-    expect(liftToRun(decomposed, 'Café open', 'Café! open', 'normalized')).toEqual({ beforeText: decomposed, afterText: 'Café! open' });
-    expect(liftToRun(decomposed, 'Café open', 'Café now open', 'normalized')).toMatchObject({ afterText: 'Café now open' });
-    expect(liftToRun(decomposed, 'Café open', 'Cxfé open', 'normalized')).toBeNull();
+    const decomposed = 'Cafe\u0301 open';
+    expect(liftToRun(decomposed, 'Caf\u00E9 open', 'Caf\u00E9! open', 'normalized')).toEqual({ beforeText: decomposed, afterText: 'Cafe\u0301! open' });
+    expect(liftToRun(decomposed, 'Caf\u00E9 open', 'Caf\u00E9 now open', 'normalized')).toMatchObject({ afterText: 'Cafe\u0301 now open' });
+    expect(liftToRun(decomposed, 'Caf\u00E9 open', 'Cxf\u00E9 open', 'normalized')).toBeNull();
   });
 
   it('normalized: different words, or a different count, is null', () => {
@@ -335,10 +351,10 @@ describe('ipc-edit: formats, limits and the picker context (P2-8)', () => {
     expect(EDIT_TOKEN_RE.test('short')).toBe(false);
     expect(REFUSAL_CODES).toHaveLength(13);
     expect(COMMIT_KINDS).toEqual(['edit', 'verbatim', 'noop']);
-    expect(VERBATIM_WHYS).toEqual(['emptied', 'run-emptied', 'across-runs', 'outside-runs', 'boundary', 'invalid']);
+    expect(VERBATIM_WHYS).toEqual(['emptied', 'run-emptied', 'across-runs', 'outside-runs', 'boundary', 'invalid', 'page-changed']);
   });
 
-  it('candidateContext: ±40 source characters on one line, cut with an ellipsis', () => {
+  it('candidateContext: \u00B140 source characters on one line, cut with an ellipsis', () => {
     const src = 'a'.repeat(100) + 'RUN TEXT' + '\n' + 'b'.repeat(100);
     const start = 100;
     const end = 108;

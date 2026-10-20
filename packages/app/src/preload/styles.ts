@@ -72,6 +72,45 @@ export const OVERLAY_CSS = `
 .help dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0; }
 .help dt { font-weight: 600; font-family: ui-monospace, monospace; }
 .help dd { margin: 0; color: #334155; }
+.toast { display: flex; align-items: center; gap: 12px; }
+.toast[hidden] { display: none; }
+.toast.actionable { pointer-events: auto; }
+.toast .toast-action {
+  pointer-events: auto; font: 600 13px/1.2 system-ui, -apple-system, "Segoe UI", sans-serif; color: #93c5fd; background: none;
+  border: 0; padding: 2px 4px; cursor: pointer;
+}
+.toast .toast-action:hover { color: #bfdbfe; text-decoration: underline; }
+.outline { position: fixed; pointer-events: none; border: 2px solid #2563eb; border-radius: 4px; box-shadow: 0 0 0 1px rgba(255, 255, 255, .7); }
+.outline.dashed { border: 2px dashed #d97706; }
+.outline[hidden] { display: none; }
+.fit {
+  position: fixed; pointer-events: none; font-size: 12px; padding: 2px 9px; border-radius: 999px;
+  background: #fff7ed; color: #9a3412; border: 1px solid #fdba74; white-space: nowrap;
+}
+.fit[hidden] { display: none; }
+.edit { position: fixed; inset: 0; pointer-events: none; }
+.picker {
+  position: fixed; pointer-events: auto; background: #fff; border: 1px solid #fcd34d; border-radius: 10px;
+  box-shadow: 0 10px 32px rgba(15, 23, 42, .25); padding: 10px 10px 8px; display: flex; flex-direction: column; gap: 6px;
+}
+.picker[hidden] { display: none; }
+.picker .picker-title { font-size: 13px; color: #0f172a; padding-right: 22px; }
+.picker .picker-close { position: absolute; right: 6px; top: 4px; border: 0; background: none; font-size: 18px; line-height: 1; color: #64748b; cursor: pointer; }
+.picker .picker-list { position: relative; display: flex; flex-direction: column; gap: 4px; max-height: 50vh; overflow-y: auto; }
+.picker .picker-row {
+  display: flex; flex-direction: column; align-items: stretch; gap: 2px; text-align: left; border: 1px solid #e2e8f0; border-radius: 6px;
+  background: #fff; padding: 6px 8px; cursor: pointer; font: 12px/1.35 system-ui, -apple-system, "Segoe UI", sans-serif; color: #0f172a;
+}
+.picker .picker-row:hover, .picker .picker-row.on { border-color: #2563eb; background: #eff6ff; }
+.picker .picker-where { font-weight: 600; color: #1d4ed8; font-family: ui-monospace, monospace; white-space: pre; }
+.picker .picker-context { font-family: ui-monospace, monospace; color: #334155; white-space: pre-wrap; word-break: break-word; }
+.picker .picker-warning { color: #b45309; }
+.picker .picker-hint { font-size: 11px; color: #64748b; }
+.svg-field {
+  position: fixed; pointer-events: auto; margin: 0; padding: 0 2px; border: 2px solid #2563eb; border-radius: 3px;
+  background: #fff; color: #0f172a; outline: none; box-sizing: border-box;
+}
+.svg-field[hidden] { display: none; }
 `;
 
 /** Pauses CSS animations while settling a render or editing (6.3, 6.7). Adopted into the page's document. */

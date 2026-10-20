@@ -298,3 +298,69 @@ describe('CardInputGate (finding 11: a deck cannot write into the card)', () => 
     expect(field.value).toBe('tighten this headline');
   });
 });
+
+describe('InputGuard: the Edit field (P2-7: its input never reaches the page)', () => {
+  const host = { localName: 'blueline-overlay' };
+  function node(parent: unknown = null) {
+    return { nodeType: 1, parent, contains(this: unknown, n: { parent?: unknown } | null) {
+      for (let c: unknown = n; c; c = (c as { parent?: unknown }).parent) if (c === this) return true;
+      return false;
+    } };
+  }
+
+  function setup(field: unknown, foreign = false) {
+    const win = fakeTarget();
+    const onOverlayEvent = vi.fn();
+    const onFieldEvent = vi.fn();
+    new InputGuard(win as unknown as Window, {
+      host: () => host as unknown as EventTarget,
+      onOverlayEvent,
+      field: () => field as Element | null,
+      onFieldEvent,
+      foreignHistory: () => foreign,
+    }).install();
+    return { win, onOverlayEvent, onFieldEvent };
+  }
+
+  it('runs the field handling, then stops a trusted event from inside the field, never preventing it', () => {
+    const field = node();
+    const text = { nodeType: 3, parent: field };
+    const { win, onFieldEvent, onOverlayEvent } = setup(field);
+    for (const [type, target] of [['beforeinput', field], ['input', field], ['paste', text], ['compositionupdate', field], ['drop', text]] as const) {
+      const e = fakeEvent(type, { path0: target });
+      onFieldEvent.mockImplementationOnce(() => expect(e.stopImmediatePropagation).not.toHaveBeenCalled());
+      win.fire(type, e);
+      expect(onFieldEvent, type).toHaveBeenCalledWith(e);
+      expect(e.stopImmediatePropagation, type).toHaveBeenCalledTimes(1);
+      expect(e.preventDefault, type).not.toHaveBeenCalled();
+    }
+    expect(onOverlayEvent).not.toHaveBeenCalled();
+  });
+
+  it('leaves the rest of the page, untrusted events, and every event while no field is open alone', () => {
+    const field = node();
+    const other = node();
+    const { win, onFieldEvent } = setup(field);
+    const page = fakeEvent('input', { path0: other });
+    win.fire('input', page);
+    const synthetic = fakeEvent('beforeinput', { path0: field, trusted: false });
+    win.fire('beforeinput', synthetic);
+    expect(onFieldEvent).not.toHaveBeenCalled();
+    expect(page.stopImmediatePropagation).not.toHaveBeenCalled();
+    expect(synthetic.stopImmediatePropagation).not.toHaveBeenCalled();
+    const closed = setup(null);
+    const e = fakeEvent('input', { path0: field });
+    closed.win.fire('input', e);
+    expect(closed.onFieldEvent).not.toHaveBeenCalled();
+    expect(e.stopImmediatePropagation).not.toHaveBeenCalled();
+  });
+
+  it('cancels and stops a native undo aimed at an earlier field (P2-9)', () => {
+    const { win, onFieldEvent } = setup(node(), true);
+    const e = Object.assign(fakeEvent('beforeinput', { path0: node() }), { inputType: 'historyUndo' });
+    win.fire('beforeinput', e);
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(e.stopImmediatePropagation).toHaveBeenCalled();
+    expect(onFieldEvent).not.toHaveBeenCalled();
+  });
+});

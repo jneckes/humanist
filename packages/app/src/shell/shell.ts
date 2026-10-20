@@ -8,7 +8,7 @@
 // it, and, when the deck view is larger than the window (100%, Fill width), the scroll bars beside it (#deck-slot
 // scrolls a spacer the deck view's size; main moves the deck view to follow). In Present it shows no chrome.
 
-import type { AppMode, ShellApi, ShellLayout, ShellMenu, ShellState } from '@blueline/core/ipc';
+import type { AppMode, ShellApi, ShellHistory, ShellLayout, ShellMenu, ShellNote, ShellState, ShellToast } from '@blueline/core/ipc';
 import type { FindHit, FindResponse, ShellIndexReady, ShellThumb } from '@blueline/core/ipc-render';
 import { zoomLabel, type ShellCommand } from '@blueline/core/ipc-views';
 
@@ -79,15 +79,58 @@ function renderToolbar(s: ShellState): void {
     const mode = b.dataset.mode as AppMode;
     b.setAttribute('aria-pressed', String(mode === s.appMode));
     if (mode === 'edit') {
-      b.disabled = !s.capabilities.edit;
-      b.title = !s.capabilities.edit
-        ? 'Edit is not available in this version'
-        : s.readOnlyReason ?? (s.editingAllowed ? 'Edit (Ctrl/Cmd+3)' : 'Protected view: enable editing first');
+      // 6.3, 6.10: off, with the reason, when the Edit capability is off or editing is not allowed (main decides).
+      const a = s.edit;
+      const available = a ? a.available : s.capabilities.edit && s.readOnlyReason === null && s.editingAllowed;
+      b.disabled = !available && s.appMode !== 'edit';
+      b.title = available ? 'Edit (Ctrl/Cmd+3)' : (a?.reason ?? 'Edit is not available');
     }
   }
   el<HTMLButtonElement>('present').title = 'Present (Ctrl/Cmd+Option+P). Esc ends it.';
   // The agent chip shows in Review and Edit when the agent capability is on (6.0, 6.6): Phase 4.
   el('agent-chip').hidden = true;
+  renderNameChip(s);
+}
+
+// ------------------------------------------------------------------------------------------- the name chip (6.8)
+
+let naming = false;
+
+function renderNameChip(s: ShellState): void {
+  const chip = el<HTMLButtonElement>('name-chip');
+  const name = typeof s.userName === 'string' ? s.userName : '';
+  chip.textContent = name;
+  chip.hidden = naming || name.length === 0;
+}
+
+function startNaming(): void {
+  if (naming) return;
+  naming = true;
+  const input = el<HTMLInputElement>('name-input');
+  input.value = last?.userName ?? '';
+  input.hidden = false;
+  el('name-chip').hidden = true;
+  input.focus();
+  input.select();
+}
+
+function endNaming(): void {
+  naming = false;
+  el<HTMLInputElement>('name-input').hidden = true;
+  if (last) renderNameChip(last);
+}
+
+async function saveName(): Promise<void> {
+  const input = el<HTMLInputElement>('name-input');
+  const value = input.value;
+  endNaming();
+  if (value.trim() === (last?.userName ?? '')) return;
+  try {
+    const r = await api.setName(value);
+    if (!r.ok) showToast({ text: r.reason ?? 'The name was not changed.', kind: 'warn' });
+  } catch {
+    showToast({ text: 'The name was not changed.', kind: 'warn' });
+  }
 }
 
 function renderTrustBar(s: ShellState): void {
@@ -205,15 +248,63 @@ function renderOutline(s: ShellState): void {
 function renderRail(s: ShellState): void {
   const doc = s.view.kind === 'document';
   const finding = find.open;
-  el('rail-title').textContent = finding ? 'Results' : doc ? 'Outline' : 'Slides';
-  el('rail').setAttribute('aria-label', finding ? 'Find results' : doc ? 'Outline' : 'Slides');
-  el('rail-hide').title = doc ? 'Hide the outline' : 'Hide the slides';
-  el('rail-hide').hidden = finding;
-  el('slide-list').hidden = finding || doc;
-  el('outline-list').hidden = finding || !doc;
+  const history = !finding && s.history ? s.history : null;
+  el('rail-title').textContent = finding ? 'Results' : history ? 'History' : doc ? 'Outline' : 'Slides';
+  el('rail').setAttribute('aria-label', finding ? 'Find results' : history ? 'History' : doc ? 'Outline' : 'Slides');
+  const hide = el('rail-hide');
+  hide.title = history ? 'Close the history' : doc ? 'Hide the outline' : 'Hide the slides';
+  hide.setAttribute('aria-label', history ? 'Close the history' : 'Hide the rail');
+  hide.textContent = history ? '\u00d7' : '\u00ab';
+  hide.hidden = finding;
+  el('slide-list').hidden = finding || !!history || doc;
+  el('outline-list').hidden = finding || !!history || !doc;
   el('result-list').hidden = !finding;
-  if (!finding && !doc) renderSlides(s);
-  if (!finding && doc) renderOutline(s);
+  el('history-list').hidden = !history;
+  if (history) renderHistory(history);
+  else if (!finding && !doc) renderSlides(s);
+  else if (!finding && doc) renderOutline(s);
+}
+
+// ------------------------------------------------------------------------------------------- history (P2-11)
+
+const CAUSES: Readonly<Record<string, string>> = {
+  edit: 'before a direct edit',
+  undo: 'before an undo',
+  redo: 'before a redo',
+  restore: 'before a restore',
+  external: 'before a change outside Blueline',
+};
+
+/** The time an entry shows: hours and minutes, with the date when it is not today. */
+function entryTime(at: string): string {
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return at;
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? time : `${d.toLocaleDateString()} ${time}`;
+}
+
+function renderHistory(h: ShellHistory): void {
+  const list = el('history-list');
+  if (h.entries.length === 0) {
+    list.replaceChildren(make('li', 'empty-note', 'No earlier versions yet. Blueline keeps one before each write.'));
+    return;
+  }
+  list.replaceChildren(
+    ...h.entries.map((e) => {
+      const li = make('li', 'history-entry');
+      li.dataset.id = e.id;
+      const time = entryTime(e.at);
+      li.append(make('div', 'history-time', time), make('div', 'history-cause', CAUSES[e.cause] ?? e.cause));
+      // 9.2 Undo and redo 4: "Restore deck to <time>"; main shows the diff and asks before it writes.
+      const b = make('button', 'history-restore', `Restore deck to ${time}`);
+      b.type = 'button';
+      b.disabled = !h.canRestore;
+      b.title = h.canRestore ? 'Shows what changes, and asks first' : (h.reason ?? 'Edit is not available');
+      b.addEventListener('click', () => void api.historyRestore(e.id));
+      li.append(b);
+      return li;
+    }),
+  );
 }
 
 function onThumb(t: ShellThumb): void {
@@ -365,23 +456,50 @@ function closeFind(): void {
 
 // ------------------------------------------------------------------------------------------- notes, status
 
+/**
+ * The notes panel (6.6; Phase 2's minimal list, P2-13): each note's status, id and kind, its slide and line, a
+ * violated lock, the text, or an edit or verbatim note's before → after; Copy asks main, which writes the clipboard
+ * (the shell has no clipboard permission).
+ */
 function renderPanel(s: ShellState): void {
   const list = el('note-list');
   if (s.notes.length === 0) {
-    list.replaceChildren(make('li', 'empty-note', s.appMode === 'read' ? 'No notes' : 'No notes yet. Draw on the page or press N.'));
+    list.replaceChildren(make('li', 'empty-note', s.appMode === 'read' ? 'No notes' : s.appMode === 'edit' ? 'No notes yet. Edits you make are listed here.' : 'No notes yet. Draw on the page or press N.'));
     return;
   }
-  list.replaceChildren(
-    ...s.notes.map((n) => {
-      const li = make('li');
-      const meta = make('div', 'meta');
-      meta.append(make('span', 'status', n.status), make('span', 'id', n.id));
-      if (n.kind !== 'markup') meta.append(make('span', 'kind', n.kind));
-      const text = make('div', n.text.trim() ? 'text' : 'text empty', n.text.trim() ? n.text : '(no text)');
-      li.append(meta, text);
-      return li;
-    }),
-  );
+  list.replaceChildren(...s.notes.map((n) => noteItem(n)));
+}
+
+function noteItem(n: ShellNote): HTMLElement {
+  const li = make('li', `note ${n.kind}`);
+  li.dataset.id = n.id;
+  const meta = make('div', 'meta');
+  meta.append(make('span', 'status', n.status), make('span', 'id', n.id));
+  if (n.kind !== 'markup') meta.append(make('span', 'kind', n.kind));
+  const where: string[] = [];
+  if (typeof n.slide === 'number') where.push(`slide ${n.slide + 1}`);
+  if (typeof n.line === 'number') where.push(`line ${n.line}`);
+  if (where.length > 0) meta.append(make('span', 'where', where.join(' · ')));
+  if (n.locked === 'violated') {
+    const flag = make('span', 'violated', 'changed since');
+    flag.title = 'This edit was changed outside Blueline after it was written';
+    meta.append(flag);
+  }
+  li.append(meta);
+  if (n.before !== undefined && n.after !== undefined) {
+    const ba = make('div', 'before-after');
+    ba.append(make('span', 'before', n.before), make('span', 'arrow', ' \u2192 '), make('span', 'after', n.after));
+    li.append(ba);
+    if (n.kind === 'verbatim' && n.summary) li.append(make('div', 'summary', n.summary));
+  } else {
+    li.append(make('div', n.text.trim() ? 'text' : 'text empty', n.text.trim() ? n.text : '(no text)'));
+  }
+  const copy = make('button', 'copy', 'Copy');
+  copy.type = 'button';
+  copy.title = 'Copy this note';
+  copy.addEventListener('click', () => void api.copyNote(n.id));
+  li.append(copy);
+  return li;
 }
 
 /** 6.0 Status bar: position, zoom, trust state; the save state (or a task, or a deferred reload) on the right. */
@@ -458,21 +576,45 @@ function render(s: ShellState): void {
 // ------------------------------------------------------------------------------------------- toasts
 
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
+const TOKEN_RE = /^[0-9a-f]{32}$/;
+const ACTION_RE = /^[a-z][a-z-]{0,31}$/;
 
-function showToast(t: { text: string; kind: 'info' | 'warn' | 'error' }): void {
+function hideToast(): void {
+  el('toast').classList.remove('visible');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = null;
+}
+
+/**
+ * A toast in the status bar. With actions (P2-14: "Make a note"), each is a button that names the toast's token
+ * and the action's id; main checks both against the toast it showed last and runs its own action.
+ */
+function showToast(t: ShellToast): void {
   if (!t || typeof t.text !== 'string') return;
   const box = el('toast');
-  box.textContent = t.text;
+  const text = make('span', 'toast-text', t.text);
+  const parts: HTMLElement[] = [text];
+  const token = typeof t.token === 'string' && TOKEN_RE.test(t.token) ? t.token : null;
+  const actions = token && Array.isArray(t.actions) ? t.actions.filter((a) => a && typeof a.id === 'string' && ACTION_RE.test(a.id) && typeof a.label === 'string').slice(0, 3) : [];
+  for (const a of actions) {
+    const b = make('button', 'toast-action', a.label);
+    b.type = 'button';
+    b.addEventListener('click', () => {
+      hideToast();
+      void api.toastAction(token!, a.id).catch(() => undefined);
+    });
+    parts.push(b);
+  }
+  box.replaceChildren(...parts);
   box.title = t.text;
-  box.className = `toast visible ${t.kind === 'warn' || t.kind === 'error' ? t.kind : 'info'}`;
+  box.className = `toast visible ${t.kind === 'warn' || t.kind === 'error' ? t.kind : 'info'}${actions.length > 0 ? ' actionable' : ''}`;
   if (toastTimer) clearTimeout(toastTimer);
-  toastTimer = setTimeout(
-    () => {
-      box.classList.remove('visible');
-      toastTimer = null;
-    },
-    Math.min(12_000, 4000 + t.text.length * 40),
-  );
+  // A toast with a button stays long enough to be pressed.
+  const ms = actions.length > 0 ? 15_000 : Math.min(12_000, 4000 + t.text.length * 40);
+  toastTimer = setTimeout(() => {
+    box.classList.remove('visible');
+    toastTimer = null;
+  }, ms);
 }
 
 // ------------------------------------------------------------------------------------------- actions
@@ -502,7 +644,25 @@ function wire(): void {
   el('trust-close').addEventListener('click', () => void api.dismissTrustBar());
   el('banner-open').addEventListener('click', () => void api.openInBrowser());
   el('banner-close').addEventListener('click', () => void api.dismissBanner());
-  el('rail-hide').addEventListener('click', () => command('toggle-rail'));
+  el('rail-hide').addEventListener('click', () => {
+    if (last?.history) void api.historyClose();
+    else command('toggle-rail');
+  });
+  // 6.8: the name chip. Typing goes to the shell's own input, never to the deck.
+  el('name-chip').addEventListener('click', () => startNaming());
+  const nameInput = el<HTMLInputElement>('name-input');
+  nameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      void saveName();
+    } else if (e.key === 'Escape') {
+      e.preventDefault();
+      endNaming();
+    }
+  });
+  nameInput.addEventListener('blur', () => {
+    if (naming) void saveName();
+  });
   el('deck-slot').addEventListener('scroll', onSlotScroll, { passive: true });
 
   // The Find bar: typing never reaches the deck (the keyboard is in the shell's own page).

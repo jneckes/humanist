@@ -8,8 +8,9 @@
 //    of events gives one check); then the file is read twice, 50 ms apart, and only two reads that agree are
 //    acted on, so a half-written file is never mapped. Two reads that disagree wait for the next settle.
 // 3. Decide: equal to knownHash, nothing happens (Blueline's own writes call setKnownHash first, so they never
-//    reload). Otherwise the change is external: knownHash becomes the new hash and onExternalChange(bytes,
-//    version) runs; the caller rebuilds the map, transforms the locked spans (Phase 4) and reloads the view.
+//    reload; P2-2: the holder also names an own write renamed in but not yet taken). Otherwise the change is
+//    external: knownHash becomes the new hash and onExternalChange(bytes, version) runs; the caller rebuilds the
+//    map, transforms the locked spans (edit-session.ts) and reloads the view.
 //
 // A file that is missing on two looks 150 ms apart is gone (deleted, or renamed away): onGone. When a file
 // appears at the path again, onBack, and then the usual decision on its content. The watcher reads by path,
@@ -69,7 +70,7 @@ export interface DeckWatcherOptions {
    * the hash of the moment it decides and never reloads Blueline's own edits. The watcher writes the new hash
    * there when it sees an external change.
    */
-  holder?: { knownHash: string };
+  holder?: { knownHash: string; isOwnWrite?(hash: string): boolean };
   /** Without a holder: the hash of the bytes the document was opened from (BlDocument.version). */
   knownHash?: string;
   /** 9.2 step 3: an external change, with the settled bytes and their sha256. */
@@ -142,7 +143,7 @@ export class DeckWatcher {
   private readonly maxBytes: number;
   private readonly hash: (b: Uint8Array) => string;
   private readonly sameName: (name: string) => boolean;
-  private readonly holder: { knownHash: string };
+  private readonly holder: { knownHash: string; isOwnWrite?(hash: string): boolean };
   private started = false;
   private closed = false;
   private dirWatch: WatchHandle | null = null;
@@ -408,7 +409,9 @@ export class DeckWatcher {
       this.call('onBack', () => this.o.onBack?.());
     }
     // 9.2 step 3: decided against knownHash as it is now (setKnownHash may have run while the file was read).
-    if (h2 === this.holder.knownHash) return;
+    // P2-2: a write of Blueline's own that is renamed in but not yet taken (its directory fsync is still running)
+    // is not external either.
+    if (h2 === this.holder.knownHash || this.holder.isOwnWrite?.(h2) === true) return;
     this.holder.knownHash = h2;
     this.call('onExternalChange', () => this.o.onExternalChange(second.bytes, h2));
   }

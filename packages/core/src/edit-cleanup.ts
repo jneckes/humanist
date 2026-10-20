@@ -4,10 +4,14 @@
 // suggestions) run it the same way, so a typed edit and a scripted one take the same path.
 //
 // Every rule applies only to characters the edit introduced. A character is "introduced" when it lies in
-// the changed region of the new text (between the longest common prefix and suffix) and the old text did
+// the changed region of the new text (between the longest common prefix and suffix), the old text did
 // not hold the same character at the same position relative to the unchanged prefix or suffix (9.2 step 3,
-// the NBSP rule, applied alike to the other two). Untouched text, including the deck's own NBSPs, zero-width
-// spaces and line breaks, is never rewritten, so the splice stays minimal.
+// the NBSP rule, applied alike to the other two), and the changed region holds more of that character than
+// the old text's changed region did. The count matters when one commit changed a run in two places: the
+// region then spans the untouched text between them, and a line break or NBSP the run already had there must
+// stay (in a <pre> a space for its line break is a visible change the author never made). Untouched text,
+// including the deck's own NBSPs, zero-width spaces and line breaks, is never rewritten, so the splice stays
+// minimal.
 
 const NBSP = 0x00a0;
 const ZWSP = 0x200b;
@@ -64,6 +68,27 @@ function oldHasSameAt(before: string, span: ChangedSpan, i: number, code: number
   return false;
 }
 
+function countIn(s: string, from: number, to: number, code: number): number {
+  let n = 0;
+  for (let i = from; i < to; i++) if (s.charCodeAt(i) === code) n++;
+  return n;
+}
+
+/**
+ * Whether the new text's character `code` at index i (in the changed region) was there before: at the same
+ * position relative to the unchanged prefix or suffix, or, when one commit changed the run in two places,
+ * because the changed region holds no more of that character than the old one did (the edit added none).
+ */
+function keptAt(before: string, after: string, span: ChangedSpan, i: number, code: number, counts: Map<number, boolean>): boolean {
+  if (oldHasSameAt(before, span, i, code)) return true;
+  let noneAdded = counts.get(code);
+  if (noneAdded === undefined) {
+    noneAdded = countIn(after, span.start, span.endAfter, code) <= countIn(before, span.start, span.endBefore, code);
+    counts.set(code, noneAdded);
+  }
+  return noneAdded;
+}
+
 /**
  * The commit clean-up (9.2 "Committing an edit" step 3, 6.3), applied to the edit field's text before the
  * diff:
@@ -78,21 +103,22 @@ export function cleanupCommit(before: string, after: string): string {
   const span = changedSpan(before, after);
   if (span.start === span.endAfter) return after; // a pure deletion introduces nothing
   let out = after.slice(0, span.start);
+  const counts = new Map<number, boolean>();
   for (let i = span.start; i < span.endAfter; i++) {
     const c = after.charCodeAt(i);
     if (c === NBSP) {
-      out += oldHasSameAt(before, span, i, NBSP) ? '\u00A0' : ' ';
+      out += keptAt(before, after, span, i, NBSP, counts) ? '\u00A0' : ' ';
     } else if (c === ZWSP || c === BOM) {
-      if (oldHasSameAt(before, span, i, c)) out += after[i];
+      if (keptAt(before, after, span, i, c, counts)) out += after[i];
       // else: inserted by the browser, dropped
     } else if (c === CR || c === LF) {
-      if (oldHasSameAt(before, span, i, c)) {
+      if (keptAt(before, after, span, i, c, counts)) {
         out += after[i];
       } else {
         // CRLF is one line break: one space. Its LF may lie in the unchanged suffix (a CR typed just before
         // an existing LF); then only the CR is new, and it becomes the space.
         out += ' ';
-        if (c === CR && i + 1 < span.endAfter && after.charCodeAt(i + 1) === LF && !oldHasSameAt(before, span, i + 1, LF)) i++;
+        if (c === CR && i + 1 < span.endAfter && after.charCodeAt(i + 1) === LF && !keptAt(before, after, span, i + 1, LF, counts)) i++;
       }
     } else {
       out += after[i];
@@ -141,12 +167,13 @@ export function smartPunctuation(before: string, after: string): string {
   if (!curlyDouble && !curlySingle) return after;
   const span = changedSpan(before, after);
   let out = after.slice(0, span.start);
+  const counts = new Map<number, boolean>();
   for (let i = span.start; i < span.endAfter; i++) {
     const c = after.charCodeAt(i);
     const prev = i > 0 ? after.charCodeAt(i - 1) : NaN;
-    if (c === 0x22 && curlyDouble && !oldHasSameAt(before, span, i, c)) {
+    if (c === 0x22 && curlyDouble && !keptAt(before, after, span, i, c, counts)) {
       out += String.fromCharCode(opensAfter(prev) ? LEFT_DOUBLE : RIGHT_DOUBLE);
-    } else if (c === 0x27 && curlySingle && !oldHasSameAt(before, span, i, c)) {
+    } else if (c === 0x27 && curlySingle && !keptAt(before, after, span, i, c, counts)) {
       out += String.fromCharCode(opensAfter(prev) ? LEFT_SINGLE : RIGHT_SINGLE);
     } else {
       out += after[i];

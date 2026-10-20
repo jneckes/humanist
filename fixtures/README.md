@@ -3,6 +3,7 @@
 | Folder | What | Committed |
 |---|---|---|
 | `decks/` | Synthetic and CSP fixture decks for Phase 0, and the reveal.js fixture (SPEC section 10, Corpus) | yes |
+| `edit/` | Edit mode in the deck view (Phase 2): `edit-overlay.html`, one element per Edit behaviour (outlines, the field and its input gate, source case, the fit guard, the picker, "Not editable", SVG text; `edit/README.md`; `test/e2e/edit-overlay-*.spec.ts`) | yes |
 | `expected/` | Coverage baselines written by `blueline map --report --json` (SPEC section 11) | yes, for committed decks only |
 | `input/` | Decks for the deck preload's input handling in the real app: key router, input guard, note card, ink (SPEC 6.2, 6.5; `input/README.md`) | yes |
 | `local/` | Josh's real decks and their baselines (SPEC section 13, question 1) | no (gitignored) |

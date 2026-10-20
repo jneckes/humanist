@@ -434,6 +434,23 @@ describe('DeckWatcher decisions (injected file system)', () => {
     expect(() => new DeckWatcher({ realpath: '/d/x.html', onExternalChange: () => undefined })).toThrow(/holder or a knownHash/);
   });
 
+  it("P2-2: a write the holder names as Blueline's own (renamed in, not yet taken) is not external either", async () => {
+    const f = new FakeFs();
+    const own = new Set<string>();
+    const doc = { knownHash: sha('a'), isOwnWrite: (h: string) => own.has(h) };
+    const seen: string[] = [];
+    const w = new DeckWatcher({ realpath: '/decks/deck.html', holder: doc, fs: f, timing: { pollMs: 60_000 }, onExternalChange: (b) => seen.push(Buffer.from(b).toString()) });
+    watchers.push(w);
+    await started(w);
+    own.add(sha('slow-fsync'));
+    f.content = 'slow-fsync';
+    f.sig = { ...f.sig, mtime: '11' };
+    f.emit('deck.html');
+    await sleep(400);
+    expect(seen).toEqual([]);
+    expect(doc.knownHash).toBe(sha('a'));
+  });
+
   it('refuses a relative path', () => {
     expect(() => new DeckWatcher({ realpath: 'deck.html', knownHash: 'x', onExternalChange: () => undefined })).toThrow(/absolute/);
   });
