@@ -148,7 +148,12 @@ function runDeckPreload(): void {
     ui = deckUi;
     bridge = deckUi;
     // Test builds only, as __blTestIpc: Edit's overlay state for the E2E tests (edit-controller.ts testState).
-    if (env.test) (globalThis as Record<string, unknown>).__blTestEdit = { state: (withMap?: boolean) => deckUi.edit.testState(withMap === true) };
+    // userName is the deck's view of the name (MainToDeck.userName after the init), as the note card shows it.
+    if (env.test) {
+      (globalThis as Record<string, unknown>).__blTestEdit = {
+        state: (withMap?: boolean) => ({ ...deckUi.edit.testState(withMap === true), userName: deckUi.userName() }),
+      };
+    }
     ipcRenderer.on(MainToDeck.init, (_e, p: unknown) => {
       deckUi.applyInit(p as DeckInit);
       h.onInit();

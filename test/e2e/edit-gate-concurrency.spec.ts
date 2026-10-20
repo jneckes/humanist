@@ -157,14 +157,30 @@ async function verbatimNotes(app: BlApp, docId: string): Promise<{ before: strin
  * with the edit kept as a verbatim note (`note`). Anything else (the edit on another element, a lost change) fails.
  */
 async function judge(o: Opened, external: string, outcome: { landed: string; noteOk: boolean }): Promise<'landed' | 'note'> {
+  // Wait for the edit's own outcome, then for the file to settle. A quiet file alone is no outcome: under the full
+  // suite's load a requeued write (9.2 Atomic write step 3) can land more than a second after the external write,
+  // and two equal reads 500 ms apart in between once made this oracle judge the external bytes alone.
+  // The note holds the exact text before and after (SPEC 10 Phase 2: "the note holds the exact before and after").
+  const hasNote = async (): Promise<boolean> =>
+    (await verbatimNotes(o.app, o.deck.docId)).some((n) => n.before === HEADING && n.after === HEADING + TYPED);
+  let decided: 'landed' | 'note';
+  try {
+    decided = await until(
+      'the edit to land or become a verbatim note',
+      async () => (fs.readFileSync(o.file, 'utf8') === outcome.landed ? 'landed' : (await hasNote()) ? 'note' : undefined),
+      30_000,
+    );
+  } catch (e) {
+    const tail = o.app.logs.filter((l) => l.startsWith('[blueline]')).slice(-30).join('\n');
+    throw new Error(`${e instanceof Error ? e.message : String(e)}; the file is:\n${fs.readFileSync(o.file, 'utf8')}\nmain's log:\n${tail}`);
+  }
   const now = await settled(o.file);
-  if (now === outcome.landed) return 'landed';
+  if (decided === 'landed') {
+    expect(now, 'nothing changes the file after the edit landed').toBe(outcome.landed);
+    return 'landed';
+  }
   expect(outcome.noteOk, `the edit did not land, and a note is not an acceptable outcome here; the file is:\n${now}`).toBe(true);
   expect(now, 'when the edit becomes a note the file is exactly what the external write left').toBe(external);
-  // The note holds the exact text before and after (SPEC 10 Phase 2: "the note holds the exact before and after").
-  await until('a verbatim note with the exact before and after', async () =>
-    (await verbatimNotes(o.app, o.deck.docId)).some((n) => n.before === HEADING && n.after === HEADING + TYPED) ? true : undefined,
-  );
   return 'note';
 }
 

@@ -9,6 +9,7 @@ import { expect, test, type Page } from '@playwright/test';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { FIXTURES, Scratch, copyInto, launchApp, resolveRunAs, sleep, type BlApp, type DeckView } from '../helpers/app';
+import { openSettings, waitConfig } from './trust-native-harness';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -315,6 +316,8 @@ test('@edit the name chip changes the name on notes: config.json, the session, t
     await input.press('Enter');
     await expect(chip).toHaveText('Ada Lovelace');
     expect((await o.app.win(o.deck.docId)).state.userName).toBe('Ada Lovelace');
+    // The open deck hears it without a reload (MainToDeck.userName): the note card's author chip.
+    await until('the deck to hear the new name', async () => ((await o.deck.editState<{ userName?: string }>()).userName === 'Ada Lovelace' ? true : undefined));
     const config = JSON.parse(fs.readFileSync(path.join(o.app.userData, 'config.json'), 'utf8')) as { name: string; personId: string };
     expect(config.name).toBe('Ada Lovelace');
     const sessionFile = (await o.app.win(o.deck.docId)).sessionFile;
@@ -329,6 +332,37 @@ test('@edit the name chip changes the name on notes: config.json, the session, t
     await input.press('Enter');
     await until('the reason', async () => ((await toasts()).some((t) => /A name is 1 to 200 characters/.test(t)) ? true : undefined));
     await expect(chip).toHaveText('Ada Lovelace');
+  } finally {
+    await close(o);
+  }
+});
+
+test('@edit Settings › General › Smart punctuation reaches an open deck without a reload: curly quotes in a curly run, then straight ones', async () => {
+  const o = await open('decks/unicode-edit-points.html');
+  try {
+    const HEAD = '<h1>Launch plan \u2014 \u201cAtlas\u201d \ud83d\ude80';
+    await enterEdit(o);
+    expect((await o.deck.editState<{ smartPunctuation?: boolean }>()).smartPunctuation, '6.3: on by default').toBe(true);
+    // 6.3: the run already uses curly quotes, so straight ones typed into it are curled.
+    await openField(o.deck, 'h1');
+    await typeKeys(o.deck, ' "a"');
+    await o.deck.key('Enter');
+    const curled = replaceOnce(o.original.toString('utf8'), `${HEAD}</h1>`, `${HEAD} \u201ca\u201d</h1>`);
+    await bytesBecome(o.file, Buffer.from(curled, 'utf8'));
+    const handshakes = (await o.app.win(o.deck.docId)).handshakes;
+    // Settings › General turns it off: config.json's defaults, and MainToDeck.settings to the open deck.
+    const { page } = await openSettings(o.app, 'general');
+    const box = page.locator('#smart-punctuation');
+    await expect(box).toBeChecked();
+    await box.click();
+    await waitConfig(o.app, (c) => (c.defaults as { smartPunctuation?: unknown } | undefined)?.smartPunctuation === false);
+    await until('the deck to hear the setting', async () => ((await o.deck.editState<{ smartPunctuation?: boolean }>()).smartPunctuation === false ? true : undefined));
+    await page.close();
+    await openField(o.deck, 'h1');
+    await typeKeys(o.deck, ' "b"');
+    await o.deck.key('Enter');
+    await bytesBecome(o.file, Buffer.from(replaceOnce(curled, '\u201ca\u201d</h1>', '\u201ca\u201d "b"</h1>'), 'utf8'));
+    expect((await o.app.win(o.deck.docId)).handshakes, 'the setting and both html-text writes needed no reload').toBe(handshakes);
   } finally {
     await close(o);
   }

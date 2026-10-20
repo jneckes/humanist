@@ -110,7 +110,7 @@ export class DeckUi {
     });
     this.notes = new NotesController(doc, win, this.overlay.host, this.card, this.ink, {
       send: (channel, op) => opts.send(channel, op),
-      userName: () => (this.init && typeof this.init.userName === 'string' ? this.init.userName : ''),
+      userName: () => this.userName(),
       currentSlide: () => this.slides.current,
       slideLabel: () => {
         const cur = this.slides.current;
@@ -200,6 +200,11 @@ export class DeckUi {
   /** MainToDeck.settings (Phase 2): the deck's settings changed after its init (6.3 Smart punctuation). */
   applySettings(p: unknown): void {
     this.edit.applySettings(p);
+  }
+
+  /** The user's name as the note card shows it (DeckInit, then MainToDeck.userName). */
+  userName(): string {
+    return this.init && typeof this.init.userName === 'string' ? this.init.userName : '';
   }
 
   /**

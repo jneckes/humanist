@@ -1802,6 +1802,7 @@ export class EditController implements FieldHost {
         : null,
       busy: this.busy(),
       paused: this.pause.active,
+      smartPunctuation: this.smart,
       map: withMap ? this.pageMap : undefined,
     };
   }

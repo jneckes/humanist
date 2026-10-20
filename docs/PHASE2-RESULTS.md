@@ -8,15 +8,15 @@ results are written by the scripts (paths under each section); they are not comm
 
 The gate item first ran its harnesses in the Linux dev container on 2026-10-19, while the other build items were
 still at work in the tree (its sections below say what each run saw). The integration step then made the pieces
-fit (the open contract requests, three fixes, the `@edit` tags), and ran every harness and suite again on the final
-tree on 2026-10-19 and 20: section "Integration" gives those numbers, and the table gives the final result.
+fit (the open contract requests, the fixes below, the `@edit` tags), and ran every harness and suite again on the
+final tree on 2026-10-19 and 20: section "Integration" gives those numbers, and the table gives the final result.
 
 | Criterion | Gate (SPEC 10 Phase 2) | Result here |
 |---|---|---|
-| Fuzz, committed fixtures | 1,000 seeded edits, the typed path, notes only by rule, every written edit through the checks and the mutation probe in Chromium, zero failures | **met**: 1,000 edits over the 47 UTF-8 committed decks: 903 written (90.3%), 72 notes by rule (7.2%), 25 no-ops (2.5%), **0 failures**; all 903 written edits passed the mutation probe on their new text (none unprobed); 18 min |
-| Fuzz, Josh's decks | the extra run | **met**: 1,000 edits over D1–D12: 897 written (89.7%), 72 notes by rule (7.2%), 31 no-ops (3.1%), **0 failures**; 896 written edits passed the mutation probe and 1 could not be probed (no visible node showed its run after the edit); 75 picked candidates (64 written); 27 min |
-| Concurrency | an external write 50 ms before the commit: the edit lands on the right text or becomes a verbatim note; the external change survives | **met**: through the app, `test/e2e/edit-gate-concurrency.spec.ts` (an unrelated change, the same text rewritten, an element inserted before the target, a change while the field stays open, a write inside the atomic write before the re-hash): 5 of 5, and 15 of 15 run three times; below the app, the queue's unit tests and the fuzz's external writes (none lost, every edit on its run or a note by rule). The window between the re-hash and the rename is the protocol's stated limit |
-| Reader-only | `npm run test:reader-only` passes with `packages/editor` removed | **not met yet**: the copy without `packages/editor`, the reader-only build, the bundle check, tsc, the unit suite (91 files, 1,766 tests on the latest tree) and the reader-only `map` pass, and the app shows Edit as unavailable. The E2E suite without `@edit` has 30 failures that are tests needing the Edit capability not yet tagged `@edit` (requested), plus 2 that fail in the full build too; the security suite has 1 such failure and 1 flake. Details below |
+| Fuzz, committed fixtures | 1,000 seeded edits, the typed path, notes only by rule, every written edit through the checks and the mutation probe in Chromium, zero failures | **met**: 1,000 edits over the 47 UTF-8 committed decks: 903 written (90.3%), 72 notes by rule (7.2%), 25 no-ops (2.5%), **0 failures**; all 903 written edits passed the mutation probe on their new text (none unprobed); 18 min. The final tree's run repeats the gate item's runs record for record (1,000 of 1,000) |
+| Fuzz, Josh's decks | the extra run | **met**: 1,000 edits over D1–D12: 894 written (89.4%), 77 notes by rule (7.7%), 29 no-ops (2.9%), **0 failures**; 892 written edits passed the mutation probe and 2 could not be probed (no visible node showed their run after the edit, both D5); 77 picked candidates (66 written); 28 min |
+| Concurrency | an external write 50 ms before the commit: the edit lands on the right text or becomes a verbatim note; the external change survives | **met**: through the app, `test/e2e/edit-gate-concurrency.spec.ts` (an unrelated change, the same text rewritten, an element inserted before the target, a change while the field stays open, a write inside the atomic write before the re-hash): 5 of 5 in each of the final full E2E runs (one earlier run's failure was the test's own oracle, fixed: see Integration), and with the typed-edit spec 24 of 24 run three times; below the app, the queue's unit tests and the fuzz's external writes (none lost, every edit on its run or a note by rule). The window between the re-hash and the rename is the protocol's stated limit |
+| Reader-only | `npm run test:reader-only` passes with `packages/editor` removed | **met**: the copy without `packages/editor`, the reader-only build, the bundle check, tsc, vitest (93 files, 1,818 tests), the reader-only `map`, the E2E suite without `@edit` (168 tests, 1 of them the known note-card ordering limit, an expected failure) and the security suite without `@edit` (57 tests, 6 expected failures, the known limits) all pass: `PASSED` in 27 min, twice |
 | Real use | Josh finishes 3 real decks using only Edit for text changes | **not started**: needs the Mac build; checklist below |
 
 ## Integration (the final tree)
@@ -33,15 +33,27 @@ The open contract requests and wiring notes of the five build items:
 - **`VerbatimWhy` gains `page-changed`** (the page re-rendered or removed the open field, P2-17), with its sentence in
   the toast; the overlay sends it instead of `invalid`.
 - **The deck follows `MainToDeck.settings` and `MainToDeck.userName`** after its init (smart punctuation from the next
-  commit; the note card's name).
+  commit; the note card's name). `edit-main-flow.spec.ts` checks both: Settings › General › Smart punctuation turned
+  off while a deck is open in Edit makes the next quote typed into a curly-quoted heading straight, with no reload
+  (the test fails when the deck ignores the message), and the name chip's new name reaches the open deck.
 - **The overlay's toasts name the real file** (`DeckInit.fileName`): the two overlay E2E tests expected the fallback
   `deck.html`.
 - **`@edit` tags and two-build tests** (P2-15): the `map`, `map-walk`, `map-matching` and `cli` tests that assert
-  mutation-probe results carry `@edit` (16 titles, 27 tests); `reader.spec.ts` (Cmd/Ctrl+1/2/3), `views-reload.spec.ts` (a file that goes
-  away and comes back) and both `trust-identity.spec.ts` tests now run in both builds and check the reader-only
-  behaviour there (`test/helpers/app.ts EDIT_BUILD`: Edit refused, no Enable editing). The probe's unit cases that
-  drive the real write queue moved to `test/unit/app/probe.edit.test.ts` and `report-probe.edit.test.ts`, so the
-  reader-only unit suite keeps the rest of `probe.test.ts` and `report.test.ts` (no file is excluded by name any more).
+  mutation-probe results carry `@edit` (16 titles, 27 tests); `reader.spec.ts` (Cmd/Ctrl+1/2/3), `views-reload.spec.ts`
+  (a file that goes away and comes back) and the first `trust-identity.spec.ts` test (another program's file saved
+  over the path) now run in both builds and check the reader-only behaviour there (`test/helpers/app.ts EDIT_BUILD`:
+  Edit refused, no Enable editing); its control test (Blueline's own atomic write keeps both switches) is `@edit`,
+  since a reader-only build never writes a deck and refuses the write. The probe's unit cases that drive the real
+  write queue moved to `test/unit/app/probe.edit.test.ts` and `report-probe.edit.test.ts`, so the reader-only unit
+  suite keeps the rest of `probe.test.ts` and `report.test.ts` (no file is excluded by name any more).
+- **Two test oracles that raced the app under load.** `edit-gate-concurrency.spec.ts` judged the file once it had
+  not changed for 500 ms; in one full-suite run the requeued write of "a write inside the atomic write" landed later
+  than that, so the oracle saw only the external bytes and waited in vain for a note. It now waits for the edit's
+  own outcome (the file holds the edit, or the exact verbatim note exists), then for the file to settle, and prints
+  main's log if neither comes. (Under four busy CPUs the requeued write landed 20 to 240 ms after the external one
+  in 12 of 12 runs.) `views-zoom.spec.ts` read session.json inside `expect.poll`, which does not retry a callback
+  that throws, before the first save had created the file (main-wiring's open issue); an absent file now reads as
+  "not yet".
 - **`preload-electron.spec.ts`**: "render agent: detection matches every fixture" failed at the Phase 1 commit too
   (checked on a `git archive` of it): the harness has no main, and `generic-hash-writeonly.html` reads its hash only
   at load, so a hash goto never moves it. The harness now does what main does there (decision D-7: the deck's own
@@ -66,7 +78,26 @@ Three fixes the runs led to:
 
 ### The suites, from a clean build
 
-{{SUITES}}
+Linux, Electron 44.7.2, 2026-10-20. `rm -rf packages/app/dist packages/cli/dist`, then `npm run build:reader-only`:
+no `dist/editor.cjs`, and against that build the reader-side specs pass (`edit-gate-reader.spec.ts`,
+`edit-main-reader.spec.ts`, `reader.spec.ts`: 4 of 4; Cmd/Ctrl+3, View › Edit and File › History say Edit is not
+available, Cmd+Z has nothing to undo, a click opens no field); then `npm run build`.
+
+| Suite | Result |
+|---|---|
+| `npx tsc -p tsconfig.json --noEmit` | 0 errors |
+| `npx vitest run` (`npm test`) | 99 files, 1,943 tests pass, 80 s; the Node fuzz among them: 1,200 edits over 44 documents, 908 written (75.7%), 242 notes by rule (20.2%), 50 no-ops, **0 failures** |
+| `vitest -c test/fuzz/vitest.config.mts` and `-c test/parity/vitest.config.mts` | 19 and 37 tests pass |
+| `npm run test:e2e` | 228 tests: 227 pass and 1 is the expected failure (the note-card ordering limit, SECURITY.md), in two consecutive runs on the final tree, 14 min each (2 workers). On the way: one run had 226 of 227 (the concurrency test's oracle, fixed above), and two more passed 227 of 227 before the Smart punctuation test was added |
+| `npm run test:security` | 60 tests: 54 pass and 6 are the expected failures (the two DNS channels, and the two drop limits in both trust states; SECURITY.md), 3.8 min; the same in two runs |
+| `npx playwright test -c test/parity/playwright.config.ts` | 9 of 9, 8.9 min |
+| `npm run package:smoke` | 17 of 17 |
+| `node packages/cli/dist/blueline.cjs check --auto` | 6 of 6 PASS |
+| typed-edit and concurrency specs, `--repeat-each 3` | 24 of 24 |
+| `node scripts/fuzz.mjs` | 1,000 edits, 903 written, 72 notes by rule, 25 no-ops, **0 failures**, 903 probed; the same 1,000 records as the gate item's runs; 18 min |
+| `node scripts/fuzz.mjs --local` | 1,000 edits, 894 written, 77 notes by rule, 29 no-ops, **0 failures**, 892 probed, 2 unprobed; 28 min |
+| `npm run test:reader-only` | `PASSED` twice, the second time on the final tree alone (27 min): vitest 93 files, 1,818 tests; E2E without `@edit` 168 tests (1 expected failure); security without `@edit` 57 tests (6 expected failures); see Reader-only gate |
+| `blueline map --report --json` | the 19 committed fixtures equal their baselines; Josh's 12 decks hold against theirs (Coverage, below) |
 
 ### Coverage (`blueline map --report --json`, on copies)
 
@@ -106,7 +137,33 @@ the page shows the edit nowhere (Open issues).
 
 ### Open issues
 
-{{OPEN}}
+Known after the integration run; none is a write to the wrong place or a lost change.
+
+- **Real use has not started** (the fourth criterion): it needs the Mac build. The checklist is below and in the
+  README.
+- **A pick can name text the deck's script replaces.** On D10 the picker's only candidate for a slide title was the
+  static text of the deck's chrome title, which the deck's script rewrites at load. The write is exact, noted, locked
+  and undoable, but after the reload the page shows the edit nowhere. Whether the picker should hide a candidate whose
+  node a script rewrote (the matcher marks it `touched`) is a product decision for Phase 3.
+- **The caret can land in text Blueline cannot place.** A label whose element also holds an unmapped glyph (D3): End
+  puts the caret after the glyph, and what is typed there lands outside every run, so it becomes a verbatim note by
+  rule (the toast says so). Correct by rule, surprising in use.
+- **A stale page on a real deck turns more edits into notes**: on Josh's decks 20 of 106 stale-version requests were
+  ambiguous by rule (repeated text that 32 characters of context do not single out). Worth watching in real use.
+- **`<pre>`, `<listing>` and `<textarea>` with a character reference right after the dropped leading newline**:
+  parse5 8 places the text node late, so the mapper leaves the run unaligned (not editable) and the queue refuses to
+  create that state (core-edit). A mapper fix would make such runs editable.
+- **Linux tested no marker copy**: the atomic writer copies no extended attributes on Linux, so neither the fuzz nor
+  the E2E suite exercised the marker copy of a write, and history snapshots on Linux carry no marker. Recheck on the
+  Mac (below).
+- **Smaller ones.** A verbatim note made from a field that holds a lone surrogate stores U+FFFD (a note cannot hold
+  one). "Also changes N other places" counts only the other nodes the matcher places exactly. A drop rewritten for
+  line breaks inserts at the selection, not at the drop point. If the history's `index.json` is damaged, the next
+  load lists no history and the one after removes the old snapshot files (the deck is never touched). There is no
+  per-document switch for smart punctuation yet (the session override is honoured). The quit wait for writes and
+  history keeps Phase 1's 3 s cap; a write still running then is atomic (fully renamed or not at all).
+- **Inherent in P2-7**: for 2 s after a real press in Edit, a compromised page can commit a change to one run or press
+  the toast's Undo (SECURITY.md, Known limits added by Phase 2).
 
 ## Environment
 
@@ -231,28 +288,33 @@ a space (step 2); an NBSP the run already had is kept, and the Node fuzz checks 
 
 ### Results: Josh's decks
 
-`node scripts/fuzz.mjs --local` (seed 1592598566, 1,000 edits, batch 24), 27 min wall time, made while the reader-only
-gate's E2E suite ran on the same machine:
+`node scripts/fuzz.mjs --local` (seed 1592598566, 1,000 edits, batch 24) on the final tree (the integration run of
+2026-10-20), 28 min wall time, made while the reader-only gate ran on the same machine:
 
 | | |
 |---|---|
 | Edits | 1,000 over D1–D12 (71 to 94 each) |
-| Written | 897 (89.7%): html-text 857, script-literal 40 |
-| Notes by rule | 72 (7.2%): escape 32 (17 characters the HTML parser reports as errors, 15 where no raw splice of the HTML text decodes to the new text), ambiguous 20 (a stale-version request whose text is in several places that the 32 characters of context did not tell apart, 16, or that is also text Blueline never writes, 4), markup 10, commitField 7 (across-runs 3, emptied 3, boundary 1), placeholder 2, a picked substring that cannot be lifted 1 |
-| No-ops | 31 (3.1%) |
+| Written | 894 (89.4%): html-text 854, script-literal 40 (no deck has a `json-literal` run) |
+| Notes by rule | 77 (7.7%): escape 35 (20 characters the HTML parser reports as errors, 15 where no raw splice of the HTML text decodes to the new text), ambiguous 22 (a stale-version request whose text is in several places that the 32 characters of context did not tell apart, 19, or that is also text Blueline never writes, 3), markup 10, commitField 7 (across-runs 3, emptied 3, boundary 1), placeholder 2, a picked substring that cannot be lifted 1 |
+| No-ops | 29 (2.9%) |
 | Failures | **0** |
-| Mutation probe | 896 edited runs in 47 probe loads, all passed; 1 not probed (D5: the walk after the edit counted no visible node of the run, so there was nothing to probe; the checks in Node passed) |
-| Picked candidates | 75 (64 written: 35 `equal`, 29 `substring`; 8 notes, 6 no-ops) |
-| Stale and concurrent | 106 stale-version requests (81 written on the right run, 25 notes by rule); 31 external writes just before an edit (29 written, 2 notes); 47 inside the atomic write (45 landed before the re-hash and the edit was written after the requeue; 2 edits were notes by rule before the write); 146 merged writes; the external change survived every one |
-| Undo and redo | 217, byte-exact both ways |
+| Mutation probe | 892 edited runs in 47 probe loads, all passed; 2 not probed (both D5: the walk after the edit counted no visible node of the run, so there was nothing to probe; the checks in Node passed) |
+| Picked candidates | 77 (66 written: 35 `equal`, 31 `substring`) |
+| Stale and concurrent | 111 stale-version requests (84 written on the right run, 27 notes by rule); 31 external writes just before an edit (28 written, 3 notes); 42 inside the atomic write (40 landed before the re-hash and the edit was written after the requeue; 2 edits were notes by rule before the write); 144 merged writes; the external change survived every one |
+| Undo and redo | 220, byte-exact both ways |
 | Walks | 59 (47 rounds); every deck walked as a generic engine with key replay |
-| Time | walks 767 s, edits 253 s (the queue maps decks of up to 1.2 MB on every write), probe 608 s |
+| Time | walks 788 s, edits 258 s (the queue maps decks of up to 1.2 MB on every write), probe 618 s |
 
-The SPEC inputs, typed / written: `&` 119/106, `<` 152/138, `>` 124/108, `"` 23/22, `'` 19/15, `\` 93/88,
-`` ` `` 15/11, `${` 41/37, `}` 41/37, `</script>` 21/18, `<!--` 21/21, emoji 25/24, tab 25/24, NBSP 114/0, `\r\n` 176/0.
+The SPEC inputs, typed / written: `&` 121/107, `<` 153/140, `>` 123/108, `"` 22/21, `'` 18/14, `\` 93/88,
+`` ` `` 15/11, `${` 46/41, `}` 42/38, `</script>` 20/18, `<!--` 23/23, emoji 24/23, tab 21/20, NBSP 120/0, `\r\n` 177/0.
 
-Josh's decks are where the picker matters (75 picks against 4 on the committed fixtures) and where a stale request
-meets repeated text: 20 of the 106 stale-version requests were refused as ambiguous, by rule, because their text
+The gate item's run on the tree before integration (the same seed) gave 897 written, 72 notes, 31 no-ops, 0 failures
+and 1 unprobed edit. The two runs were not compared record by record (that report was overwritten); the small
+difference can come from the code that changed in between (the clean-up fix below changes some commits, and with
+them the draws after them) and from what a walk sees on a deck whose animation ends at another moment (D5's ticker).
+
+Josh's decks are where the picker matters (77 picks against 4 on the committed fixtures) and where a stale request
+meets repeated text: 22 of the 111 stale-version requests were refused as ambiguous, by rule, because their text
 appears in several places and the queue could not single one out (9.2 Write protocol step 2). None was written in the
 wrong place: every written edit landed on the run it was made on, and every probed node read the new text.
 
@@ -378,14 +440,35 @@ so the gate states it as a limit rather than testing for its loss (docs/PHASE2-P
 8. **E2E** and 9. **security**: Playwright with `--grep-invert @edit` against the copy's build.
 
 Tests that need the editor are left out by convention: unit tests in `test/unit/editor/` (except
-`mapper-findings.test.ts`, which imports core only) or named `*.edit.test.ts`; `test/unit/app/probe.test.ts` and
-`report.test.ts` (they drive the probe with the real queue); Playwright tests with `@edit` in the title.
+`mapper-findings.test.ts`, which imports core only) or named `*.edit.test.ts` (the probe's cases that drive the real
+queue are in `test/unit/app/probe.edit.test.ts` and `report-probe.edit.test.ts`); Playwright tests with `@edit` in the
+title. Tests that run in both builds and check each build's behaviour read `test/helpers/app.ts EDIT_BUILD`.
 
 The gate catches what it exists to catch: with `import { createWriteQueue } from '@blueline/editor'` added to a main
 module of the copy, the reader-only build fails ("reader-only build: … imports @blueline/editor") and so does tsc
 ("Cannot find module '@blueline/editor'"), and `@blueline/editor` does not resolve from the copy.
 
-### Results
+### Results on the final tree
+
+`npm run test:reader-only -- --workers 1` on the final tree, alone on the machine (27 min). It passed the same way
+once before, 28 min while the committed fuzz ran beside it, on the tree before the last test hook was added:
+
+| Step | Result |
+|---|---|
+| copy, `node_modules` links, isolation check | pass |
+| build (`--reader-only`, the copy's own `dist`) | pass |
+| bundles | pass: no `editor.cjs`, no editor or magic-string source in any source map, no editor function in any bundle |
+| tsc (`tsconfig.reader.json`) | pass (2 s) |
+| vitest (`vitest.reader.config.ts`) | pass: 93 files, 1,818 tests (23 s) |
+| map (the copy's CLI on `single.html`) | pass |
+| E2E, `--grep-invert @edit` | pass: 168 tests (1 the expected failure of the note-card ordering limit), 23.6 min, one worker |
+| security, `--grep-invert @edit` | pass: 57 tests (6 the expected failures of the known limits), 3.4 min |
+
+The first integration run of the gate found one more test that needs the Edit capability: the control of
+`trust-identity.spec.ts` ("Blueline's own atomic write keeps both switches") calls an own write, which a reader-only
+build refuses (it never writes a deck). It is `@edit` now; every other reader-side test passed.
+
+### Results of the gate item's run (before integration)
 
 `node scripts/reader-only-check.mjs --workers 1` on the tree as it was before main-wiring's code entered it (33 min;
 the Josh's-decks fuzz ran at the same time for its first 25 min):
@@ -428,8 +511,8 @@ full build as well (the same `setSmartPunctuation`); `forged-ipc.spec.ts` "a flo
 the suite run (2,000 notes reached the cap) and passed twice when run alone in the same reader-only build, and in the
 full build: a flake under load, to watch in the integration run.
 
-So the gate's own machinery works; it passes once the 30 tests carry `@edit` and the two in-progress failures are
-fixed. The integration step reruns `npm run test:reader-only` on the final tree.
+So the gate's own machinery worked; it passed once those tests carried `@edit` and the in-progress failures were
+fixed (Results on the final tree, above).
 
 ## What to recheck on Josh's Mac
 

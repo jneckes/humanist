@@ -28,6 +28,15 @@ async function w(app: BlApp, docId: string): Promise<Win> {
   return (await app.win(docId)) as unknown as Win;
 }
 
+/** session.json's settings.readingWidth, or undefined while the file is not written yet (or mid-write). */
+function readingWidthSaved(sessionFile: string): boolean | undefined {
+  try {
+    return (JSON.parse(fs.readFileSync(sessionFile, 'utf8')) as { settings?: { readingWidth?: boolean } }).settings?.readingWidth;
+  } catch {
+    return undefined;
+  }
+}
+
 test('100% and Fill width: zoom 1 or the content width; a larger deck view scrolls with the shell\'s bars and the wheel', async () => {
   const dir = scratch.dir('views-zoom');
   const file = copyInto(path.join(FIXTURES, 'decks/generic-index.html'), dir);
@@ -117,7 +126,9 @@ test('Reading Width: a document narrows to 960 px, centred, remembered per file;
       expect(r.deckBounds.width).toBe(READING_WIDTH);
       expect(r.deckBounds.x - r.containerBounds.x).toBe(Math.floor((r.containerBounds.width - READING_WIDTH) / 2));
       await expect.poll(() => deck.eval<number>('innerWidth')).toBe(READING_WIDTH);
-      await expect.poll(() => (JSON.parse(fs.readFileSync(r.sessionFile, 'utf8')) as { settings?: { readingWidth?: boolean } }).settings?.readingWidth).toBe(true);
+      // session.json exists only once the first save lands (SessionStore.open writes nothing), and expect.poll does not
+      // retry a callback that throws: an absent file reads as "not yet".
+      await expect.poll(() => readingWidthSaved(r.sessionFile)).toBe(true);
     } finally {
       await app.close();
     }

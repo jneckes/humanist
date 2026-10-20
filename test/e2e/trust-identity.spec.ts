@@ -94,7 +94,8 @@ test('untrusted folder, no marker: another file saved over the path (temp + rena
   }
 });
 
-test("the control: Blueline's own atomic write (also a new inode) keeps both switches", async () => {
+// @edit: only a build with the Edit capability writes a deck (a reader-only build never does, and refuses the write).
+test("the control: Blueline's own atomic write (also a new inode) keeps both switches @edit", async () => {
   const t = setup();
   try {
     const { app, docId } = await openAndAllow(t);
@@ -106,7 +107,7 @@ test("the control: Blueline's own atomic write (also a new inode) keeps both swi
     await app.close();
     expect(fs.readFileSync(t.file, 'utf8')).toBe(text);
     expect(fs.statSync(t.file).ino, 'the atomic write renames a new file into place').not.toBe(ino);
-    expect(await reopen(t)).toEqual({ trust: 'protected', trustReason: UNTRUSTED, networkAllowed: true, editingAllowed: EDIT_BUILD });
+    expect(await reopen(t)).toEqual({ trust: 'protected', trustReason: UNTRUSTED, networkAllowed: true, editingAllowed: true });
   } finally {
     t.s.cleanup();
   }
