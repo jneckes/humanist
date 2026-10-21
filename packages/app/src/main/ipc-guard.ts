@@ -4,7 +4,9 @@
 // - accepts it only from a webContents it registered as a deck, render or diagnostics view, only from that
 //   view's main frame, and only while the frame's origin is `blueline://<docId>`;
 // - takes the document from the sender's registration, never from the payload;
-// - rate-limits per sender (1,000 messages a second; excess is dropped, invalid messages count too);
+// - rate-limits per document, view kind and channel: a token bucket per channel with a fixed rate and burst,
+//   refilled by the clock (1,000 messages a second, note operations 50 a second with a burst of 100; excess is
+//   dropped, invalid messages count too);
 // - validates the payload with a strict validator that rebuilds every object field by field (never
 //   spreading or assigning the parsed object), drops unknown fields, refuses `__proto__`, `constructor`
 //   and `prototype` keys anywhere, and enforces size limits;
@@ -719,26 +721,61 @@ export const DECK_CHANNEL_KINDS: Readonly<Record<string, readonly PreloadMode[]>
 // Rate limiting
 // ---------------------------------------------------------------------------------------------------
 
+/** A token bucket's fixed refill rate (tokens a second) and burst (the most it holds). */
+export interface RateSpec {
+  perSecond: number;
+  burst: number;
+}
+
+/** Deck channels without an entry in DECK_CHANNEL_RATES: 9.1's 1,000 messages a second, a second's worth of burst. */
+export const DEFAULT_DECK_RATE: Readonly<RateSpec> = Object.freeze({ perSecond: IPC_LIMITS.messagesPerSecond, burst: IPC_LIMITS.messagesPerSecond });
+
 /**
- * A token bucket per key: `perSecond` tokens, refilled continuously, burst of `perSecond`. A message
- * without a token is dropped (9.1: 1,000 messages a second).
+ * Per channel limits (DeckIpc), each per document and view kind. A note operation is the one deck message that
+ * grows what main keeps (a note in session.json) and costs main more as the notes add up, so it has a limit of
+ * its own, far above what a person does: card text is sent at most every 300 ms (preload notes.ts
+ * SAVE_DEBOUNCE_MS, about 3 a second however fast the typing), and a drawing sends one operation per finished
+ * stroke (about 10 a second at most); 50 a second with a burst of 100 leaves five times that, and a flood of
+ * note creates gets at most 100 plus 50 a second through, however slowly main gets to the messages.
+ */
+export const DECK_CHANNEL_RATES: Readonly<Record<string, Readonly<RateSpec>>> = Object.freeze({
+  [DeckToMain.note]: Object.freeze({ perSecond: 50, burst: 100 }),
+});
+
+/** Milliseconds from a monotonic clock (a wall-clock step back or forward neither stalls nor refills a bucket). */
+function monotonicMs(): number {
+  const p = (globalThis as { performance?: { now(): number } }).performance;
+  return p && typeof p.now === 'function' ? p.now() : Date.now();
+}
+
+/**
+ * A token bucket per key: `burst` tokens (default `perSecond`), refilled continuously at `perSecond` tokens a
+ * second of the clock `now` (monotonic by default). A message without a token is dropped (9.1). The refill is
+ * by the time on the clock between two messages, so how many pass in a flood is `burst` plus `perSecond` times
+ * the flood's length; a bucket left long enough is full, the same as a new one (forget() loses nothing).
  */
 export class RateLimiter {
-  private buckets = new Map<number, { tokens: number; at: number }>();
+  private readonly buckets = new Map<string | number, { tokens: number; at: number }>();
+  private readonly burst: number;
   constructor(
     private readonly perSecond: number = IPC_LIMITS.messagesPerSecond,
-    private readonly now: () => number = () => Date.now(),
-  ) {}
+    private readonly now: () => number = monotonicMs,
+    burst: number = perSecond,
+  ) {
+    if (!(Number.isFinite(perSecond) && perSecond > 0)) throw new RangeError('perSecond must be a positive number');
+    if (!(Number.isFinite(burst) && burst >= 1)) throw new RangeError('burst must be at least 1');
+    this.burst = burst;
+  }
 
-  allow(key: number): boolean {
+  allow(key: string | number): boolean {
     const t = this.now();
     let b = this.buckets.get(key);
     if (!b) {
-      b = { tokens: this.perSecond, at: t };
+      b = { tokens: this.burst, at: t };
       this.buckets.set(key, b);
     } else {
       const elapsed = Math.max(0, t - b.at);
-      b.tokens = Math.min(this.perSecond, b.tokens + (elapsed * this.perSecond) / 1000);
+      b.tokens = Math.min(this.burst, b.tokens + (elapsed * this.perSecond) / 1000);
       b.at = t;
     }
     if (b.tokens < 1) return false;
@@ -746,8 +783,13 @@ export class RateLimiter {
     return true;
   }
 
-  forget(key: number): void {
+  forget(key: string | number): void {
     this.buckets.delete(key);
+  }
+
+  /** Keys with a bucket (tests). */
+  get size(): number {
+    return this.buckets.size;
   }
 }
 
@@ -803,8 +845,14 @@ export interface DropInfo {
 
 export interface RouterOptions {
   ipcMain: IpcMainLike;
-  /** Messages per second per sender (default 1,000). */
+  /**
+   * Messages per second: per shell (ShellIpc), and per document, view kind and channel for a deck channel without
+   * an entry in `rates` (DeckIpc; default 1,000, with a burst of as many).
+   */
   perSecond?: number;
+  /** DeckIpc: per channel limits (default DECK_CHANNEL_RATES). */
+  rates?: Readonly<Record<string, Readonly<RateSpec>>>;
+  /** The clock the buckets refill by, in milliseconds (default monotonic). */
   now?: () => number;
   /** Called for each dropped message (log it, rate-limited by the caller). Never sees payload contents. */
   onDrop?: (d: DropInfo) => void;
@@ -822,21 +870,50 @@ export function isMainFrameOf(frame: FrameLike | null, wc: WebContentsLike): boo
   return frame === main || (frame.processId === main.processId && frame.routingId === main.routingId);
 }
 
+/** The rate-limit key of a document's views of one kind. */
+function bucketKey(docId: string, kind: DeckViewKind): string {
+  return `${kind}:${docId}`;
+}
+
 /**
  * The deck IPC router. main creates one, registers every deck, render and diagnostics webContents right
  * after creating it (before loading), and declares each DeckToMain channel once with `on`.
  */
 export class DeckIpc {
   private readonly views = new Map<number, { wc: WebContentsLike; docId: string; kind: DeckViewKind }>();
-  private readonly limiter: RateLimiter;
+  /**
+   * One token bucket per document, view kind and channel (a limiter per channel, keyed by document and kind): the
+   * render views of one document share theirs, and a flood on one channel takes no token from another.
+   */
+  private readonly limiters = new Map<string, RateLimiter>();
+  private readonly rates: Readonly<Record<string, Readonly<RateSpec>>>;
+  private readonly fallbackRate: Readonly<RateSpec>;
+  private readonly now?: () => number;
   private readonly ipcMain: IpcMainLike;
   private readonly onDrop?: (d: DropInfo) => void;
   private readonly channels = new Set<string>();
 
   constructor(opts: RouterOptions) {
     this.ipcMain = opts.ipcMain;
-    this.limiter = new RateLimiter(opts.perSecond ?? IPC_LIMITS.messagesPerSecond, opts.now);
+    this.rates = opts.rates ?? DECK_CHANNEL_RATES;
+    this.fallbackRate = opts.perSecond !== undefined ? { perSecond: opts.perSecond, burst: opts.perSecond } : DEFAULT_DECK_RATE;
+    this.now = opts.now;
     this.onDrop = opts.onDrop;
+  }
+
+  /** The channel's limit (DECK_CHANNEL_RATES, else 1,000 a second). */
+  rateOf(channel: string): Readonly<RateSpec> {
+    return Object.prototype.hasOwnProperty.call(this.rates, channel) ? this.rates[channel] : this.fallbackRate;
+  }
+
+  private limiterFor(channel: string): RateLimiter {
+    let l = this.limiters.get(channel);
+    if (!l) {
+      const r = this.rateOf(channel);
+      l = new RateLimiter(r.perSecond, this.now, r.burst);
+      this.limiters.set(channel, l);
+    }
+    return l;
   }
 
   /**
@@ -846,15 +923,25 @@ export class DeckIpc {
   registerDeckView(wc: WebContentsLike, info: { docId: string; kind: DeckViewKind }): void {
     if (!/^[0-9a-f]{8,64}$/.test(info.docId)) throw new Error('invalid docId');
     if (!['deck', 'render', 'diagnostics'].includes(info.kind)) throw new Error('invalid kind');
-    const fresh = !this.views.has(wc.id);
+    const before = this.views.get(wc.id);
+    const fresh = !before;
     this.views.set(wc.id, { wc, docId: info.docId, kind: info.kind });
+    if (before && (before.docId !== info.docId || before.kind !== info.kind)) this.forgetIfUnused(before.docId, before.kind);
     if (fresh) wc.once('destroyed', () => this.unregisterDeckView(wc));
   }
 
   unregisterDeckView(wc: WebContentsLike): void {
     const v = this.views.get(wc.id);
-    if (v && v.wc === wc) this.views.delete(wc.id);
-    this.limiter.forget(wc.id);
+    if (!v || v.wc !== wc) return;
+    this.views.delete(wc.id);
+    this.forgetIfUnused(v.docId, v.kind);
+  }
+
+  /** Drops the buckets of a document's view kind once no registered view of it is left (a full bucket is a new one). */
+  private forgetIfUnused(docId: string, kind: DeckViewKind): void {
+    for (const v of this.views.values()) if (v.docId === docId && v.kind === kind) return;
+    const key = bucketKey(docId, kind);
+    for (const l of this.limiters.values()) l.forget(key);
   }
 
   /**
@@ -910,7 +997,7 @@ export class DeckIpc {
     const from = this.check(event, out);
     if (!from) return this.drop(channel, out.reason ?? 'unregistered', wcId);
     // Count every message from a registered sender, valid or not, so a flood of junk is throttled too.
-    if (!this.limiter.allow(from.webContentsId)) return this.drop(channel, 'rate', wcId);
+    if (!this.limiterFor(channel).allow(bucketKey(from.docId, from.kind))) return this.drop(channel, 'rate', wcId);
     if (!kinds.includes(from.kind)) return this.drop(channel, 'kind', wcId);
     if (args.length > 1) return this.drop(channel, 'args', wcId);
     const v = validate(args[0]);

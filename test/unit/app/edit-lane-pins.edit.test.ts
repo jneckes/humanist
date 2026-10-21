@@ -32,6 +32,8 @@ const deck = (one: string, rev: number) =>
     '<html><head><title>Team</title></head><body>',
     `<section class="card"><h2>Alice Anderson</h2><p class="role">${one}</p></section>`,
     '<section class="card"><h2>Bob Brown-Baker</h2><p class="role">Owner</p></section>',
+    // Far from the cards: a stale edit is written only where the text on both sides is unchanged (anchors.ts, E-1).
+    ...Array.from({ length: 4 }, (_, i) => `<p>Filler line ${i}: words that stay as they are.</p>`),
     `<p>rev ${rev}</p>`,
     '</body></html>',
     '',

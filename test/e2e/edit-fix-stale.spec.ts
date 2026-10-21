@@ -2,7 +2,8 @@
 // Write protocol steps 1-2, 10 Phase 2 Concurrency). Real clicks and keys on the built app:
 //   - the author's own quick edits: a field never opens on a version with an unanswered commit of this page, so a
 //     click from one field into the next waits for the first write and opens on the new version;
-//   - another program's change near the edited copy: the queue places the edit by position, never by context;
+//   - another program's change near the edited copy: the queue places the edit by position, never by context, and
+//     writes it only where the text on both sides confirms the place (else a verbatim note);
 //   - a field held open across 8 external saves: the lane keeps its version, and the commit is a verbatim note.
 //
 // Every test needs the Edit capability: @edit in each title (the reader-only gate leaves them out).
@@ -100,8 +101,11 @@ test('@edit a 2.2 MB deck: Enter on slide 2\'s subtitle, then a click on slide 2
   }
 });
 
+// Finding 0's own case: the 32-character context wrote it into slide 1. Placed by position it landed on slide 2, but a
+// change right next to the run cannot be told from the run being replaced and a copy put beside it (the hardening
+// round, packages/editor/src/anchors.ts): it is a verbatim note now, and never written into slide 1.
 for (const before of [50, 1500]) {
-  test(`@edit another program rewrites slide 2's subtitle ${before} ms before Enter: slide 2's heading edit lands on slide 2`, async () => {
+  test(`@edit another program rewrites slide 2's subtitle ${before} ms before Enter: slide 2's heading edit is a verbatim note, never written into slide 1`, async () => {
     const o = await openDeck({ fixture: path.join(FIXTURES, 'edit/dup-slides.html'), name: 'dup.html' });
     try {
       await openFieldAt(o.deck, '#s2 h2');
@@ -112,11 +116,14 @@ for (const before of [50, 1500]) {
       externalSave(o, changed);
       await sleep(before);
       await o.deck.key('Enter');
-      await until('the write', async () => (fs.readFileSync(o.file, 'utf8').includes('Key takeaways two') ? true : undefined), 20_000);
+      const notes = await until('the verbatim note', async () => {
+        const n = (await o.app.win(o.deck.docId)).state.notes;
+        return n.length > 0 ? n : undefined;
+      });
+      expect(notes.map((x) => [x.kind, x.before, x.after])).toEqual([['verbatim', 'Key takeaways', 'Key takeaways two']]);
       const now = await settled(o.file);
-      expect(slideOf(now, 'Key takeaways two')).toBe('slide 2');
-      expect(now).toContain('Agent rewrote this subtitle');
-      expect(now.slice(0, now.indexOf('<section id="s2">'))).toBe(o.original.slice(0, s2));
+      expect(now).toBe(changed);
+      expect(slideOf(now, 'Key takeaways two')).toBe('nowhere');
     } finally {
       await closeAll(o);
     }

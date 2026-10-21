@@ -9,6 +9,11 @@ import { bytesEqual, MemIO, requestFor, sha256 } from './helpers';
 const FIXTURES = join(__dirname, '../../../fixtures/decks');
 const doc = (body: string): string => `<!doctype html><html><head></head><body>${body}</body></html>`;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/**
+ * Unchanged text between a run and another program's change: a stale edit is written only where the text on both
+ * sides of it, at least ANCHOR_FLOOR (128) characters, is as it was (packages/editor/src/anchors.ts, E-1).
+ */
+const far = (k: string): string => Array.from({ length: 4 }, (_, i) => `<p>Filler ${k} line ${i}: words that stay as they are.</p>`).join('');
 
 describe('write queue: the write protocol (9.2)', () => {
   it('writes an edit, returns the record, the new version, the run and its line, and runs afterWrite first', async () => {
@@ -93,48 +98,72 @@ describe('write queue: the write protocol (9.2)', () => {
   });
 
   it('runs operations one at a time, in order (per-deck serial queue)', async () => {
-    const io = new MemIO(doc('<p>One</p><p>Two</p><p>Three</p>'));
+    const io = new MemIO(doc(`<p>One</p>${far('a')}<p>Two</p>${far('b')}<p>Three</p>`));
     const q = createWriteQueue(io);
     const map = await q.refresh();
-    // All three were made against the same version; the 2nd and 3rd find their run again by text.
+    // All three were made against the same version; the 2nd and 3rd are placed by position.
     const outs = await Promise.all([
       q.edit(requestFor(map, 'One', 'One!')),
       q.edit(requestFor(map, 'Two', 'Two!')),
       q.edit(requestFor(map, 'Three', 'Three!')),
     ]);
     expect(outs.map((o) => o.ok)).toEqual([true, true, true]);
-    expect(io.text).toBe(doc('<p>One!</p><p>Two!</p><p>Three!</p>'));
+    expect(io.text).toBe(doc(`<p>One!</p>${far('a')}<p>Two!</p>${far('b')}<p>Three!</p>`));
     expect(io.writes).toBe(3);
   });
 });
 
 describe('write queue: the version check (9.2 Write protocol step 2)', () => {
   it('a stale version with a unique beforeText is applied at the right place', async () => {
-    const io = new MemIO(doc('<p>Alpha</p><p>Beta</p>'));
+    const io = new MemIO(doc(`<p>Alpha</p>${far('a')}<p>Beta</p>`));
     const q = createWriteQueue(io);
     const map = await q.refresh();
     // An external change shifts every offset after it.
-    io.external(doc('<h1>New heading</h1><p>Alpha</p><p>Beta</p>'));
+    io.external(doc(`<h1>New heading</h1><p>Alpha</p>${far('a')}<p>Beta</p>`));
     const out = await q.edit(requestFor(map, 'Beta', 'Beta two'));
     expect(out.ok).toBe(true);
-    expect(io.text).toBe(doc('<h1>New heading</h1><p>Alpha</p><p>Beta two</p>'));
+    expect(io.text).toBe(doc(`<h1>New heading</h1><p>Alpha</p>${far('a')}<p>Beta two</p>`));
   });
 
-  it('duplicates are told apart by position even when the change lands inside both runs\' 32-character context (E-1)', async () => {
-    // A change right after the second copy: inside both runs' 32-character context, so context cannot tell them
-    // apart; their places can, because what tells them apart (what comes before each) is unchanged.
-    const changed = doc('<p>Owner</p><p>Owner</p><div>An agent added this</div>');
-    for (const [which, want] of [
-      [1, doc('<p>Owner</p><p>Owner X</p><div>An agent added this</div>')],
-      [0, doc('<p>Owner X</p><p>Owner</p><div>An agent added this</div>')],
-    ] as const) {
-      const io = new MemIO(doc('<p>Owner</p><p>Owner</p>'));
+  it('the same text, unique, with a change next to it: a note, because a change there cannot be told from the run being replaced and a copy put beside it (E-1, the hardening round)', async () => {
+    const A = doc(`<p>Alpha</p>${far('a')}<p>Beta</p>${far('b')}`);
+    for (const C of [A.replace('<p>Beta</p>', '<h1>New heading</h1><p>Beta</p>'), A.replace('<p>Beta</p>', '<p>Beta</p><p>Gamma</p>')]) {
+      const io = new MemIO(A);
+      const q = createWriteQueue(io);
+      const map = await q.refresh();
+      io.external(C);
+      expect(await q.edit(requestFor(map, 'Beta', 'Beta two'))).toMatchObject({ ok: false, code: 'ambiguous', verbatim: { before: 'Beta', after: 'Beta two' } });
+      expect(io.text).toBe(C);
+    }
+  });
+
+  it('duplicates are told apart by position, never by their 32-character context (E-1)', async () => {
+    // A change a little after the second copy, past both runs' 32-character context: context cannot tell them
+    // apart; their places can, because the text on both sides of each is unchanged.
+    const base = doc(`<p>Owner</p>${far('a')}<p>Owner</p>${far('b')}`);
+    const changed = base.replace('</body>', '<div>An agent added this</div></body>');
+    for (const which of [1, 0]) {
+      const io = new MemIO(base);
       const q = createWriteQueue(io);
       const map = await q.refresh();
       const run = map.runs.filter((r) => r.value === 'Owner')[which];
       io.external(changed);
       expect(await q.edit({ version: map.version, runId: run.id, beforeText: 'Owner', afterText: 'Owner X' })).toMatchObject({ ok: true, merged: true });
-      expect(io.text).toBe(want);
+      const at = changed.split('<p>Owner</p>');
+      expect(io.text).toBe(which === 0 ? `${at[0]}<p>Owner X</p>${at[1]}<p>Owner</p>${at[2]}` : `${at[0]}<p>Owner</p>${at[1]}<p>Owner X</p>${at[2]}`);
+    }
+  });
+
+  it('a change right beside one of two copies: both are notes, never the other copy (E-1, the hardening round)', async () => {
+    const changed = doc('<p>Owner</p><p>Owner</p><div>An agent added this</div>');
+    for (const which of [1, 0]) {
+      const io = new MemIO(doc('<p>Owner</p><p>Owner</p>'));
+      const q = createWriteQueue(io);
+      const map = await q.refresh();
+      const run = map.runs.filter((r) => r.value === 'Owner')[which];
+      io.external(changed);
+      expect(await q.edit({ version: map.version, runId: run.id, beforeText: 'Owner', afterText: 'Owner X' })).toMatchObject({ ok: false, code: 'ambiguous' });
+      expect(io.text).toBe(changed);
     }
   });
 
@@ -157,7 +186,7 @@ describe('write queue: the version check (9.2 Write protocol step 2)', () => {
   });
 
   it('duplicates are told apart by 32 characters of recorded context on each side', async () => {
-    const filler = 'x'.repeat(40);
+    const filler = 'x'.repeat(80);
     const base = doc(`<p>Owner</p><i>${filler} first ${filler}</i><p>Owner</p><i>${filler} second ${filler}</i>`);
     const io = new MemIO(base);
     const q = createWriteQueue(io);
@@ -235,7 +264,7 @@ describe('write queue: findings 5 and 0 through the real queue', () => {
   });
 
   it('a stale version: a beforeText that is also a shadow value is placed by position, never by its text (D-a, E-1)', async () => {
-    const filler = 'z'.repeat(40);
+    const filler = 'z'.repeat(160);
     const base = doc(`<p>${filler}</p><script>var s = 'Revenue';</script><p>${filler}</p>`);
     const io = new MemIO(base);
     const q = createWriteQueue(io);
@@ -256,13 +285,13 @@ describe('write queue: findings 5 and 0 through the real queue', () => {
 
 describe('write queue: atomic write conflicts (9.2 Atomic write step 3)', () => {
   it('a write that lands between the read and the rename aborts and requeues; the edit lands on the right text', async () => {
-    const io = new MemIO(doc('<p>Alpha</p><p>Beta</p>'));
+    const io = new MemIO(doc(`<p>Alpha</p>${far('a')}<p>Beta</p>`));
     const q = createWriteQueue(io);
     const map = await q.refresh();
-    io.beforeWrite = () => io.external(doc('<p>Alpha</p><p>Gamma</p><p>Beta</p>'));
+    io.beforeWrite = () => io.external(doc(`<p>Alpha</p><p>Gamma</p>${far('a')}<p>Beta</p>`));
     const out = await q.edit(requestFor(map, 'Beta', 'Beta!'));
     expect(out.ok).toBe(true);
-    expect(io.text).toBe(doc('<p>Alpha</p><p>Gamma</p><p>Beta!</p>'));
+    expect(io.text).toBe(doc(`<p>Alpha</p><p>Gamma</p>${far('a')}<p>Beta!</p>`));
   });
 
   it('a conflicting write that changes the target text becomes verbatim and survives', async () => {
@@ -276,14 +305,14 @@ describe('write queue: atomic write conflicts (9.2 Atomic write step 3)', () => 
   });
 
   it('gives up after maxRetries conflicts', async () => {
-    const io = new MemIO(doc('<p>Alpha</p>'));
+    const io = new MemIO(doc(`<p>Alpha</p>${far('a')}`));
     const q = createWriteQueue(io, { maxRetries: 2 });
     const map = await q.refresh();
     let n = 0;
     const realWrite = io.atomicWrite.bind(io);
     io.atomicWrite = async (bytes, hash) => {
       n++;
-      io.external(doc(`<p>Alpha</p><!-- ${n} -->`));
+      io.external(doc(`<p>Alpha</p>${far('a')}<!-- ${n} -->`));
       return realWrite(bytes, hash);
     };
     const out = await q.edit(requestFor(map, 'Alpha', 'Alpha!'));
@@ -303,7 +332,7 @@ describe('write queue: atomic write conflicts (9.2 Atomic write step 3)', () => 
 });
 
 describe('concurrency gate (section 10, Phase 2): an external write lands 50 ms before the edit commits', () => {
-  const base = doc('<h1>Quarterly plan</h1>\n<p>Revenue grew in every region.</p>\n<p>Next steps follow.</p>');
+  const base = doc(`<h1>Quarterly plan</h1>\n<p>Revenue grew in every region.</p>\n${far('a')}\n<p>Next steps follow.</p>`);
 
   async function race(external: string, before: string, after: string) {
     const io = new MemIO(base);
@@ -371,7 +400,7 @@ describe('concurrency gate (section 10, Phase 2): an external write lands 50 ms 
     try {
       const q = createWriteQueue(io);
       const map = await q.refresh();
-      const req = requestFor(map, 'Revenue grew in every region.', 'Revenue grew in every single region.');
+      const req = requestFor(map, 'Next steps follow.', 'Next steps follow below.');
       const external = base.replace('</h1>', '</h1>\n<p>Inserted by the agent.</p>');
       setTimeout(() => {
         writeFileSync(join(dir, 'ext.tmp'), external);
@@ -380,7 +409,7 @@ describe('concurrency gate (section 10, Phase 2): an external write lands 50 ms 
       await sleep(60);
       const out = await q.edit(req);
       expect(out.ok).toBe(true);
-      expect(decodeDeck(new Uint8Array(rf(path))).src).toBe(external.replace('every region', 'every single region'));
+      expect(decodeDeck(new Uint8Array(rf(path))).src).toBe(external.replace('Next steps follow.', 'Next steps follow below.'));
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

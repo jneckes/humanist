@@ -216,21 +216,25 @@ one run of the version it shows, and only right after the user pressed a key or 
   away, stopped being UTF-8 or became Protected is kept as a verbatim note with its exact texts (app data only).
   The picker's request and the toast's Undo need Edit and a press within 2 s too.
 - **What a write can be.** Main turns a commit into an `EditRequest` (version, run id, the run's text before and
-  after); the write queue re-reads the file and places the run by position: when the file changed since that
-  version, a diff of that version to the current bytes maps the run's range, and the run must be unchanged there
-  (neither its text nor the 32 characters of context around it ever chooses between copies). When the text is in
-  several places, the diff must also account for every copy, each told apart from the others by text it left
-  unchanged around it, and no other copy may carry the edited one's surroundings (editor/place.ts): a moved or
-  copied templated slide is a note, never a write into another slide. A version the queue does not hold, a diff
-  that runs out of time, a change that overlaps the run, or a place the text around it does not confirm makes the
-  commit a verbatim note. Main keeps the
-  version of every open field and of the page shown until its commit is answered. The queue then plans the smallest
-  splice inside that run, encodes it (`&` and `<` as references in
-  HTML text; the 9.2 escapes in a literal; `<` or `&` into a plain literal, which a page may set as HTML, becomes a
-  note instead), and verifies the exact bytes before they are renamed in: the run holds the new text, nothing else
-  moved, no new parse error, and for literals the script still parses, the literal cooks to the new text and the
-  script ranges are unchanged (decision P2-1). A bad file never lands. Whatever the queue cannot place or verify
-  becomes a `verbatim` note with the user's exact words, and the file stays byte-identical.
+  after); the write queue re-reads the file and places the run by position: when the file changed since that version,
+  a diff of that version to the current bytes maps the run's range, and the run must be unchanged there (neither its
+  text nor the 32 characters of context around it ever chooses between copies). The text on both sides of that place
+  must then be the run's old surroundings, out past what made them unique in that version and at least 128 characters,
+  found nowhere else in the file now, and no copy the other program added may carry those surroundings
+  (editor/anchors.ts, editor/place.ts; the hardening round): a moved, copied, re-wrapped or respelled copy, or one
+  slid next to the author's changed text, is a note, never a write into another slide. Undo and redo case 2 are placed
+  the same way, from the version the write made. (Blueline's own writes in between move the run exactly by their
+  splices; only another program's change is placed this way.) A version the queue does not hold, a diff that runs out
+  of time, a change that overlaps the run, or a place the text around it does not confirm makes the commit a verbatim
+  note. Right before the write, the file's trust must still be the window's (D-1): a write that would replace bytes
+  Blueline has not decided may be edited (a marked download saved over the deck while a field was open), or one made
+  while a trust change waits for its reopen, is a verbatim note. Main keeps the version of every open field and of the
+  page shown until its commit is answered. The queue then plans the smallest splice inside that run, encodes it (`&`
+  and `<` as references in HTML text; the 9.2 escapes in a literal; `<` or `&` into a plain literal, which a page may
+  set as HTML, becomes a note instead), and verifies the exact bytes before they are renamed in: the run holds the new
+  text, nothing else moved, no new parse error, and for literals the script still parses, the literal cooks to the new
+  text and the script ranges are unchanged (decision P2-1). A bad file never lands. Whatever the queue cannot place or
+  verify becomes a `verbatim` note with the user's exact words, and the file stays byte-identical.
 - **What a deck cannot make Blueline write:** anything outside one run's text; markup (it is always encoded or
   escaped); a write in Read or Review, in Protected view before Enable editing, in a reader-only build, or to a file
   that is not UTF-8; a write to another file (main writes only the realpath it opened); an undo record (main holds
@@ -275,6 +279,18 @@ one run of the version it shows, and only right after the user pressed a key or 
   commit its open field; before a close or a quit it waits for the answer (at most 3 s). The answer is an ordinary
   `commit`, checked as above, and taken for 5 s after the request even when the field's authorisation otherwise
   ended (Known limits).
+- **Rate limits** (9.1; changed in the hardening round). Every message from a deck, render or diagnostics view counts,
+  valid or not, against a token bucket per document, view kind and channel, refilled by a monotonic clock
+  (`ipc-guard.ts` `DECK_CHANNEL_RATES`): a note operation 50 a second with a burst of 100, every other deck channel
+  1,000 a second with a burst of 1,000; a message without a token is dropped. A flood of note creates gets at most 100
+  plus 50 a second through, however slowly main handles them. Before the round there was one bucket of 1,000 a second
+  per view, shared by every channel and refilled while main was busy, so a flood could run to the 2,000-note cap (it
+  did in 5 of 10 runs of the round's baseline). A person stays far below the note limit: card text is sent at most
+  every 300 ms and a drawing sends one operation per finished stroke. Because the buckets are per channel, a view's
+  channels together may pass more than 9.1's example of 1,000 messages a second; each channel alone keeps it. The
+  shell's router keeps one bucket of 1,000 a second per shell. `forged-ipc.spec.ts` floods 5,000 note creates and
+  requires at most 100 plus 50 a second of the flood's length to get through (`test/unit/app/ipc-guard.test.ts` checks
+  the buckets with a fake clock that main's work advances).
 
 `test/security/edit-forged.spec.ts` forges every edit message from a Trusted deck in Edit (begin, commit with an
 edit, a verbatim note, a pick and a no-op, candidates, undo tokens, busy) and from a Protected one right after a

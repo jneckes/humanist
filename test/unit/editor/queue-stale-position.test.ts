@@ -29,34 +29,28 @@ function noted(out: WriteOutcome): string {
 }
 
 describe('a stale edit on duplicated text lands on the run the client edited, or is a note (E-1, finding 0)', () => {
-  it('another program changed slide 2\'s subtitle: slide 2\'s heading edit is written into slide 2, never slide 1', async () => {
-    const A = deck();
-    const io = new MemIO(A);
-    const q = createWriteQueue(io);
-    const mA = await q.refresh();
-    const changed = deck({ s2: 'Agent rewrote this subtitle' });
-    io.external(changed);
-    const out = await q.edit(headingEdit(mA, 1));
-    expect(out).toMatchObject({ ok: true, merged: true });
-    const [one, two] = slides(io.text);
-    expect(one).not.toContain('Key takeaways two');
-    expect(two).toContain('<h2 class="title">Key takeaways two</h2>');
-    expect(two).toContain('Agent rewrote this subtitle');
-  });
+  // Finding 0's own cases: the 32-character context wrote them into slide 1. Placed by position they landed right,
+  // but a change right next to the run cannot be told from the run being replaced and a copy put beside it (the
+  // hardening round): they are notes now, and never written into the other slide.
+  const cases: [string, Parameters<typeof deck>[0], 0 | 1][] = [
+    ["slide 2's subtitle changed, slide 2's heading edited", { s2: 'Agent rewrote this subtitle' }, 1],
+    ["the mirror: slide 1's subtitle changed, slide 1's heading edited", { s1: 'Agent rewrote this subtitle' }, 0],
+    ["the kicker of slide 2 changed (the context before the heading), slide 2's heading edited", { k2: 'Section recap' }, 1],
+  ];
+  for (const [name, change, which] of cases) {
+    it(`${name}: a note, never written into the other slide`, async () => {
+      const io = new MemIO(deck());
+      const q = createWriteQueue(io);
+      const mA = await q.refresh();
+      const changed = deck(change);
+      io.external(changed);
+      const out = await q.edit(headingEdit(mA, which));
+      expect(out).toMatchObject({ ok: false, code: 'ambiguous', verbatim: { before: 'Key takeaways', after: 'Key takeaways two' } });
+      expect(io.text).toBe(changed);
+    });
+  }
 
-  it('the mirror: slide 1\'s heading, slide 1\'s subtitle changed, lands in slide 1', async () => {
-    const io = new MemIO(deck());
-    const q = createWriteQueue(io);
-    const mA = await q.refresh();
-    io.external(deck({ s1: 'Agent rewrote this subtitle' }));
-    const out = await q.edit(headingEdit(mA, 0));
-    expect(out.ok).toBe(true);
-    const [one, two] = slides(io.text);
-    expect(one).toContain('Key takeaways two');
-    expect(two).not.toContain('Key takeaways two');
-  });
-
-  it('the author\'s own earlier write (\'Not \' at the start of slide 2\'s subtitle), then a request still on the old version', async () => {
+  it('the author\'s own earlier write (\'Not \' at the start of slide 2\'s subtitle), then a request still on the old version: placed exactly through that write, on slide 2', async () => {
     const io = new MemIO(deck());
     const q = createWriteQueue(io);
     const mA = await q.refresh();
@@ -70,27 +64,20 @@ describe('a stale edit on duplicated text lands on the run the client edited, or
     expect(two).toContain('Not Same subtitle');
   });
 
-  it('the kicker of slide 2 changed (the context before the heading): still slide 2', async () => {
-    const io = new MemIO(deck());
-    const q = createWriteQueue(io);
-    const mA = await q.refresh();
-    io.external(deck({ k2: 'Section recap' }));
-    const out = await q.edit(headingEdit(mA, 1));
-    expect(out.ok).toBe(true);
-    const [one, two] = slides(io.text);
-    expect(one).not.toContain('Key takeaways two');
-    expect(two).toContain('Key takeaways two');
-  });
-
-  it('a change far away still lands right', async () => {
-    const A = deck();
-    const io = new MemIO(A);
-    const q = createWriteQueue(io);
-    const mA = await q.refresh();
-    io.external(A.replace('Body text 2', 'Body text 2 changed'));
-    const out = await q.edit(headingEdit(mA, 1));
-    expect(out.ok).toBe(true);
-    expect(slides(io.text)[1]).toContain('Key takeaways two');
+  it('a change far away still lands right, on either copy', async () => {
+    const filler = Array.from({ length: 6 }, (_, i) => `<p>line ${i} of the filler text</p>`).join('\n');
+    const A = deck({ tail: filler });
+    for (const which of [0, 1] as const) {
+      const io = new MemIO(A);
+      const q = createWriteQueue(io);
+      const mA = await q.refresh();
+      io.external(A.replace('line 5 of the filler', 'line 5 of the changed filler'));
+      const out = await q.edit(headingEdit(mA, which));
+      expect(out.ok).toBe(true);
+      const [one, two] = slides(io.text);
+      expect(one.includes('Key takeaways two')).toBe(which === 0);
+      expect(two.includes('Key takeaways two')).toBe(which === 1);
+    }
   });
 
   it('the copy being edited was rewritten: a verbatim note (ambiguous), the file is the other program\'s', async () => {
@@ -109,8 +96,9 @@ describe('a stale edit on duplicated text lands on the run the client edited, or
 });
 
 describe('the versions a client holds are pinned; an unknown version is a note (E-1, findings 1 and 22)', () => {
+  const pad = (k: string) => Array.from({ length: 4 }, (_, i) => `<p>Filler ${k} line ${i}: words that stay as they are.</p>`).join('\n');
   const agenda = (n: number, b: string) =>
-    `<!doctype html><html><head><meta charset="utf-8"><title>T</title></head><body>\n<h2 id="a">Agenda</h2>\n<p>save ${n}</p>\n<h2 id="b">${b}</h2>\n</body></html>\n`;
+    `<!doctype html><html><head><meta charset="utf-8"><title>T</title></head><body>\n${pad('a')}\n<h2 id="a">Agenda</h2>\n<p>save ${n}</p>\n${pad('b')}\n<h2 id="b">${b}</h2>\n${pad('c')}\n</body></html>\n`;
 
   async function evicted(n: number, pin: boolean) {
     const v0src = agenda(0, 'Agenda');
@@ -210,7 +198,7 @@ describe('what cannot be placed by position is a note (E-1)', () => {
     const io = new MemIO(A);
     const q = createWriteQueue(io, { diffTimeoutSec: 1e-9 });
     const mA = await q.refresh();
-    const changed = deck({ s2: 'Agent rewrote this subtitle', tail: filler.replace(/of the/g, 'in the') });
+    const changed = deck({ k1: 'Section recap', tail: filler.replace(/(line [1-9]\d+ )of the/g, '$1in the') });
     io.external(changed);
     const out = await q.edit(headingEdit(mA, 1));
     expect(out).toMatchObject({ ok: false, code: 'stale' });

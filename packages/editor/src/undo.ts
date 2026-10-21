@@ -7,7 +7,9 @@
 // re-escapes, so an undo restores the previous bytes exactly. Cmd+Z never restores a whole-file snapshot
 // (that is the separate "Restore deck to <time>" command: WriteQueue.restore, P2-11).
 
+import { mapRangesClean } from '@blueline/core/locked-spans';
 import type { RefusalCode, WriteRecord } from '@blueline/core/types';
+import { confirmPlace } from './anchors';
 
 /** Characters of source context kept on each side of a write (9.2 Undo and redo). */
 export const CONTEXT = 32;
@@ -111,8 +113,15 @@ export function isWriteRecord(r: unknown): r is WriteRecord {
  * A context shorter than 32 characters reached the start (or end) of the file when the write was made, so
  * the match must too: that keeps a short context from matching somewhere it never was.
  * For redo, pass swapRecord(record).
+ *
+ * Case 2 is placed by POSITION as a stale edit is (lead decision E-1; the hardening round after the repair): text
+ * and its 32 characters of context alone never pick a place. An edit that makes the edited copy read like another
+ * copy, then a change near it, left the needle only at the twin, and the undo wrote there ("Revenue!" went into
+ * another slide). So `base`, the source of record.versionAfter, must be known: the write's place in it is mapped to
+ * the current source through a diff, it must be exactly the needle's one place, and the text on both sides must
+ * confirm it (confirmPlace). Without `base`, or when any of that fails, it is case 3.
  */
-export function planUndo(src: string, record: WriteRecord, currentVersion: string): UndoPlan | UndoRefusal {
+export function planUndo(src: string, record: WriteRecord, currentVersion: string, base?: string | null, opts: { timeoutSec?: number } = {}): UndoPlan | UndoRefusal {
   if (!isWriteRecord(record)) return { ok: false, why: 'not a write record', canMakeNote: false, code: 'refused' };
   const { start, rawBefore, rawAfter, prefix, suffix } = record;
   if (currentVersion === record.versionAfter) {
@@ -135,6 +144,13 @@ export function planUndo(src: string, record: WriteRecord, currentVersion: strin
     count++;
     if (count > 1) break;
   }
-  if (count !== 1) return { ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' };
-  return { ok: true, case: 2, start: found + prefix.length, rawBefore: rawAfter, rawAfter: rawBefore };
+  const refuse: UndoRefusal = { ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' };
+  if (count !== 1) return refuse;
+  const at = found + prefix.length;
+  // By position: the write's place in the version it made, mapped to this one (E-1).
+  if (typeof base !== 'string' || start + rawAfter.length > base.length || base.slice(start, start + rawAfter.length) !== rawAfter) return refuse;
+  const m = mapRangesClean(base, src, [[start, start + rawAfter.length]], opts)[0];
+  if (!m.ok || m.start !== at || m.end !== at + rawAfter.length) return refuse;
+  if (!confirmPlace(base, { start, end: start + rawAfter.length }, src, { start: m.start, end: m.end }).ok) return refuse;
+  return { ok: true, case: 2, start: at, rawBefore: rawAfter, rawAfter: rawBefore };
 }

@@ -17,6 +17,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DeckToMain, ShellToMain } from '../../packages/core/src/ipc';
 import { EditDeckToMain } from '../../packages/core/src/ipc-edit';
+import { DECK_CHANNEL_RATES } from '../../packages/app/src/main/ipc-guard';
 import { Scratch, launchApp, resolveRunAs, sleep, type BlApp, type DeckView, type WinInfo } from '../helpers/app';
 import { openFixture, prepareFixtureFolder, uniqLabel, type NetConfig } from '../helpers/security';
 import { sharedDnsServer } from '../helpers/servers';
@@ -418,8 +419,11 @@ test('a flood is rate-limited, main stays responsive, and the document is never 
     // Protected deck may legitimately create notes (Review works in Protected), so session.json may grow —
     // that is not a document write and not a security violation.
     const folderSnap = snapshot(session.folder.dir);
-    // 10,000 messages as fast as the renderer can send them (the limit is 1,000/s): the rate limiter must
-    // drop the great majority, and main must stay alive.
+    // 10,000 messages as fast as the renderer can send them: the rate limiter must drop the great majority, and
+    // main must stay alive. Each deck channel has a token bucket per document with a fixed rate and burst, refilled
+    // by the clock (ipc-guard DECK_CHANNEL_RATES): note operations 50 a second with a burst of 100, focus 1,000.
+    const noteRate = DECK_CHANNEL_RATES[DeckToMain.note];
+    const t0 = Date.now();
     const result = await session.deck.isolated<string>(
       `(function(){
         var ipc = globalThis.__blTestIpc;
@@ -432,14 +436,25 @@ test('a flood is rate-limited, main stays responsive, and the document is never 
     );
     expect(result).toBe('flooded');
     await sleep(1000);
-    // Main is alive and answering.
-    const w = await session.app.win(session.docId);
+    // Main is alive and answering (polled a while for the burst: a loaded machine may still be on the backlog).
+    let w = await session.app.win(session.docId);
+    for (const end = Date.now() + 15_000; w.state.notes.length < noteRate.burst && Date.now() < end; ) {
+      await sleep(100);
+      w = await session.app.win(session.docId);
+    }
+    const elapsed = (Date.now() - t0) / 1000;
     expect(w.trust).toBe('protected');
-    // Far fewer than the 5,000 note creates got through (the token bucket is ~1,000/s, shared with the
-    // focus flood): the flood was throttled, not accepted wholesale.
-    expect(w.state.notes.length, `flood not throttled: ${w.state.notes.length} notes`).toBeLessThan(2000);
-    // Positive control: the flood did reach main (some creates got through before the limiter dropped the rest).
-    expect(w.state.notes.length, 'no flood message reached main').toBeGreaterThan(0);
+    // The flood was throttled by the clock, however fast or slowly main got to the messages: at most the burst
+    // plus the rate times the time since the flood began (main took every create it counted within that time),
+    // far fewer than the 5,000 creates and never up to the 2,000-note cap (the old limiter, refilled while main
+    // fell behind on a push of every note per create, let them through up to the cap in many runs).
+    const notes = w.state.notes.length;
+    test.info().annotations.push({ type: 'flood', description: `${notes} of 5,000 note creates in ${elapsed.toFixed(2)} s (limit ${noteRate.burst} + ${noteRate.perSecond}/s)` });
+    expect(notes, `flood not throttled: ${notes} notes in ${elapsed.toFixed(1)} s`).toBeLessThanOrEqual(Math.floor(noteRate.burst + noteRate.perSecond * elapsed));
+    expect(notes, `flood not throttled: ${notes} notes`).toBeLessThan(2000);
+    // Positive control: the flood did reach main, and the focus flood before it took no note tokens (the
+    // channels' buckets are separate): the whole burst of creates got through.
+    expect(notes, 'the burst of note creates did not reach main').toBeGreaterThanOrEqual(noteRate.burst);
     // The document file and its siblings were never written.
     expect(diff(folderSnap, snapshot(session.folder.dir)), 'the document folder changed under a flood').toHaveLength(0);
     expect(session.app.logsMatching(/ipc drop .*rate/).length, 'expected rate-limit drops').toBeGreaterThan(0);

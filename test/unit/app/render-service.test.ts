@@ -52,7 +52,7 @@ vi.mock('../../../packages/app/src/main/channels', () => ({ attachDeckView: () =
 vi.mock('../../../packages/app/src/main/trust-hooks', () => ({ installDeckWebContentsPolicy: () => ({ dispose() {} }) }));
 
 import type { RenderCmd } from '@blueline/core/ipc';
-import { RenderView, framesDiffer, renderPolicyTag, renderTargetFor, resultCheck } from '../../../packages/app/src/main/render-service';
+import { RenderCancelled, RenderError, RenderView, disposeRenderer, framesDiffer, renderPolicyTag, rendererFor, renderTargetFor, resultCheck } from '../../../packages/app/src/main/render-service';
 
 // ------------------------------------------------------------------------------------------- results
 
@@ -274,5 +274,89 @@ describe('renderPolicyTag: the product cache keys on the trust policy (review fi
     const prot = renderTargetFor({ ...base, trust: () => 'protected' as const });
     const trust = renderTargetFor({ ...base, trust: () => 'trusted' as const });
     expect(prot.renderPolicyTag()).not.toBe(trust.renderPolicyTag());
+  });
+});
+
+// ------------------------------------------------------------------------------------------- a view closed mid-job
+
+describe('a render view closed mid-job ends the job as RenderCancelled (never a failure or an "overlay mounted" refusal)', () => {
+  const newView = () => RenderView.create({ partition: 'p', preload: 'x.cjs', folderReal: '/tmp', isProtected: () => false, networkOpen: () => false });
+  type Probe = (world: number, code: { code: string }[]) => Promise<unknown>;
+  const probe = (v: RenderView, fn: Probe) => {
+    (v.wc as unknown as { executeJavaScriptInIsolatedWorld: Probe }).executeJavaScriptInIsolatedWorld = fn;
+  };
+
+  it('a probe running when the view closes rejects with RenderCancelled, overlayMounted included', async () => {
+    const v = newView();
+    probe(v, () => new Promise(() => undefined)); // the page never answers (a closing renderer)
+    const mounted = v.overlayMounted();
+    const stable = v.waitStable();
+    const title = v.documentTitle();
+    v.close();
+    await expect(mounted).rejects.toBeInstanceOf(RenderCancelled);
+    await expect(stable).rejects.toBeInstanceOf(RenderCancelled);
+    await expect(title).rejects.toBeInstanceOf(RenderCancelled);
+  });
+
+  it('a probe that answers after the close does not count: the view is closed', async () => {
+    const v = newView();
+    let answer: (x: unknown) => void = () => undefined;
+    probe(v, () => new Promise((r) => (answer = r)));
+    const mounted = v.overlayMounted();
+    v.close();
+    answer(false);
+    await expect(mounted).rejects.toBeInstanceOf(RenderCancelled);
+  });
+
+  it('every call on a closed view rejects with RenderCancelled', async () => {
+    const v = newView();
+    v.close();
+    for (const call of [
+      () => v.overlayMounted(),
+      () => v.waitStable(),
+      () => v.documentTitle(),
+      () => v.capture(),
+      () => v.detect(),
+      () => v.printToPDF({}),
+      () => v.load({ docId: '0123456789abcdef', fileName: 'x.html' }),
+      () => v.cdp('DOM.enable'),
+    ]) {
+      await expect(call()).rejects.toBeInstanceOf(RenderCancelled);
+    }
+    // The class carries its own name (what a caller across IPC or a log sees).
+    expect(new RenderCancelled('x').name).toBe('RenderCancelled');
+    expect(new RenderCancelled('x')).toBeInstanceOf(RenderError);
+  });
+
+  it('on a live view a probe that cannot answer still counts as "mounted" (when unsure, refuse)', async () => {
+    const v = newView();
+    probe(v, async () => {
+      throw new Error('the page threw');
+    });
+    expect(await v.overlayMounted()).toBe(true);
+    probe(v, async () => false);
+    expect(await v.overlayMounted()).toBe(false);
+    v.close();
+  });
+
+  it('rendererFor: a job whose document closed gets RenderCancelled, never a new renderer of the closed document', () => {
+    const host = { preload: 'x.cjs', userData: os.tmpdir(), log: () => undefined };
+    const doc = {
+      docId: '00112233445566aa', fileName: 'x.html', partition: 'persist:x', folderReal: '/f', realpath: '/f/x.html',
+      fileKey: '0123456789abcdef', version: 'a'.repeat(64), title: '', marker: null,
+      trust: () => 'trusted' as const, networkAllowed: () => false,
+    };
+    const job = renderTargetFor(doc);
+    const r = rendererFor(job, host);
+    expect(rendererFor(job, host)).toBe(r);
+    disposeRenderer(doc.docId);
+    expect(r.closed).toBe(true);
+    // The job's next stage (a PDF's raster walk after its print-CSS try) asks again: cancelled.
+    expect(() => rendererFor(job, host)).toThrow(RenderCancelled);
+    // The same file opened again (a Trusted file keeps its docId) comes with targets of its own: served.
+    const reopened = rendererFor(renderTargetFor(doc), host);
+    expect(reopened).not.toBe(r);
+    expect(reopened.closed).toBe(false);
+    disposeRenderer(doc.docId);
   });
 });

@@ -35,12 +35,16 @@ beforeAll(() => {
 });
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
+// The filler keeps the changes some tests make away from the edited runs: a stale edit is written only where the
+// text on both sides of it is unchanged (packages/editor/src/anchors.ts, E-1).
+// It stays on the lines it follows, so the runs keep their line numbers.
+const filler = (k: string) => Array.from({ length: 4 }, (_, i) => `<p>Filler ${k} line ${i}: words that stay as they are.</p>`).join('');
 const DECK = [
   '<!doctype html>',
   '<html><head><title>Plan</title></head><body>',
-  '<h1>Research &amp; Development</h1>',
+  `<h1>Research &amp; Development</h1>${filler('a')}`,
   '<p>Second line here</p>',
-  '<p>Third line stays</p>',
+  `<p>Third line stays</p>${filler('b')}`,
   '<ul><li>alpha beta gamma delta</li><li>alpha beta gamma delta</li></ul>',
   '</body></html>',
   '',
@@ -329,9 +333,9 @@ describe('external changes (9.2 Watcher; P2-3, P2-4; section 8)', () => {
 
   it('never takes a version back, and serializes takes with own writes', async () => {
     const r = await rig();
-    const ext2 = DECK.replace('Third line stays', 'Third line v2');
+    const ext2 = DECK.replace('Filler b line 3', 'Filler b line v2');
     const b2 = r.external(ext2);
-    const ext3 = DECK.replace('Third line stays', 'Third line v3');
+    const ext3 = DECK.replace('Filler b line 3', 'Filler b line v3');
     const b3 = r.external(ext3);
     // The watcher saw v3 last: a late take of v2 is stale.
     r.doc.knownHash = sha256Hex(b3);

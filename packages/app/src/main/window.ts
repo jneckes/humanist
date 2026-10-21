@@ -600,6 +600,8 @@ export class DocWindow {
    */
   private trustChange: { decision: OpenDecision | null; why: string; bytes: { bytes: Uint8Array; version: string } | null } | null = null;
   private lateTrustTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Note operations taken since the last notes push, sent as one deck and shell push (pushNotesSoon). */
+  private notesPush: { timer: ReturnType<typeof setImmediate>; created: { clientId: string; id: string }[] } | null = null;
   /** D-1: the window is closing to open its file again. */
   private reopening = false;
   /** The shell page finished loading once; toasts before that wait in earlyToasts. */
@@ -858,6 +860,8 @@ export class DocWindow {
       taken: (e) => this.onTaken(e),
       // E-8: the read-back after an own write found another version: the watcher looks again.
       recheck: () => this.watcher?.recheck(),
+      trustPending: () => this.trustChange !== null,
+      writeTrust: (version) => this.writeTrust(version),
       fieldIdleMs: testFieldIdleMs(),
       clipboard: (text) => clipboard.writeText(text),
       confirm: (o) => this.confirm(o),
@@ -1150,8 +1154,26 @@ export class DocWindow {
     if (!r.ok && this.deps.test) this.deps.log(`note op refused: ${op.op} (${r.why})`);
     if (r.ok) this.save();
     // Refused or not, the view gets the notes as main holds them, so the overlay resyncs.
+    this.pushNotesSoon(r.ok ? r.created : undefined);
+  }
+
+  /**
+   * The notes push after note operations, coalesced: one MainToDeck.notes (with every `created` since the last)
+   * and one shell state push for all the operations main takes before it turns the event loop. Each push copies
+   * every note, so a push per operation made a run of them cost main more with every note it added (a flood
+   * the IPC guard lets through: ipc-guard DECK_CHANNEL_RATES).
+   */
+  private pushNotesSoon(created?: { clientId: string; id: string }): void {
+    if (!this.notesPush) this.notesPush = { timer: setImmediate(() => this.flushNotesPush()), created: [] };
+    if (created) this.notesPush.created.push(created);
+  }
+
+  private flushNotesPush(): void {
+    const p = this.notesPush;
+    this.notesPush = null;
+    if (!p || this.closedOnce) return;
     const update: NotesUpdate = { notes: this.notes.notes.slice() };
-    if (r.ok && r.created) update.created = [r.created];
+    if (p.created.length > 0) update.created = p.created;
     this.sendDeck(MainToDeck.notes, update);
     this.pushState();
   }
@@ -2313,6 +2335,40 @@ export class DocWindow {
     this.trustChain = this.trustChain.then(run, run).catch((e: unknown) => this.deps.log(`trust check: ${errText(e)}`));
   }
 
+  /**
+   * D-1 at the moment of a write (LaneHost.writeTrust; the hardening round): a commit made while a trust decision
+   * ran, or while its reopen waited for the open field (6.6), was written into a marked download saved over the
+   * deck. The write now waits for the decisions already queued, and goes ahead only when no trust change waits for
+   * its reopen and the bytes it replaces are ones this window decided on: its own version, or an external change
+   * the write absorbs (P2-4), decided again now with this window's trust. Otherwise it is refused (a verbatim note,
+   * E-2) and the watcher looks again, so the change is decided and the window reopens.
+   */
+  private async writeTrust(version: string): Promise<boolean> {
+    await this.trustChain.catch(() => undefined);
+    // A window that closes still writes the commit it accepted (E-2, E-7); one reopening for its trust does not.
+    if (this.reopening || this.trustChange !== null) return false;
+    if (!this.decidesTrust()) return true;
+    // The window's own version is decided, unless the second look at a change just taken (a browser that sets its
+    // marker right after its rename, LATE_MARKER_MS) has not run yet: then it is decided now.
+    if (version === this.doc.version && this.lateTrustTimer === null) return true;
+    const requested = this.deps.protectedRequested === true;
+    let d: OpenDecision | null = null;
+    try {
+      d = await this.deps.decideTrust!(this.doc.realpath, requested);
+    } catch (e) {
+      this.deps.log(`trust not decided for a write to ${this.doc.fileName}: ${errText(e)}`);
+      return false;
+    }
+    if (this.reopening || this.trustChange !== null) return false;
+    if (d === null || reopenForTrust(this.windowTrust(), d, { requested })) {
+      const diff = d ? trustDifferences(this.windowTrust(), d, { requested }) : ['undecided'];
+      this.deps.log(`a write to ${this.doc.fileName} was refused: the file on disk (${version.slice(0, 12)}) has another trust (${diff.join(', ')})`);
+      if (!this.closing) this.watcher?.recheck();
+      return false;
+    }
+    return true;
+  }
+
   private scheduleLateTrustCheck(): void {
     if (this.lateTrustTimer) clearTimeout(this.lateTrustTimer);
     this.lateTrustTimer = setTimeout(() => {
@@ -2642,6 +2698,8 @@ export class DocWindow {
     this.toasts.clear();
     if (this.lateTrustTimer) clearTimeout(this.lateTrustTimer);
     this.lateTrustTimer = null;
+    if (this.notesPush) clearImmediate(this.notesPush.timer);
+    this.notesPush = null;
     this.undecided = null;
     this.trustChange = null;
     this.reload.dispose();

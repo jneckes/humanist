@@ -85,6 +85,8 @@ const DIFF_LINE_CHARS = 120;
 /** 9.2 Undo and redo case 3. */
 export const CANT_UNDO = "Can't undo in place: the deck changed since this edit";
 export const NOTHING_TO_UNDO = 'Nothing to undo';
+/** Cmd+Z pressed for an edit whose commit became a verbatim note (E-3 as amended): nothing is undone. */
+export const NOTHING_UNDONE_NOTE = 'Nothing undone: your last edit was kept as a note';
 export const NOTHING_TO_REDO = 'Nothing to redo';
 /** 6.3 Edit's availability reasons (the texts setMode has shown since Phase 1). */
 export const EDIT_UNAVAILABLE = 'Edit is not available in this version of Blueline.';
@@ -763,6 +765,14 @@ export interface LaneHost {
   save(): void;
   /** 9.1: may this job write now? Checked by the queue right before the snapshot and right before the write. */
   canWrite(job: LaneJob): boolean;
+  /**
+   * D-1 at the moment of a write (the hardening round): resolves true when the bytes the queue is about to replace
+   * (`version`) are bytes this window's trust holds for: no trust decision is running or waiting for a reopen, and a
+   * version the window never took (an external change the write would absorb, P2-4) is decided on again first.
+   * False: the write is refused (a verbatim note), so nothing is written into a file Blueline has not decided may
+   * be edited (a marked download saved over the deck while a field was open). Absent: always true.
+   */
+  writeTrust?(version: string): Promise<boolean>;
   /** An own write was adopted: push the map (before the result, 9.2 step 6), the reload rule, products, trust. */
   adopted(e: Adopted): void;
   /** An external change was taken: push the map and reload under 6.6's rules. */
@@ -783,6 +793,8 @@ export interface LaneJob {
   snapshot?: string;
   /** E-8: the queue's read-back after the rename found another version on disk. */
   readBack?: boolean;
+  /** D-1: the bytes this attempt would replace are not ones the window's trust holds for (LaneHost.writeTrust). */
+  untrusted?: boolean;
 }
 
 /** The queue's operations, run inside EditLane.exclusive. */
@@ -1041,6 +1053,18 @@ export class EditLane {
    */
   private async beforeWrite(prev: { version: string; bytes: Uint8Array }, next: { version: string; kind: WriteKind }): Promise<void> {
     const job = this.job;
+    // D-1 first: the queue checks canWrite right after this hook, so an attempt on bytes the window's trust does not
+    // hold for is refused before its snapshot is listed or anything is written.
+    if (job && job.host.writeTrust) {
+      let trusted = false;
+      try {
+        trusted = await job.host.writeTrust(prev.version);
+      } catch (e) {
+        this.log(`trust not decided for a write: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      job.untrusted = !trusted;
+      if (!trusted) return;
+    }
     const history = this.deps.history();
     if (!job || !history) return;
     // E-11: the attempt before this one did not land (a conflict requeued it): its entry goes.
@@ -1340,6 +1364,10 @@ export interface EditSessionDeps {
   taken(e: Taken): void;
   /** E-8: the watcher looks at the file again (the read-back after an own write found another version). */
   recheck?(): void;
+  /** D-1: a trust decision of the file is running, or a trust change waits for its reopen (window.ts). */
+  trustPending?(): boolean;
+  /** D-1 for one write: see LaneHost.writeTrust (window.ts). */
+  writeTrust?(version: string): Promise<boolean>;
   /** Writes the clipboard (Electron's clipboard, in main: the shell has no clipboard permission, P2-13). */
   clipboard(text: string): void;
   /** A native confirmation: true when the user chose `button`. */
@@ -1420,12 +1448,17 @@ export class EditSession implements LaneHost {
     this.d.save();
   }
 
-  canWrite(_job: LaneJob): boolean {
+  canWrite(job: LaneJob): boolean {
     // 9.1: "checks this at the moment of the write": editing allowed for the document and capabilities.edit, for
     // every edit write (a direct edit, undo, redo, restore). The mode is checked when main accepts a commit
     // (gateCommit), so an edit accepted in Edit is written even when the user leaves Edit while it waits in the lane
-    // (review finding 16).
-    return this.capEdit() && this.d.doc.editable();
+    // (review finding 16). D-1: never into bytes the window's trust does not hold for (writeTrust), and never while
+    // a trust change waits for its reopen.
+    return this.capEdit() && this.d.doc.editable() && job.untrusted !== true && !(this.d.trustPending?.() ?? false);
+  }
+
+  writeTrust(version: string): Promise<boolean> {
+    return this.d.writeTrust ? this.d.writeTrust(version) : Promise.resolve(true);
   }
 
   adopted(e: Adopted): void {
@@ -1828,6 +1861,10 @@ export class EditSession implements LaneHost {
       this.d.toast({ text: nothing, kind: 'info' });
       return;
     }
+    // The hardening round (E-3 as amended): Cmd+Z pressed while the newest commit is still in flight is for that
+    // commit. Once it is answered, the undo takes it, or, when it became a note or a refusal, does nothing: it never
+    // reaches past it to the author's previous edit.
+    const forPending = kind === 'undo' && o.token === undefined ? this.undo.pendingTop() : null;
     this.d.reload.setWriting(true);
     const held: { e: UndoEntry | null; settled: boolean } = { e: null, settled: false };
     try {
@@ -1838,9 +1875,10 @@ export class EditSession implements LaneHost {
           this.log('the toast named a write that is not the latest undoable one');
           return;
         }
-        const e = kind === 'undo' ? this.undo.undo() : this.undo.redo();
+        const e = forPending !== null ? this.undo.undoSlot(forPending) : kind === 'undo' ? this.undo.undo() : this.undo.redo();
         if (!e) {
-          if (!this.undo.busy) this.d.toast({ text: nothing, kind: 'info' });
+          if (forPending !== null) this.d.toast({ text: NOTHING_UNDONE_NOTE, kind: 'info' });
+          else if (!this.undo.busy) this.d.toast({ text: nothing, kind: 'info' });
           return;
         }
         held.e = e;

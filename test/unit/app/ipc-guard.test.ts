@@ -4,6 +4,7 @@ import { DeckToMain, ShellToMain } from '@blueline/core/ipc';
 import { EditDeckToMain } from '@blueline/core/ipc-edit';
 import {
   DECK_CHANNEL_KINDS,
+  DECK_CHANNEL_RATES,
   DECK_VALIDATORS,
   DeckIpc,
   IPC_LIMITS,
@@ -251,6 +252,119 @@ describe('rate limiting', () => {
     now += 1000;
     ipc.send(DeckToMain.focus, ev(wc), { textField: true });
     expect(got).toHaveLength(501);
+  });
+
+  it('RateLimiter: a fixed rate and burst, refilled by the clock only', () => {
+    let now = 0;
+    const r = new RateLimiter(50, () => now, 100);
+    let n = 0;
+    for (let i = 0; i < 1000; i++) if (r.allow('k')) n++;
+    expect(n).toBe(100); // the burst, however many messages
+    now += 20; // one token's worth (1/50 s)
+    expect(r.allow('k')).toBe(true);
+    expect(r.allow('k')).toBe(false);
+    now += 10; // half a token: nothing
+    expect(r.allow('k')).toBe(false);
+    now += 10;
+    expect(r.allow('k')).toBe(true);
+    // A clock that steps back neither refills nor stalls the bucket beyond what it held.
+    now -= 5000;
+    expect(r.allow('k')).toBe(false);
+    now += 5000 + 60_000; // a minute later: full again, never above the burst
+    n = 0;
+    for (let i = 0; i < 1000; i++) if (r.allow('k')) n++;
+    expect(n).toBe(100);
+    expect(() => new RateLimiter(0)).toThrow();
+    expect(() => new RateLimiter(10, () => 0, 0)).toThrow();
+  });
+
+  it('note operations: 50 a second with a burst of 100, every other deck channel 1,000 a second', () => {
+    expect(DECK_CHANNEL_RATES[DeckToMain.note]).toEqual({ perSecond: 50, burst: 100 });
+    const { router } = deckSetup();
+    expect(router.rateOf(DeckToMain.note)).toEqual({ perSecond: 50, burst: 100 });
+    for (const c of [...Object.values(DeckToMain), ...Object.values(EditDeckToMain)].filter((c) => c !== DeckToMain.note)) {
+      expect(router.rateOf(c), c).toEqual({ perSecond: IPC_LIMITS.messagesPerSecond, burst: IPC_LIMITS.messagesPerSecond });
+    }
+    // What a person sends stays well under it: card text at most every 300 ms, one operation per finished stroke.
+    let now = 0;
+    const s = deckSetup(() => now);
+    const wc = new FakeWc(40);
+    s.router.registerDeckView(wc, { docId: DOC, kind: 'deck' });
+    for (let t = 0; t < 60_000; t += 50) {
+      now = t; // a stroke every 50 ms (20 a second, twice a fast hand) and the card's text every 300 ms, for a minute
+      s.ipc.send(DeckToMain.note, ev(wc), { op: 'update', id: 'n-0001', marks: [] });
+      if (t % 300 === 0) s.ipc.send(DeckToMain.note, ev(wc), { op: 'update', id: 'n-0001', text: `t${t}` });
+    }
+    expect(s.drops.filter((d) => d.reason === 'rate')).toHaveLength(0);
+  });
+
+  it('a note flood gets the burst plus the rate through by the clock, however slowly main gets to the messages', () => {
+    // Main's own time: every message costs a little to route, and each accepted note create costs main more as the
+    // notes add up (it copies every note to the deck and the shell). The fake clock advances by that cost, as
+    // Date.now() does while main works through a backlog: the old limiter (1,000 a second per sender, shared
+    // with every channel) refilled as fast as main fell behind, and nearly every create of the flood got a token.
+    let now = 0;
+    const ipc = new FakeIpcMain();
+    const drops: DropInfo[] = [];
+    const router = new DeckIpc({ ipcMain: ipc, onDrop: (d) => drops.push(d), now: () => now });
+    let notes = 0;
+    router.on(DeckToMain.focus, validateFocus, () => {
+      now += 0.005;
+    });
+    router.on(DeckToMain.note, validateNote, () => {
+      if (notes < 2000) notes++; // MAX_NOTES
+      now += 2 + notes * 0.02; // a push of every note: O(n)
+    });
+    const wc = new FakeWc(41);
+    router.registerDeckView(wc, { docId: DOC, kind: 'deck' });
+    const send = (c: string, p: unknown) => {
+      now += 0.002;
+      ipc.send(c, ev(wc), p);
+    };
+    const start = now;
+    for (let i = 0; i < 5000; i++) send(DeckToMain.focus, { textField: i % 2 === 0 });
+    for (let j = 0; j < 5000; j++) send(DeckToMain.note, { op: 'create', clientId: `f${j}`, text: 'x', marks: [], slide: 0 });
+    const elapsed = (now - start) / 1000;
+    // The focus flood took no note tokens: the whole burst got through, and then only what the clock refilled.
+    expect(notes).toBeGreaterThanOrEqual(100);
+    expect(notes).toBeLessThanOrEqual(Math.floor(100 + 50 * elapsed));
+    expect(notes).toBeLessThan(200);
+    expect(drops.filter((d) => d.reason === 'rate' && d.channel === DeckToMain.note).length).toBe(5000 - notes);
+  });
+
+  it('buckets are per document, view kind and channel; render views of one document share theirs', () => {
+    let now = 0;
+    const s = deckSetup(() => now);
+    const deckA = new FakeWc(50);
+    const renderA1 = new FakeWc(51);
+    const renderA2 = new FakeWc(52);
+    const deckB = new FakeWc(53, frame({ origin: `blueline://${OTHER}` }));
+    s.router.registerDeckView(deckA, { docId: DOC, kind: 'deck' });
+    s.router.registerDeckView(renderA1, { docId: DOC, kind: 'render' });
+    s.router.registerDeckView(renderA2, { docId: DOC, kind: 'render' });
+    s.router.registerDeckView(deckB, { docId: OTHER, kind: 'deck' });
+    const note = (wc: FakeWc, i: number) => s.ipc.send(DeckToMain.note, ev(wc), { op: 'create', clientId: `c${wc.id}-${i}`, text: 'x', marks: [], slide: 0 });
+    for (let i = 0; i < 150; i++) note(deckA, i);
+    expect(s.got.filter((g) => g.channel === DeckToMain.note && g.docId === DOC)).toHaveLength(100);
+    // Another channel of the same view, and another document, are untouched.
+    s.ipc.send(DeckToMain.focus, ev(deckA), { textField: true });
+    expect(s.got.filter((g) => g.channel === DeckToMain.focus)).toHaveLength(1);
+    for (let i = 0; i < 10; i++) note(deckB, i);
+    expect(s.got.filter((g) => g.channel === DeckToMain.note && g.docId === OTHER)).toHaveLength(10);
+    // Two render views of one document draw on one bucket (a page cannot multiply its limit by its views).
+    const reply = (wc: FakeWc, i: number) => s.ipc.send(DeckToMain.renderReply, ev(wc), { reqId: i + 1, ok: true, result: null });
+    for (let i = 0; i < 700; i++) reply(renderA1, i);
+    for (let i = 0; i < 700; i++) reply(renderA2, i);
+    expect(s.got.filter((g) => g.channel === DeckToMain.renderReply)).toHaveLength(1000);
+    // A document's buckets go with its last view of that kind (a full bucket is a new one: nothing is lost).
+    renderA1.destroy();
+    for (let i = 0; i < 5; i++) reply(renderA2, i);
+    expect(s.got.filter((g) => g.channel === DeckToMain.renderReply)).toHaveLength(1000);
+    renderA2.destroy();
+    const renderA3 = new FakeWc(54);
+    s.router.registerDeckView(renderA3, { docId: DOC, kind: 'render' });
+    reply(renderA3, 0);
+    expect(s.got.filter((g) => g.channel === DeckToMain.renderReply)).toHaveLength(1001);
   });
 });
 

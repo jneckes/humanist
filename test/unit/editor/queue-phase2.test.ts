@@ -13,6 +13,8 @@ import { bytesEqual, mapOf, MemIO, requestFor, sha256 } from './helpers';
 
 const FIXTURES = join(__dirname, '../../../fixtures/decks');
 const doc = (body: string): string => `<!doctype html><html><head></head><body>${body}</body></html>`;
+/** Unchanged text between a run and another program's change (a stale edit needs it on both sides: anchors.ts, E-1). */
+const far = (k: string): string => Array.from({ length: 4 }, (_, i) => `<p>Filler ${k} line ${i}: words that stay as they are.</p>`).join('');
 
 /** A queue whose hooks log what they saw, in order, around the IO's atomic write. */
 function logged(io: MemIO, extra: Parameters<typeof createWriteQueue>[1] = {}) {
@@ -130,14 +132,14 @@ describe('beforeWrite and afterWrite (P2-11, 9.2 Write protocol step 6)', () => 
   });
 
   it('a conflict requeues: the next attempt snapshots the bytes it then replaces', async () => {
-    const io = new MemIO(doc('<p>Alpha</p><p>Beta</p>'));
+    const io = new MemIO(doc(`<p>Alpha</p>${far('a')}<p>Beta</p>`));
     const { q, snapshots, written } = logged(io);
     const map = await q.refresh();
-    const external = doc('<p>Alpha</p><p>Gamma</p><p>Beta</p>');
+    const external = doc(`<p>Alpha</p><p>Gamma</p>${far('a')}<p>Beta</p>`);
     io.beforeWrite = () => io.external(external);
     const out = await q.edit(requestFor(map, 'Beta', 'Beta!'));
     expect(out).toMatchObject({ ok: true, merged: true });
-    expect(io.text).toBe(doc('<p>Alpha</p><p>Gamma</p><p>Beta!</p>'));
+    expect(io.text).toBe(doc(`<p>Alpha</p><p>Gamma</p>${far('a')}<p>Beta!</p>`));
     expect(snapshots).toHaveLength(2);
     expect(decodeDeck(snapshots[1].bytes).src).toBe(external);
     // P2-4: the write absorbed an external change main never saw; basedOn says which version it replaced.
@@ -162,15 +164,15 @@ describe('beforeWrite and afterWrite (P2-11, 9.2 Write protocol step 6)', () => 
 });
 
 describe('merged (P2-4) and know (P2-3)', () => {
-  const filler = 'x'.repeat(40);
+  const filler = 'x'.repeat(80);
   const base = doc(`<p>Owner</p><i>${filler} first ${filler}</i><p>Owner</p><i>${filler} second ${filler}</i>`);
 
   it('merged is false on the version the client holds, true when the edit was re-resolved on another', async () => {
-    const io = new MemIO(doc('<p>Alpha</p><p>Beta</p>'));
+    const io = new MemIO(doc(`<p>Alpha</p>${far('a')}<p>Beta</p>`));
     const q = createWriteQueue(io);
     const map = await q.refresh();
     expect(await q.edit(requestFor(map, 'Alpha', 'Alpha!'))).toMatchObject({ ok: true, merged: false });
-    io.external(doc('<h1>New</h1><p>Alpha!</p><p>Beta</p>'));
+    io.external(doc(`<h1>New</h1><p>Alpha!</p>${far('a')}<p>Beta</p>`));
     expect(await q.edit(requestFor(map, 'Beta', 'Beta!'))).toMatchObject({ ok: true, merged: true });
   });
 
@@ -278,13 +280,13 @@ describe('typed refusal codes (only noop is not a note)', () => {
     expect(await q3.edit({ ...requestFor(m3, 'Hello', 'Hi'), runId: 'h:bl-77:0' })).toMatchObject({ code: 'refused' });
     expect(await q3.edit({ version: 1 } as never)).toMatchObject({ ok: false, code: 'refused', verbatim: { before: '', after: '' } });
 
-    const io4 = new MemIO(doc('<p>Alpha</p>'));
+    const io4 = new MemIO(doc(`<p>Alpha</p>${far('a')}`));
     const q4 = createWriteQueue(io4, { maxRetries: 1 });
     const m4 = await q4.refresh();
     let n = 0;
     const realWrite = io4.atomicWrite.bind(io4);
     io4.atomicWrite = async (bytes, hash) => {
-      io4.external(doc(`<p>Alpha</p><!-- ${++n} -->`));
+      io4.external(doc(`<p>Alpha</p>${far('a')}<!-- ${++n} -->`));
       return realWrite(bytes, hash);
     };
     expect(await q4.edit(requestFor(m4, 'Alpha', 'Alpha!'))).toMatchObject({ ok: false, code: 'conflict' });

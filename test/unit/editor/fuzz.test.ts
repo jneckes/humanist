@@ -355,6 +355,7 @@ interface Stats {
   merged: number;
   conflicts: number;
   undoCase2: number;
+  undoCase2Refused: number;
   reasons: Map<string, number>;
 }
 
@@ -380,6 +381,7 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
       merged: 0,
       conflicts: 0,
       undoCase2: 0,
+      undoCase2Refused: 0,
       reasons: new Map(),
     };
     const reason = (k: string) => stats.reasons.set(k, (stats.reasons.get(k) ?? 0) + 1);
@@ -593,17 +595,27 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
           expect(re.ok, `${qctx()} redo ${re.ok ? '' : re.why}`).toBe(true);
           expect(bytesEqual(d.io.bytes, newBytes), qctx()).toBe(true);
           if (r.chance(0.3)) {
-            // Undo in a changed file (case 2): an external change far from the edit.
+            // Undo in a changed file (case 2): an external change away from the edit. Case 2 is placed by position
+            // and written only where the text on both sides of the write confirms it (E-1, the hardening round):
+            // a change inside that text refuses it by rule (case 3, the file untouched), never a write elsewhere.
             const src = decodeDeck(d.io.bytes).src;
             const body = /<body[^>]*>/i.exec(src);
             const at = body ? body.index + body[0].length : 0;
             if (rec.start - at > 64) {
               const ins = '<p>Later external change</p>';
               d.io.external(src.slice(0, at) + ins + src.slice(at));
+              const extBytes = d.io.bytes.slice();
               const u2 = await d.q.undo(rec);
-              expect(u2.ok, `${qctx()} undo case 2 ${u2.ok ? '' : u2.why}`).toBe(true);
-              expect(decodeDeck(d.io.bytes).src, qctx()).toBe(base.slice(0, at) + ins + base.slice(at));
-              stats.undoCase2++;
+              if (u2.ok) {
+                expect(decodeDeck(d.io.bytes).src, qctx()).toBe(base.slice(0, at) + ins + base.slice(at));
+                stats.undoCase2++;
+              } else {
+                expect(u2, `${qctx()} undo case 2 refused ${u2.why}`).toMatchObject({ code: 'stale', canMakeNote: true });
+                expect(bytesEqual(d.io.bytes, extBytes), `${qctx()} undo case 2 refused but the file changed`).toBe(true);
+                // Refused only when the change is near the write: within the floor of what must stay unchanged.
+                expect(rec.start - at, `${qctx()} undo case 2 refused with the change ${rec.start - at} characters away`).toBeLessThan(2048);
+                stats.undoCase2Refused++;
+              }
             }
           }
         }
@@ -617,7 +629,7 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
     const lines = [
       `fuzz seed=${SEED} docs=${state.length} edits=${stats.edits}`,
       `  written ${stats.written} (${pct(stats.written)}), notes by rule ${stats.notes} (${pct(stats.notes)}), no-ops ${stats.noops} (${pct(stats.noops)})`,
-      `  picked candidates ${stats.picks} (written ${stats.pickWritten}), stale-version edits ${stats.stale} (written ${stats.staleWritten}), merged writes ${stats.merged}, conflicting writes ${stats.conflicts}, undo case 2 ${stats.undoCase2}`,
+      `  picked candidates ${stats.picks} (written ${stats.pickWritten}), stale-version edits ${stats.stale} (written ${stats.staleWritten}), merged writes ${stats.merged}, conflicting writes ${stats.conflicts}, undo case 2 ${stats.undoCase2} (refused by rule ${stats.undoCase2Refused})`,
       '  why edits became notes or no-ops:',
       ...[...stats.reasons.entries()].sort((a, b) => b[1] - a[1]).map(([k, n]) => `    ${String(n).padStart(4)}  ${k}`),
       `  failures: ${failures.length}`,

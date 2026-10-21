@@ -131,8 +131,9 @@ meaningful together with the map `version` it came from.
 `planUndo`). The write queue implements the whole write protocol (9.2): per-deck serial queue, version
 check and, when the file changed since the request's version, placement by position (a diff of that version to the
 current bytes maps the run's range, and the run must hold `beforeText` there with no change over it; neither the text
-nor its 32 characters of context ever chooses a copy; review finding 0; when the text is in several places, the text
-around every copy must confirm the placement, `place.ts`, or the edit is a note), re-check, atomic write through
+nor its 32 characters of context ever chooses a copy; review finding 0; the text on both sides of the place must
+then confirm it, out past what made it unique in that version and at least 128 characters, `anchors.ts` and
+`place.ts`, or the edit is a note; undo and redo case 2 are placed the same way, `undo.ts`), re-check, atomic write through
 `DeckIO.atomicWrite` (which re-hashes before rename), verify (re-parse, same run holds `afterText`, no new
 parse5 errors, Strategy 2 checks) on the exact bytes before they are renamed in (decision P2-1, so a bad file never
 lands), and the verbatim fallback.
@@ -368,7 +369,7 @@ below), and every piece of the commit path that a reader-only build or the fuzz 
 | Module | What |
 |---|---|
 | `edit-commit.ts` | `commitField(field, {smartPunctuation})`: the field's text before and after, its recorded runs (offsets in the field's `textContent`) and the caret's run → an edit of one run (`{runId, beforeText, afterText}`, the run's whole text), a `verbatim` note with a typed reason (`VerbatimWhy`), or a no-op. Clean-up, then the changed span, then the run rule (one run; an insertion at a boundary goes to the caret's run), then smart punctuation on that run (6.3). `liftToRun`/`liftPick` lift a picked substring or whitespace/NFC-normalized candidate to its run's whole text (P2-8); `pickKindFor` says which matcher reasons the picker offers (never `split` or `short`). The overlay and both fuzz harnesses call it: "the same path as a typed edit" is the same code |
-| `locked-spans.ts` | Section 8 locks: `transformLockedSpans(prev, cur, spans)` for external changes and restores (`diff_main` with a time limit, `diff_xIndex`, no semantic clean-up; a timeout only over-reports a violation), `applyOwnWrite(spans, record, {noteId})` for Blueline's own writes (shift; a write inside a span updates it; an undo drops its note's span), `lockForRun`, and `mapRange(prev, cur, start, end, {timeoutSec})` for the write queue (a run's range in a newer version, or `changed`/`timeout`), with `mapRangesClean` (several ranges through one diff, each with how far the diff leaves the text around it unchanged), `stretchesKept` and `longestKept` (what a diff of two neighbourhoods keeps) for the stale placement's checks. `LockedSpan.text` is the raw source slice |
+| `locked-spans.ts` | Section 8 locks: `transformLockedSpans(prev, cur, spans)` for external changes and restores (`diff_main` with a time limit, `diff_xIndex`, no semantic clean-up; a timeout only over-reports a violation), `applyOwnWrite(spans, record, {noteId})` for Blueline's own writes (shift; a write inside a span updates it; an undo drops its note's span), `lockForRun`, and `mapRange(prev, cur, start, end, {timeoutSec})` for the write queue (a run's range in a newer version, or `changed`/`timeout`), with `mapRangesClean` (several ranges through one diff, each with how far the diff leaves the text around it unchanged) for the stale placement and undo case 2. `LockedSpan.text` is the raw source slice |
 | `ipc-edit.ts` | The edit channels (`EditDeckToMain`, `MainToDeckEdit`, and `MainToDeckEditRequest.commitNow`: main asks the deck to commit its open field), their payloads, `EDIT_LIMITS` (UTF-8 bytes), the id/version/token formats, `candidateContext` (±40 characters on one line) |
 | `capabilities.ts` (changed) | `WriteQueueOptions` gains `beforeWrite(prev, next)` (the exact bytes about to be replaced, right before the rename: the history snapshot), `afterWrite(map, record, next)` with `next.basedOn` (the hash the queue read), `canWrite()` (checked at the moment of the write, 9.1), `onHookError`, `maxRetries`; `WriteQueue` gains `know(version, src, map, {pin})` and `unpin(version)` (P2-3: the versions the page and its open fields hold; a pinned one is never evicted), `restore(bytes, expectVersion)` and `currentMap()`. Refusals carry a typed `RefusalCode`; a written outcome says whether it `merged` an external change |
 | `dom-walk.ts` (changed) | `describeNode(node, tracker)` for the overlay, `ScriptTouchTracker.ownChanges(fn)` and `ownRegion(el)` so the overlay's own changes never count as a script's (P2-6) |
@@ -377,13 +378,19 @@ below), and every piece of the commit path that a reader-only build or the fuzz 
 
 `write-queue.ts` implements the new options: `know` (checked against its sha256; pins counted), the stale request
 placed by position (`place.ts` `placeStale`: the run's range mapped from the request's version to the current one;
-an unknown version, a timeout or a change over the run is a verbatim note; when the text is in several places, every
-copy the diff keeps must be told apart from the others by text the diff left unchanged around it, reaching 32
-characters past where they stop agreeing, the run's place must hold nothing that told another copy apart and no
-other kept copy what told the run apart (looked for only where the diff changed a place's surroundings within
-that reach: unchanged, they are that copy's own), and a copy the current version adds must share no long stretch with the
-run's surroundings unless it sits in other markup (the same words in a new paragraph); otherwise an `ambiguous` note:
-a moved or copied templated slide is never written into),
+an unknown version, a timeout or a change over the run is a verbatim note; then `anchors.ts` `confirmPlace`, the
+hardening round: on BOTH sides the run's old context, from its edge out to its unique depth in the old version plus
+32 characters and at least 128, must sit unchanged right next to the place, occur nowhere else in the current
+version, and its distinguishing part must not occur more often than before; and no copy of beforeText the other
+program added may carry more than 32 characters of the run's surroundings on both sides; otherwise an `ambiguous`
+note: one side is never enough, so a copy slid next to the author's changed or deleted run is never written into.
+The repair's three rules, which a structural attack got past one by one, are gone. Between the request's version and the
+current one the run is carried through the changes the queue saw (`write-queue.ts` `steps`, the first change that
+produced each version, so an undo or redo back to a version never cuts the chain; `carry`): its own writes
+move it exactly by their splices, and only another program's change is placed (and confirmed) as above, between the
+two versions around it (kept for the last 3 such changes, `aroundForeign`); else the diff over the whole span. Undo and redo case 2 (`undo.ts`
+`planUndo`) need the source of the version the write made (the queue's versions), map the write's place from it by
+diff, and confirm it the same way, else case 3),
 `beforeWrite` with the bytes read in step 2, `canWrite` before and after it, verify on the exact bytes before the rename (P2-1), a read-back after the
 rename, `restore` serialized and conflict-checked, typed refusals. `plan.ts` refuses by rule what the HTML parser
 reports as an error and the `<pre>` character-reference case parse5 mislocates.

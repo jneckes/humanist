@@ -30,7 +30,7 @@ describe('makeRecord (9.2 Undo and redo)', () => {
 });
 
 describe('planUndo (9.2 Undo and redo cases 1-3)', () => {
-  const before = 'x'.repeat(50) + '<p>Hello</p>' + 'y'.repeat(50);
+  const before = 'x'.repeat(200) + '<p>Hello</p>' + 'y'.repeat(200);
   const at = before.indexOf('Hello') + 5;
   const after = before.slice(0, at) + ' world' + before.slice(at);
   const record = makeRecord(before, { start: at, rawBefore: '', rawAfter: ' world' }, 'v-before', 'v-after');
@@ -40,17 +40,24 @@ describe('planUndo (9.2 Undo and redo cases 1-3)', () => {
     expect(p).toEqual({ ok: true, case: 1, start: at, rawBefore: ' world', rawAfter: '' });
   });
 
-  it('case 2: the file changed elsewhere: find prefix + rawAfter + suffix once', () => {
+  it('case 2: the file changed elsewhere: find prefix + rawAfter + suffix once, at the write\'s place in the version it made', () => {
     const changed = 'INSERTED ' + after + ' TAIL';
-    const p = planUndo(changed, record, 'v-other');
+    const p = planUndo(changed, record, 'v-other', after);
     expect(p).toEqual({ ok: true, case: 2, start: at + 9, rawBefore: ' world', rawAfter: '' });
+  });
+
+  it('case 2 needs the version the write made: without it, or with a change next to the write, it is case 3 (E-1)', () => {
+    const changed = 'INSERTED ' + after + ' TAIL';
+    expect(planUndo(changed, record, 'v-other')).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' });
+    const near = after.replace('<p>Hello world</p>', '<p>Hello world</p><p>Inserted next to it</p>');
+    expect(planUndo(near, record, 'v-other', after)).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' });
   });
 
   it('case 3: the text changed, or it occurs twice: refuse with Make a note', () => {
     const edited = after.replace('Hello world', 'Hello there');
-    expect(planUndo(edited, record, 'v-other')).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' });
+    expect(planUndo(edited, record, 'v-other', after)).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' });
     const twice = after + after;
-    expect(planUndo(twice, record, 'v-other')).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' });
+    expect(planUndo(twice, record, 'v-other', after)).toEqual({ ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' });
   });
 
   it('counts overlapping occurrences as different places', () => {
@@ -63,8 +70,8 @@ describe('planUndo (9.2 Undo and redo cases 1-3)', () => {
     const r = makeRecord('Hi there', { start: 0, rawBefore: 'Hi', rawAfter: 'Hello' }, 'v1', 'v2');
     expect(r.prefix).toBe('');
     // Same text later in the file is not where the write was.
-    expect(planUndo('Hello there', r, 'v3')).toMatchObject({ ok: true, case: 2, start: 0 });
-    expect(planUndo('Oh! Hello there', r, 'v3')).toMatchObject({ ok: false });
+    expect(planUndo('Hello there', r, 'v3', 'Hello there')).toMatchObject({ ok: true, case: 2, start: 0 });
+    expect(planUndo('Oh! Hello there', r, 'v3', 'Hello there')).toMatchObject({ ok: false });
   });
 
   it('refuses in case 1 when the text at start disagrees with the record', () => {

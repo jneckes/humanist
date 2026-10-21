@@ -148,48 +148,6 @@ export function mapRangesClean(prev: string, cur: string, ranges: [number, numbe
 }
 
 /**
- * Which stretches [start, end) of `a` a diff of `a` to `b` (diff_main with a time limit, no clean-up) leaves
- * entirely unchanged: no deletion overlaps the stretch and no insertion lies strictly inside it. Null when the diff
- * reached its time limit (its alignment then vouches for nothing). Used by the write queue to ask whether another
- * copy of a run still carries the text that told the run apart (9.2 Write protocol step 2).
- */
-export function stretchesKept(a: string, b: string, stretches: [number, number][], opts: { timeoutSec?: number } = {}): boolean[] | null {
-  const dmp = new DiffMatchPatch();
-  const t = opts.timeoutSec;
-  const limit = typeof t === 'number' && Number.isFinite(t) && t >= 0 ? t : LOCK_DIFF_TIMEOUT_SEC;
-  dmp.Diff_Timeout = limit;
-  const t0 = performance.now();
-  const diffs = a === b ? ([[DIFF_EQUAL, a]] as Diff[]) : (dmp.diff_main(a, b) as Diff[]);
-  if (a !== b && limit > 0 && performance.now() - t0 >= limit * 1000) return null;
-  const deletions: [number, number][] = [];
-  const insertions: number[] = [];
-  let p = 0;
-  for (const [op, text] of diffs) {
-    if (op === DIFF_EQUAL) p += text.length;
-    else if (op === DIFF_DELETE) {
-      deletions.push([p, p + text.length]);
-      p += text.length;
-    } else insertions.push(p);
-  }
-  return stretches.map(([s, e]) => s <= e && !deletions.some(([x, y]) => x < e && y > s) && !insertions.some((q) => s < q && q < e));
-}
-
-/** The longest stretch of `a` that a diff of `a` to `b` leaves unchanged (null when the diff reached its time limit). */
-export function longestKept(a: string, b: string, opts: { timeoutSec?: number } = {}): number | null {
-  if (a === b) return a.length;
-  const dmp = new DiffMatchPatch();
-  const t = opts.timeoutSec;
-  const limit = typeof t === 'number' && Number.isFinite(t) && t >= 0 ? t : LOCK_DIFF_TIMEOUT_SEC;
-  dmp.Diff_Timeout = limit;
-  const t0 = performance.now();
-  const diffs = dmp.diff_main(a, b) as Diff[];
-  if (limit > 0 && performance.now() - t0 >= limit * 1000) return null;
-  let best = 0;
-  for (const [op, text] of diffs) if (op === DIFF_EQUAL && text.length > best) best = text.length;
-  return best;
-}
-
-/**
  * Transforms every span from `prev` to `cur` (section 8 rules 2–3). Returns new span objects; the input is never
  * changed. `timeoutSec` is diff_main's time limit (default LOCK_DIFF_TIMEOUT_SEC; 0 means none).
  *

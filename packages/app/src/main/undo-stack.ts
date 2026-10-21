@@ -18,7 +18,9 @@
 // pending slot, in the order commits were accepted), is filled when its write lands and cancelled when it becomes a
 // note or a refusal, so "the newest write" is well defined while writes are in flight. undo() takes the newest
 // entry whose write has landed; main runs it in the document's lane, behind the commits in flight. An entry put
-// back after a failed undo goes where it was, below everything accepted since.
+// back after a failed undo goes where it was, below everything accepted since. The hardening round: a Cmd+Z pressed
+// while the newest slot is pending is for that write (pendingTop, undoSlot): when its commit becomes a note, the
+// undo does nothing (it used to undo the author's previous edit, on another slide).
 
 import { randomBytes } from 'node:crypto';
 import type { WriteRecord } from '@blueline/core/types';
@@ -203,6 +205,28 @@ export class UndoStack {
       return copyEntry(slot.entry);
     }
     return null;
+  }
+
+  /**
+   * The token of the newest slot when its write is still pending (its commit in flight), else null. Cmd+Z pressed
+   * then is for that write (the hardening round, E-3 as amended): undoSlot() takes it once it has landed.
+   */
+  pendingTop(): string | null {
+    const top = this.undos[this.undos.length - 1];
+    return top && top.entry === null ? top.token : null;
+  }
+
+  /**
+   * Starts undoing the write of slot `token`, which has landed: its entry, or null when the slot is gone (its commit
+   * became a note or a refusal), still pending, or another operation is in flight. Never an older write.
+   */
+  undoSlot(token: string): UndoEntry | null {
+    if (this.inFlight) return null;
+    const i = this.undos.findIndex((x) => x.token === token);
+    if (i === -1 || !this.undos[i].entry) return null;
+    const slot = this.undos.splice(i, 1)[0];
+    this.inFlight = { entry: slot.entry!, seq: slot.seq, kind: 'undo', pushedSince: false };
+    return copyEntry(slot.entry!);
   }
 
   /** Starts redoing the most recently undone write: pass entry.record (the ORIGINAL record) to WriteQueue.redo. */

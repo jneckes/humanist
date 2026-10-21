@@ -303,7 +303,11 @@ test('a PDF running when its document closes settles at once (disposeRenderer ca
   const closedAt = Date.now();
   await rt('close', id);
   const outcome = await Promise.race([settled, new Promise<string>((r) => setTimeout(() => r('still pending'), 15_000))]);
-  expect(outcome).toMatch(/closed|cancelled/);
+  test.info().annotations.push({ type: 'outcome', description: outcome.slice(0, 300) });
+  // Cancelled, wherever the close lands: never a failure such as "a render view showed the overlay" (a probe of
+  // the closed view answered with its fallback, seen under load) or a load error from a new renderer of the closed
+  // document (a later stage of the job asking rendererFor again).
+  expect(outcome).toMatch(/\bRenderCancelled: /);
   expect(Date.now() - closedAt).toBeLessThan(15_000);
   expect(fs.existsSync(out)).toBe(false);
   expect(fs.readdirSync(outDir).filter((f) => f.includes('closed-mid-way'))).toEqual([]);

@@ -20,7 +20,10 @@ import { emptySession } from '../../../packages/app/src/main/session-store';
 const editor: EditorModule = { editorVersion, createWriteQueue };
 const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'bl-history-requeue-')));
 const sha = (s: string) => createHash('sha256').update(Buffer.from(s)).digest('hex');
-const DECK = ['<!doctype html>', '<html><head><title>Plan</title></head><body>', '<h1>Research &amp; Development</h1>', '<p>Second line here</p>', '<p>Third line stays</p>', '</body></html>', ''].join('\n');
+// The filler keeps the other program's change (before </body>) away from the edited run: a stale edit is written
+// only where the text on both sides of it is unchanged (packages/editor/src/anchors.ts, E-1).
+const FILLER = Array.from({ length: 4 }, (_, i) => `<p>Filler line ${i}: words that stay as they are.</p>`);
+const DECK = ['<!doctype html>', '<html><head><title>Plan</title></head><body>', '<h1>Research &amp; Development</h1>', '<p>Second line here</p>', '<p>Third line stays</p>', ...FILLER, '</body></html>', ''].join('\n');
 let n = 0;
 const testEnv = process.env.BLUELINE_TEST;
 afterEach(() => {

@@ -376,7 +376,7 @@ function fromValidator<T>(v: { ok: true; value: T } | { ok: false; why: string }
 // ------------------------------------------------------------------------------------------- RenderView
 
 export class RenderError extends Error {
-  override readonly name = 'RenderError';
+  override readonly name: string = 'RenderError';
 }
 
 /** What RenderView.load serves: blueline://<docId>/<fileName>, through the partition's protocol handler. */
@@ -648,7 +648,7 @@ export class RenderView {
     });
     this.wc.once('destroyed', () => {
       this.closing = true;
-      const e = new RenderError('the render view was closed');
+      const e = this.closedError();
       this.rejectAll(e);
       this.closeWith(e);
     });
@@ -682,9 +682,23 @@ export class RenderView {
     return this.closing || this.win.isDestroyed() || this.wc.isDestroyed();
   }
 
-  /** `p`, or a rejection as soon as the view is closed (see `closed`). */
-  private whileOpen<T>(p: Promise<T>): Promise<T> {
-    return Promise.race([p, this.closed]);
+  /**
+   * A closed view (close(), or its webContents destroyed) ends whatever its job does as cancelled: every method
+   * rejects with RenderCancelled from then on, whatever the call into Chromium answered meanwhile. A render
+   * process that is gone is a failure (RenderError), not a close.
+   */
+  private closedError(): RenderCancelled {
+    return new RenderCancelled('the render view was closed');
+  }
+
+  /** `p`, or a rejection as soon as the view is closed (see `closed`); a call that fails on a closed view is cancelled. */
+  private async whileOpen<T>(p: Promise<T>): Promise<T> {
+    try {
+      return await Promise.race([p, this.closed]);
+    } catch (e) {
+      if (this.isDestroyed()) throw this.closedError();
+      throw e;
+    }
   }
 
   private rejectAll(e: Error): void {
@@ -725,7 +739,7 @@ export class RenderView {
    * exposed to the page and no port is opened; motion.ts does the same for the deck view).
    */
   async cdp<T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs = 10_000): Promise<T> {
-    if (this.isDestroyed()) throw new RenderError('the render view was closed');
+    if (this.isDestroyed()) throw this.closedError();
     if (!this.wc.debugger.isAttached()) this.wc.debugger.attach('1.3');
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -753,16 +767,16 @@ export class RenderView {
       await this.cdp('Emulation.setEmulatedMedia', emulatedMediaCommand(true));
       this.motionReduced = true;
     } catch (e) {
-      if (this.isDestroyed()) throw new RenderCancelled('the render view was closed');
+      if (this.isDestroyed()) throw this.closedError();
       this.log(`render view: reduced motion not applied (${e instanceof Error ? e.message : String(e)})`);
     }
   }
 
   /** Loads a document of this view's partition. Resolves when the main frame finished loading. */
   async load(target: LoadTarget, timeoutMs = LOAD_TIMEOUT_MS): Promise<void> {
-    if (this.isDestroyed()) throw new RenderError('the render view was closed');
+    if (this.isDestroyed()) throw this.closedError();
     await this.applyMotion();
-    if (this.isDestroyed()) throw new RenderCancelled('the render view was closed');
+    if (this.isDestroyed()) throw this.closedError();
     this.attach(target.docId);
     // Replies from the previous document can never arrive now.
     this.rejectAll(new RenderError('the render view loaded another page'));
@@ -789,7 +803,7 @@ export class RenderView {
 
   /** Sends one RenderCmd to the render agent and waits for its reply. Rejects on an error reply or timeout. */
   async request(cmd: RenderCmd, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
-    if (this.isDestroyed()) throw new RenderError('the render view was closed');
+    if (this.isDestroyed()) throw this.closedError();
     if (this.gone) throw new RenderError(`the render process is gone (${this.gone})`);
     const reqId = this.nextReq++;
     const reply = await new Promise<RenderReply>((resolve, reject) => {
@@ -846,24 +860,33 @@ export class RenderView {
     return this.checked({ type: 'scroll-blocks' }, resultCheck.scrollBlocks);
   }
 
-  /** Runs `code` in main's own isolated world (RENDER_WORLD_ID), with a cap on how long it may take. */
+  /**
+   * Runs `code` in main's own isolated world (RENDER_WORLD_ID), with a cap on how long it may take: `fallback`
+   * when the probe fails or times out on a live view. On a closed view it rejects with RenderCancelled, before the
+   * probe or as soon as the view closes during it: a fallback must never stand for the page's answer when the
+   * view went away (overlayMounted's fallback is "mounted", which made a PDF cancelled by its document's close
+   * fail with "a render view showed the overlay").
+   */
   private async inProbeWorld<T>(code: string, timeoutMs: number, fallback: T): Promise<T> {
-    if (this.isDestroyed()) return fallback;
+    if (this.isDestroyed()) throw this.closedError();
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let r: T;
     try {
-      return (await Promise.race([
+      r = (await Promise.race([
         this.wc.executeJavaScriptInIsolatedWorld(RENDER_WORLD_ID, [{ code }]),
         new Promise<T>((resolve) => {
           timer = setTimeout(() => resolve(fallback), timeoutMs);
         }),
-        // A closed view answers at once, so a walk that disposeRenderer cut off ends now, not at the timeout.
-        this.closed.catch(() => fallback),
+        // A closed view ends the probe at once, so a walk that disposeRenderer cut off ends now, not at the timeout.
+        this.closed,
       ])) as T;
     } catch {
-      return fallback;
+      r = fallback;
     } finally {
       clearTimeout(timer);
     }
+    if (this.isDestroyed()) throw this.closedError();
+    return r;
   }
 
   /**
@@ -964,7 +987,7 @@ export class RenderView {
     if (this.trustedKeys !== false) {
       const keyCode = acceleratorKeyFor(key);
       if (keyCode === null) throw new RenderError(`not a navigation key: ${JSON.stringify(key).slice(0, 20)}`);
-      if (this.isDestroyed()) throw new RenderCancelled('the render view was closed');
+      if (this.isDestroyed()) throw this.closedError();
       this.wc.focus();
       this.wc.sendInputEvent({ type: 'keyDown', keyCode });
       this.wc.sendInputEvent({ type: 'keyUp', keyCode });
@@ -995,7 +1018,7 @@ export class RenderView {
    * viewport (or rect) size times the scale.
    */
   async capture(rect?: Rectangle): Promise<CaptureResult> {
-    if (this.isDestroyed()) throw new RenderError('the render view was closed');
+    if (this.isDestroyed()) throw this.closedError();
     const image = await this.whileOpen(this.wc.capturePage(rect, { stayHidden: true }));
     const size = image.getSize();
     const expected = expectedCaptureSize(this.viewport, rect);
@@ -1016,7 +1039,9 @@ export class RenderView {
 
   /**
    * 6.9 Save as PDF / Print: whether the deck preload mounted its overlay here. Render mode has no UI (6.7),
-   * so this is false on every render view; PDFs and prints refuse a view where it is not.
+   * so this is false on every render view; PDFs and prints refuse a view where it is not. A probe that cannot
+   * answer on a live view counts as mounted (when unsure, refuse); a view closed before or during the probe
+   * rejects with RenderCancelled (inProbeWorld).
    */
   async overlayMounted(): Promise<boolean> {
     const r = await this.inProbeWorld<unknown>('(function(){return !!document.querySelector("blueline-overlay")})()', 2000, true);
@@ -1212,7 +1237,7 @@ export class RenderView {
         });
       }
     };
-    if (this.isDestroyed()) throw new RenderError('the render view was closed');
+    if (this.isDestroyed()) throw this.closedError();
     if (!this.wc.debugger.isAttached()) this.wc.debugger.attach('1.3');
     this.wc.debugger.on('message', onMessage);
     const sheets: StyleSheetText[] = [];
@@ -1273,7 +1298,7 @@ export class RenderView {
 
   /** webContents.printToPDF of the loaded page (6.9 Save as PDF). */
   async printToPDF(options: Electron.PrintToPDFOptions): Promise<Uint8Array> {
-    if (this.isDestroyed()) throw new RenderError('the render view was closed');
+    if (this.isDestroyed()) throw this.closedError();
     const buf = await this.whileOpen(this.wc.printToPDF(options));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
@@ -1281,7 +1306,7 @@ export class RenderView {
   /** Closes the window. Whatever still waits on it rejects with RenderCancelled (disposeRenderer, the pool). */
   close(): void {
     this.closing = true;
-    const e = new RenderCancelled('the render view was closed');
+    const e = this.closedError();
     this.rejectAll(e);
     this.closeWith(e);
     if (!this.wc.isDestroyed()) this.wc.close();
@@ -1413,7 +1438,7 @@ export class RenderPool {
   }
 
   async acquire(): Promise<RenderView> {
-    if (this.closed) throw new RenderError('the render pool is closed');
+    if (this.closed) throw new RenderCancelled('the render pool is closed');
     let v = this.idle.pop();
     while (v && v.isDestroyed()) v = this.idle.pop();
     if (!v && this.size < this.limit) v = this.factory();
@@ -1468,8 +1493,10 @@ export class RenderPool {
 // the viewport its job needs (the index walks at 1600×900, thumbnails and PDF pages at the design size),
 // with reduced motion, kept for a while after a job and closed when idle.
 
-/** A render was cancelled: a newer version of the document, or the document closed. */
-export class RenderCancelled extends RenderError {}
+/** A render was cancelled: a newer version of the document, or the document closed (its render views closed). */
+export class RenderCancelled extends RenderError {
+  override readonly name: string = 'RenderCancelled';
+}
 
 export function throwIfCancelled(signal?: AbortSignal | null): void {
   if (signal?.aborted) throw new RenderCancelled('the render was cancelled');
@@ -1570,7 +1597,7 @@ export class ViewSlots<V> {
 
   async acquire(key: string, signal?: AbortSignal | null): Promise<V> {
     for (;;) {
-      if (this.closed) throw new RenderError('the render pool is closed');
+      if (this.closed) throw new RenderCancelled('the render pool is closed');
       throwIfCancelled(signal);
       for (let i = this.items.length - 1; i >= 0; i--) if (!this.items[i].busy && this.dead(this.items[i].v)) this.drop(i);
       const idle = this.items.find((i) => !i.busy && i.key === key);
@@ -1641,6 +1668,7 @@ export class ViewSlots<V> {
 export class DocumentRenderer {
   private target: RenderTarget;
   private readonly slots: ViewSlots<RenderView>;
+  private closedFlag = false;
 
   constructor(
     target: RenderTarget,
@@ -1692,7 +1720,13 @@ export class DocumentRenderer {
     return this.slots.size;
   }
 
+  /** close() ran (disposeRenderer, or a target of another partition replaced this renderer). */
+  get closed(): boolean {
+    return this.closedFlag;
+  }
+
   close(): void {
+    this.closedFlag = true;
     this.slots.close();
   }
 }
@@ -1704,9 +1738,21 @@ function parseViewportKey(key: string): Viewport {
 }
 
 const renderers = new Map<string, DocumentRenderer>();
+/**
+ * The renderer each target was last served by. A job holds its target from start to end (a PDF: the index, the
+ * print-CSS try, then the raster walk, each asking rendererFor again), so a target whose renderer was closed
+ * belongs to a job its document's close cancelled: it gets RenderCancelled, never a new renderer of a closed
+ * document. A document opened again comes with targets of its own (renderTargetFor), so a Trusted file's stable
+ * docId is served again. Weak: a finished job's target goes with it.
+ */
+const servedBy = new WeakMap<RenderTarget, DocumentRenderer>();
 
-/** The document's renderer (one per docId), created on first use; a newer target for it updates it. */
+/**
+ * The document's renderer (one per docId), created on first use; a newer target for it updates it. Rejects
+ * (throws RenderCancelled) for a target a closed renderer served: its document closed while the job ran.
+ */
 export function rendererFor(target: RenderTarget, host: RenderHost = renderHost()): DocumentRenderer {
+  if (servedBy.get(target)?.closed) throw new RenderCancelled('the document was closed');
   let r = renderers.get(target.docId);
   if (r && r.current.partition !== target.partition) {
     r.close();
@@ -1716,6 +1762,7 @@ export function rendererFor(target: RenderTarget, host: RenderHost = renderHost(
     r = new DocumentRenderer(target, host);
     renderers.set(target.docId, r);
   } else if (r.current !== target) r.update(target);
+  servedBy.set(target, r);
   return r;
 }
 

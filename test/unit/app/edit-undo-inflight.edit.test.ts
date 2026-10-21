@@ -93,7 +93,7 @@ async function setup(src: string) {
     return sent.slice(k).find((x) => x.channel === 'bl:edit:result')!.payload as EditResult;
   };
   const read = () => fs.readFileSync(file, 'utf8');
-  return { s, notes, session, toasts, commit, read, setSnap: (f: () => Promise<void>) => (onSnap = f) };
+  return { s, notes, session, toasts, commit, read, file, setSnap: (f: () => Promise<void>) => (onSnap = f) };
 }
 
 for (const layout of ['far', 'near'] as const) {
@@ -136,5 +136,30 @@ describe('control: Cmd+Z after the commit landed', () => {
     expect(r.read()).toContain('EDIT1');
     await r.s.appUndo('redo');
     expect(r.read()).toContain('EDIT2');
+  });
+});
+
+describe('Cmd+Z while the newest commit is written, and that commit becomes a note (the hardening round, E-3 as amended)', () => {
+  it('nothing is undone: the author\'s previous edit stays, and the toast says the edit was kept as a note', async () => {
+    const r = await setup(deck('far'));
+    expect((await r.commit('Alpha heading text', 'Alpha heading EDIT1')).outcome).toBe('written');
+    let undo: Promise<void> | null = null;
+    // E2's write is in progress: another program rewrites E2's paragraph (the write conflicts and requeues onto the
+    // new bytes, where its text is gone: a verbatim note), and Cmd+Z is pressed now.
+    r.setSnap(async () => {
+      fs.writeFileSync(r.file, r.read().replace('Beta paragraph text', 'Beta paragraph rewritten by the agent'));
+      undo = r.s.appUndo('undo');
+      await new Promise((res) => setTimeout(res, 5));
+    });
+    expect((await r.commit('Beta paragraph text', 'Beta paragraph EDIT2')).outcome).toBe('verbatim');
+    await undo;
+    expect(r.read()).toContain('Alpha heading EDIT1');
+    expect(r.read()).toContain('Beta paragraph rewritten by the agent');
+    expect(r.toasts.map((t) => t.text)).toContain('Nothing undone: your last edit was kept as a note');
+    expect(r.toasts.some((t) => /^Undone/.test(t.text))).toBe(false);
+    expect(r.s.undo.size).toEqual({ undo: 1, redo: 0 });
+    // The next Cmd+Z, pressed with nothing in flight, is for the edit before it.
+    await r.s.appUndo('undo');
+    expect(r.read()).not.toContain('EDIT1');
   });
 });

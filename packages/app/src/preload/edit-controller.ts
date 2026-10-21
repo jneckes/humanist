@@ -321,6 +321,45 @@ export function offsetAt(t: Text, x: number, y: number): number | null {
   return null;
 }
 
+/**
+ * Where a press puts the caret, worked out in the layout the author pressed on (the hardening round after the
+ * repair): in the pressed text node, before anything re-lays the text out. Opening a field resets the element's
+ * case (6.3 Source case) and the previous field's commit puts its case back, and either can move text under the
+ * press point; a caret placed from the point after that lands in another run of the element (an uppercase title
+ * 'Revenue <em>Revenue</em>' wrote the typed text into the second word). `data` is the node's text then: the caret
+ * is placed only while the node still holds it.
+ */
+export interface PressCaret {
+  node: Text;
+  offset: number;
+  data: string;
+}
+
+export function pressCaret(t: Text, x: number, y: number): PressCaret {
+  const doc = t.ownerDocument;
+  let offset: number | null = null;
+  if (typeof doc.caretPositionFromPoint === 'function') {
+    const pos = doc.caretPositionFromPoint(x, y);
+    if (pos && pos.offsetNode === t) offset = pos.offset;
+  }
+  if (offset === null) offset = offsetAt(t, x, y);
+  if (offset === null) {
+    // On the text but in no character's box (between lines): the nearer end of the node.
+    const r = doc.createRange();
+    r.selectNodeContents(t);
+    const b = r.getBoundingClientRect();
+    offset = x < (b.left + b.right) / 2 ? 0 : t.data.length;
+  }
+  offset = Math.max(0, Math.min(offset, t.data.length));
+  // Never between the halves of a surrogate pair.
+  if (offset > 0 && offset < t.data.length) {
+    const lo = t.data.charCodeAt(offset);
+    const hi = t.data.charCodeAt(offset - 1);
+    if (lo >= 0xdc00 && lo <= 0xdfff && hi >= 0xd800 && hi <= 0xdbff) offset--;
+  }
+  return { node: t, offset, data: t.data };
+}
+
 // ------------------------------------------------------------------------------------------- fields
 
 /** What a field needs from the controller. */
@@ -371,6 +410,8 @@ abstract class Field implements ActiveEdit {
   /** The page changed the field's element after it closed, before main answered: nothing is written back then. */
   changedAfterClose = false;
   caretRunId: string | null;
+  /** The caret went where the press put it (pressCaret); false when the field opened without one or it was lost. */
+  caretPlaced = false;
   readonly history = new FieldHistory();
   protected readonly nodeRun: Map<Text, string>;
   /** The DOM when the field opened: restored on cancel, on a note or a refusal, and under a written edit. */
@@ -526,10 +567,10 @@ class HtmlField extends Field {
 
   /**
    * Makes the element editable (9.2 step 1) with the file's case showing (6.3 Source case) and text selection on
-   * (P2-17). Called inside the press's pointerdown when `focus` is false: the browser's own mousedown then
-   * focuses it and places the caret.
+   * (P2-17), and focuses it with the caret where the author pressed: `focus.caret`, worked out before Source case
+   * re-laid the text out (pressCaret). Placed from the point only when there is no such caret.
    */
-  begin(focus: { x: number | null; y: number | null } | null): void {
+  begin(focus: { x: number | null; y: number | null; caret?: PressCaret | null } | null): void {
     const el = this.element;
     const cs = this.host.win.getComputedStyle(el);
     const styles: [string, string, string][] = [];
@@ -554,7 +595,40 @@ class HtmlField extends Field {
     this.saved = { ce: el.getAttribute('contenteditable'), styles, sourceCase };
     el.setAttribute('contenteditable', 'plaintext-only');
     this.watchPage();
-    if (focus) this.focusAt(focus.x, focus.y);
+    if (focus) {
+      if (focus.caret) this.caretPlaced = this.placeCaret(focus.caret);
+      // No press caret, or its node no longer holds what was pressed: placed from the point, where the author now
+      // sees it (keys held for a deferred field are not typed then: openDeferred).
+      if (!this.caretPlaced) this.focusAt(focus.x, focus.y);
+    }
+  }
+
+  /**
+   * Focuses the field with the caret at a press's caret (pressCaret), when its node is still one of the field's
+   * and still holds the text it held at the press. False when it cannot: nothing is placed then.
+   */
+  placeCaret(c: PressCaret): boolean {
+    const el = this.element;
+    if (!c.node.isConnected || !el.contains(c.node) || c.node.data !== c.data || c.offset > c.node.data.length) return false;
+    el.focus({ preventScroll: true });
+    const sel = this.host.win.getSelection();
+    if (!sel) return false;
+    sel.collapse(c.node, c.offset);
+    return true;
+  }
+
+  /**
+   * After the press's own mousedown placed the caret (by the point, in the layout Source case just changed), puts it
+   * where the press was in the layout the author pressed on. Only a collapsed caret moves: a drag that started on the
+   * press keeps its selection. False when nothing was done.
+   */
+  correctCaret(c: PressCaret): boolean {
+    if (this.closed) return false;
+    const sel = this.host.win.getSelection();
+    if (!sel || sel.rangeCount === 0 || !sel.isCollapsed) return false;
+    if (sel.anchorNode === c.node && sel.anchorOffset === c.offset) return true;
+    if (!this.element.contains(sel.anchorNode)) return false;
+    return this.placeCaret(c);
   }
 
   /**
@@ -916,6 +990,8 @@ interface DeferredOpen {
   node: Text;
   x: number;
   y: number;
+  /** Where the press put the caret, in the layout the author pressed on (pressCaret). */
+  caret: PressCaret;
   pick: { runId: string } | null;
   timer: ReturnType<typeof setTimeout>;
   /**
@@ -931,9 +1007,9 @@ interface DeferredOpen {
 type Gesture =
   | { kind: 'overlay'; run: (() => void) | null }
   | { kind: 'field' }
-  | { kind: 'opened'; x: number; y: number; covered?: boolean }
-  | { kind: 'pick'; node: Text; match: MatchResult; pick: EditPick['kind']; x: number; y: number }
-  | { kind: 'svg'; node: Text; runId: string; x: number; y: number }
+  | { kind: 'opened'; x: number; y: number; caret: PressCaret; covered: boolean }
+  | { kind: 'pick'; node: Text; match: MatchResult; pick: EditPick['kind']; x: number; y: number; caret: PressCaret }
+  | { kind: 'svg'; node: Text; runId: string; x: number; y: number; caret: PressCaret }
   | { kind: 'refuse'; text: string }
   | { kind: 'swallow' };
 
@@ -946,6 +1022,7 @@ interface PickerState {
   requested: Set<string>;
   x: number;
   y: number;
+  caret: PressCaret;
   model: PickerModel | null;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -1671,30 +1748,35 @@ export class EditController implements FieldHost {
     }
     const { match, ed } = this.classify(t);
     const svg = t.parentElement?.namespaceURI === SVG_NS;
+    // Where the caret goes, in the layout the author pressed on: before the open field's commit puts its case back
+    // and before this field's Source case (6.3) re-lays the text out (pressCaret).
+    const caret = pressCaret(t, x, y);
     if (ed.kind === 'exact' && !svg) {
       this.deps.closeCard();
       if (this.field) this.commit(this.field, 'replaced');
       // E-1: never a field on a version with an unanswered commit of this page (this press's own included): it
-      // opens once the answers are in, on the version the page then shows.
-      if (this.defer(t, x, y, null)) {
+      // opens once the answers are in, on the version the page then shows, with the press's caret.
+      if (this.defer(t, x, y, null, caret)) {
         e.preventDefault();
         this.gesture = { kind: 'swallow' };
         return;
       }
       if (hit.covered) {
         // E-9: the browser's mousedown would focus what covers the text (a nav button): the field takes focus and
-        // the caret at the point itself, and nothing of the press reaches the page.
+        // the press's caret itself, and nothing of the press reaches the page.
         e.preventDefault();
-        if (this.openField(t, ed.runId, null, { x, y })) {
-          this.gesture = { kind: 'opened', x, y, covered: true };
+        if (this.openField(t, ed.runId, null, { x, y, caret })) {
+          this.gesture = { kind: 'opened', x, y, caret, covered: true };
           return;
         }
         this.gesture = { kind: 'refuse', text: 'Not editable' };
         return;
       }
-      // No preventDefault: the browser's mousedown focuses the field and places the caret where the author pressed.
+      // No preventDefault: the browser's mousedown focuses the field (its native focus, which spellchecking and a
+      // drag-select need) and places a caret; that caret is taken from the point in the layout Source case has just
+      // changed, so the mouseup puts it back where the press was (correctCaret).
       if (this.openField(t, ed.runId, null, null)) {
-        this.gesture = { kind: 'opened', x, y };
+        this.gesture = { kind: 'opened', x, y, caret, covered: false };
         return;
       }
       e.preventDefault();
@@ -1703,8 +1785,8 @@ export class EditController implements FieldHost {
     }
     // Everything else acts on the click; nothing moves focus or starts a selection meanwhile.
     e.preventDefault();
-    if (ed.kind === 'exact') this.gesture = { kind: 'svg', node: t, runId: ed.runId, x, y };
-    else if (ed.kind === 'pick' && match) this.gesture = { kind: 'pick', node: t, match, pick: ed.pick, x, y };
+    if (ed.kind === 'exact') this.gesture = { kind: 'svg', node: t, runId: ed.runId, x, y, caret };
+    else if (ed.kind === 'pick' && match) this.gesture = { kind: 'pick', node: t, match, pick: ed.pick, x, y, caret };
     else this.gesture = { kind: 'refuse', text: 'Not editable' };
   }
 
@@ -1727,6 +1809,9 @@ export class EditController implements FieldHost {
     const g = this.gesture;
     // A field opened on covered text keeps its focus: the mousedown's default would move it to the cover (E-9).
     if (g.kind !== 'field' && !(g.kind === 'opened' && !g.covered)) e.preventDefault();
+    // The press's mousedown placed the caret in the layout Source case changed: the mouseup puts it where the press
+    // was (a drag keeps its selection).
+    if (e.type === 'mouseup' && g.kind === 'opened' && !g.covered && this.field instanceof HtmlField) this.field.correctCaret(g.caret);
   }
 
   private onClick(e: MouseEvent): void {
@@ -1745,9 +1830,14 @@ export class EditController implements FieldHost {
       case 'swallow':
         return;
       case 'opened': {
-        // The browser normally focused the field on the press; make sure (a page style may have stopped it).
+        // The browser normally focused the field on the press; make sure (a page style may have stopped it), with the
+        // press's caret.
         const f = this.field;
-        if (f && !f.closed && this.doc.activeElement !== f.element) f.focusAt(g.x, g.y);
+        if (f instanceof HtmlField && !f.closed) {
+          if (this.doc.activeElement !== f.element) {
+            if (!f.placeCaret(g.caret)) f.focusAt(null, null);
+          } else if (!g.covered) f.correctCaret(g.caret);
+        }
         this.gesture = { kind: 'field' };
         return;
       }
@@ -1761,7 +1851,7 @@ export class EditController implements FieldHost {
         this.gesture = null;
         this.deps.closeCard();
         if (this.field) this.commit(this.field, 'replaced');
-        if (this.defer(g.node, g.x, g.y, null)) return;
+        if (this.defer(g.node, g.x, g.y, null, g.caret)) return;
         if (!this.openField(g.node, g.runId, null, { x: g.x, y: g.y })) this.toast('Not editable');
         return;
       case 'refuse':
@@ -1835,7 +1925,7 @@ export class EditController implements FieldHost {
    * opens once every answer (and, for an html-text write, its map) is in, on the version the page shows then.
    * Until then a "Saving…" badge sits by the text. True when it waits.
    */
-  private defer(node: Text, x: number, y: number, pick: { runId: string } | null): boolean {
+  private defer(node: Text, x: number, y: number, pick: { runId: string } | null, caret: PressCaret): boolean {
     // 9.2 step 6: main sends a write's map before its result, so once the answers are in the page shows the version
     // they made (or waits for a reload).
     if (this.pending.size === 0) return false;
@@ -1846,7 +1936,7 @@ export class EditController implements FieldHost {
       this.dropDeferred();
       if (typed) this.toast(NOT_TYPED);
     }, COMMIT_TIMEOUT_MS);
-    this.deferred = { node, x, y, pick, timer, keys: { text: '', enter: false, dropped: false } };
+    this.deferred = { node, x, y, caret, pick, timer, keys: { text: '', enter: false, dropped: false } };
     this.overlay.showOutline(null);
     this.overlay.setFitBadge('Saving\u2026', this.nodeRect(node) ?? { x, y, w: 0, h: 0 });
     return true;
@@ -1884,14 +1974,20 @@ export class EditController implements FieldHost {
     if (d.pick) {
       // The run the author chose must still be one of the node's candidates in the version shown now.
       if (ed.kind === 'pick' && match && match.candidates.some((c) => c.runId === d.pick!.runId)) {
-        opened = this.openField(d.node, d.pick.runId, { runId: d.pick.runId, kind: ed.pick }, { x: d.x, y: d.y });
+        opened = this.openField(d.node, d.pick.runId, { runId: d.pick.runId, kind: ed.pick }, { x: d.x, y: d.y, caret: d.caret });
       } else {
         tell('The text changed meanwhile: click it again');
         return;
       }
-    } else if (ed.kind === 'exact') opened = this.openField(d.node, ed.runId, null, { x: d.x, y: d.y });
+    } else if (ed.kind === 'exact') opened = this.openField(d.node, ed.runId, null, { x: d.x, y: d.y, caret: d.caret });
     if (!opened) {
       tell('Not editable');
+      return;
+    }
+    // The held keys go where the press put the caret, or nowhere: never where the point lands in the new layout.
+    const f = this.field as Field | null;
+    if (typed && f instanceof HtmlField && !f.caretPlaced) {
+      this.toast(NOT_TYPED);
       return;
     }
     this.replayKeys(keys);
@@ -1917,7 +2013,7 @@ export class EditController implements FieldHost {
    * (the clicked one with `runId`, or the picked run), and tells main (EditBegin, P2-7). `focus` null means the
    * press's own mousedown will focus it.
    */
-  private openField(t: Text, runId: string, pick: { runId: string; kind: EditPick['kind'] } | null, focus: { x: number; y: number } | null): boolean {
+  private openField(t: Text, runId: string, pick: { runId: string; kind: EditPick['kind'] } | null, focus: { x: number; y: number; caret?: PressCaret } | null): boolean {
     const version = this.pageVersion;
     const matcher = this.matcherNow();
     const el = t.parentElement;
@@ -1961,7 +2057,7 @@ export class EditController implements FieldHost {
       field = f;
       f.onCancel = () => this.cancel(f);
       this.field = f;
-      f.begin(focus ? { x: focus.x, y: focus.y } : null);
+      f.begin(focus ? { x: focus.x, y: focus.y, caret: focus.caret ?? null } : null);
     }
     // 6.3: whatever started running since Edit began (a slide change's Web Animations) pauses too.
     this.pause.pause();
@@ -2207,7 +2303,7 @@ export class EditController implements FieldHost {
 
   // ------------------------------------------------------------------------------------------- the picker
 
-  private openPicker(g: { node: Text; match: MatchResult; pick: EditPick['kind']; x: number; y: number }): void {
+  private openPicker(g: { node: Text; match: MatchResult; pick: EditPick['kind']; x: number; y: number; caret: PressCaret }): void {
     const version = this.pageVersion;
     if (!version) return;
     const runIds = [...new Set(g.match.candidates.map((c) => c.runId))].slice(0, EDIT_LIMITS.candidates);
@@ -2222,7 +2318,7 @@ export class EditController implements FieldHost {
       this.closePicker();
       this.toast('Could not list the places this text comes from');
     }, CANDIDATES_TIMEOUT_MS);
-    this.picker = { id, version, node: g.node, data: g.node.data, pick: g.pick, requested: new Set(runIds), x: g.x, y: g.y, model: null, timer };
+    this.picker = { id, version, node: g.node, data: g.node.data, pick: g.pick, requested: new Set(runIds), x: g.x, y: g.y, caret: g.caret, model: null, timer };
     this.overlay.showOutline(null);
     this.pickerView.loading(this.nodeRect(g.node) ?? { x: g.x, y: g.y, w: 0, h: 0 });
     const req: EditCandidatesRequest = { fieldId: id, version, runIds };
@@ -2272,8 +2368,8 @@ export class EditController implements FieldHost {
       return;
     }
     if (this.field) this.commit(this.field, 'picker');
-    if (this.defer(p.node, p.x, p.y, { runId: c.runId })) return;
-    if (!this.openField(p.node, c.runId, { runId: c.runId, kind: p.pick }, { x: p.x, y: p.y })) this.toast('Not editable');
+    if (this.defer(p.node, p.x, p.y, { runId: c.runId }, p.caret)) return;
+    if (!this.openField(p.node, c.runId, { runId: c.runId, kind: p.pick }, { x: p.x, y: p.y, caret: p.caret })) this.toast('Not editable');
   }
 
   private closePicker(): void {

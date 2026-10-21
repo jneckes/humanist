@@ -14,7 +14,10 @@ session, the overlay, the clean-up and both fuzz harnesses (section "Review roun
 those fixes found some incomplete and some new problems, which a repair step fixed ("The re-verification and the
 repair"). A measurement step then added two duplicated-text cases to the concurrency gate and ran every harness and
 suite once more on the repaired tree, from a clean build, on 2026-10-21 ("The final runs"); the table and every
-result below come from those runs, unless a section says it describes an earlier one.
+result below come from those runs, unless a section says it describes an earlier one. A hardening round then
+had three attackers look for wrong-place writes in that build; it fixed all 13 they found and the two tests that
+failed by chance, and ran every suite and harness again from a clean build ("The hardening round", below; its
+numbers are the ones that section gives, and the paragraph under the table sums them up).
 
 | Criterion | Gate (SPEC 10 Phase 2) | Result here |
 |---|---|---|
@@ -23,6 +26,11 @@ result below come from those runs, unless a section says it describes an earlier
 | Concurrency | an external write 50 ms before the commit: the edit lands on the right text or becomes a verbatim note; the external change survives | **met**: through the app, `test/e2e/edit-gate-concurrency.spec.ts` (an unrelated change, the same text rewritten, an element inserted before the target, duplicated text whose neighbour changes on the edited copy, in two places, a change while the field stays open, a write inside the atomic write before the re-hash): 7 of 7 in the final E2E run, and with the typed-edit spec 30 of 30 run three times; the inserted element's edit landed on its heading in all 4 runs, and each duplicated-text edit on the copy the author typed in, in all 4 runs (on commit 91b58dc both of those cases wrote the edit into the other copy, 3 runs of 3 each); below the app, the queue's unit tests (stale requests next to moved and inserted copies among them) and the fuzz's external writes (none lost, every edit on its run or a note by rule). The window between the re-hash and the rename is the protocol's stated limit |
 | Reader-only | `npm run test:reader-only` passes with `packages/editor` removed | **met**: `PASSED` in 16 min (951 s): the copy without `packages/editor`, the reader-only build, the bundle check, tsc, vitest (96 files, 1,883 tests), the reader-only `map`, the E2E suite without `@edit` (168 tests, 1 the known note-card ordering limit, an expected failure) and the security suite without `@edit` (57 tests, 6 expected failures, the known limits) all pass |
 | Real use | Josh finishes 3 real decks using only Edit for text changes | **not started**: needs the Mac build; checklist below |
+
+After the hardening round (its final runs, on the tree with every fix of the round): the fuzz gate on the committed
+decks wrote 894 of its 1,000 edits with **0 failures** (81 notes by rule, 25 no-ops, every written edit probed); on
+Josh's decks 915 were written and passed, with 58 notes, 26 no-ops and **1 failure**, again D5's ticker; the
+typed-edit and concurrency specs passed 30 of 30 over three repeats; `npm run test:reader-only` PASSED in 944 s.
 
 ## Review round 1 (the Phase 2 review)
 
@@ -91,9 +99,9 @@ Nothing was deferred: every finding was fixed, and the re-verification's open po
   translucent layers.
 - **Open, none a wrong write.** Since the gate judges every written edit (E-12), D5's ticker can fail the run on
   Josh's decks by chance, and it did in the final run (2 edits; a limit of the method; how to treat it is a lead
-  decision). Not caused by the review: the
-  flood rate-limit test fails about one run in five, on 91b58dc as after the fixes, and a PDF cancelled by its
-  document's close can give the wrong reason under load.
+  decision). Not caused by the review, and fixed by the hardening round: the flood rate-limit test failed about one
+  run in five, on 91b58dc as after the fixes, and a PDF cancelled by its document's close could give the wrong reason
+  under load.
 - **Not measured here.** Window-focus ordering, smart insert and delete on a drag, and the marker copy need the Mac;
   the hand-driven run on D3 and D10 was not repeated after the review; real use has not started.
 
@@ -152,6 +160,136 @@ tree before it and passes after it:
   10-minute limit. SECURITY.md (Known limits) now says so, and `test/security/edit-expiry.spec.ts` pins it: that one
   commit, and a second one refused.
 
+### The hardening round
+
+**What the attackers tried.** Three attackers went after wrong-place writes in the repaired build (commit 79113e9),
+each from one angle: the structure of a deck (serialisers, wrapped and re-formatted headings, tables and lists,
+deleted, moved and inserted slides), data and literals (short records that hold the same text, undo and redo), and
+timing in the real app (a press on uppercase text, keys typed while a press waits, a trust change or an undo while a
+commit is in flight). Each wrote model fuzzers that put another program's change close to the edited run, at queue
+level, and drove the built app.
+
+**What they found.** 13 ways to write into another copy of the text than the one the author typed in, or into another
+run of the element pressed: 5 in a deck's structure, 4 in data and undo, 4 of timing, each reproduced in the built app.
+The lead's rule for the fixes (E-1): an edit is written only where the author's copy is identified with certainty;
+anything uncertain is a verbatim note and the file is left as it is.
+
+**What was fixed.** All 13, and the two tests that failed by chance (Open issues before the round):
+
+- **Where a stale edit goes** (8 findings). Each of the repair's three rules was got past. Rule 1 accepted a place
+  confirmed on ONE side, so a copy that slid next to the author's changed or deleted run took the edit (a table cell set
+  to another value while a row ending in the old value was appended; a list item deleted and the one before it set to
+  the same value; the author's slide deleted and the next templated slide's subtitle edited). Rule 2 compared copies
+  only when their raw spelling was the same, so a serialiser that respelled the other copy (`&amp;`, `&nbsp;`, JS
+  quotes) while removing the author's slide wrote into it. Rule 3 let a copy in "other markup" through, so the author's
+  own heading wrapped in `<em>`, changed to `<h3>` or put on its own line by a formatter made a templated slide inserted
+  before it take the edit. With one copy before and one after, no rule ran at all. And two short records with the same
+  text swapped, or the edited one moved and rewritten, got past rule 2's stretches. The rules are replaced
+  (`packages/editor/src/anchors.ts`, `place.ts`): the diff's place is written only when the text on BOTH sides of it is
+  the run's old context, from its edge out to where that context is unique in the old version plus 32 characters, and at
+  least 128 characters; that text occurs nowhere else in the current version; its distinguishing part occurs no more
+  often than before; and no copy of the text the other program added carries more than 32 characters of the run's
+  surroundings on both sides. One side is never enough: a place confirmed on one side cannot be told from the author's
+  run being changed and a copy put beside that side. Between the request's version and the current one the run is
+  carried through the changes the queue saw (`write-queue.ts` `carry`): Blueline's own writes, undos and redos move it
+  exactly by their splices, and only another program's change is placed and confirmed as above, between the two versions
+  around it (the queue keeps the versions around the last 3 such changes).
+- **Undo and redo case 2** (2 findings). After a change within 32 characters of the edited copy, the record's context
+  could stand only at a twin: Cmd+Z put a deleted "!" into another slide, and Cmd+Shift+Z wrote a heading edit into an
+  identical templated slide. Case 2 is now placed by position from the version the write made (the queue's copy of it)
+  and confirmed the same way; otherwise it is case 3, "Can't undo in place" with Make a note (`undo.ts` `planUndo`).
+- **The caret on uppercase text** (2 findings). Source case (6.3) is applied inside the press, so the browser placed the
+  caret in the narrower layout, in a later run: one click at the end of the first REVENUE of `Revenue <em>Revenue</em>`
+  typed into the second, and keys held while a press waited were typed into the wrong line. The caret is now worked out
+  from the press point in the layout the author pressed on (`edit-controller.ts` `pressCaret`, `correctCaret`); held
+  keys are dropped, with the toast, when the pressed text changed meanwhile.
+- **A marked download saved over the deck** (1 finding). A commit made while a D-1 reopen waited was written into the
+  download. Every edit write now waits for the trust decisions already queued, and is a verbatim note while a trust
+  change waits for its reopen or when the bytes it would replace are a version whose trust, decided again, differs from
+  the window's (`window.ts` `writeTrust`).
+- **Cmd+Z right after an Enter that became a note** (1 finding) undid the author's previous edit, on another slide.
+  Cmd+Z pressed while the newest commit is in flight is now for that commit, and when it becomes a note nothing is
+  undone ("Nothing undone: your last edit was kept as a note"; `undo-stack.ts`). docs/spec-amendments/README.md proposes
+  this as E-3 amended, for the lead to confirm.
+- **The flood rate-limit test** (`forged-ipc.spec.ts`; 5 of 10 runs failed in the round's baseline). The deck router had
+  one bucket of 1,000 messages a second per view, shared by every channel and refilled while main was busy, and each
+  note create cost main more as the notes added up, so a flood could run to the 2,000-note cap. The buckets are now per
+  document, view kind and channel, on a monotonic clock: note operations 50 a second with a burst of 100, every other
+  deck channel 1,000 a second (SECURITY.md, Rate limits); main also sends the notes and the shell's state once per turn
+  of its event loop, not once per message. A flood gets at most 100 plus 50 a second through, and the test now requires
+  that bound.
+- **A PDF cancelled by its document's close** (`render-products-pdf.spec.ts`; 7 of 20 runs failed in the round's
+  baseline, 2 workers beside 4 CPU-bound processes) failed with "a render view showed the overlay": a check on the
+  closed view answered with its fallback. Every path that meets a closed render view now ends the job as
+  `RenderCancelled`, and a later stage of the job no longer starts a new renderer of the closed document
+  (`render-service.ts`); the test requires `RenderCancelled`.
+
+**Regression tests.** Each finding has one that fails on the tree before the round and passes on this one:
+`test/unit/editor/queue-stale-anchors.test.ts` (31 cases for the findings, 28 of which fail on commit 79113e9's editor,
+and 3 controls that pass on both; 10 more pin how a run is carried through Blueline's own writes), the note case of
+`test/unit/app/edit-undo-inflight.edit.test.ts`, `test/unit/app/edit-trust-write.edit.test.ts`, and
+`test/e2e/edit-fix-hardening.spec.ts` (11 cases in the built app, one or more per finding; all 11 fail on a build of the
+tree before the round). The flakes have new unit tests that fail on the old code (`test/unit/app/ipc-guard.test.ts`, 4;
+`render-service.test.ts`, 5, 4 of which fail on it). Tests that expected a stale edit written right next to another
+program's change (finding 0's own cases: the edited slide's subtitle or kicker rewritten) expect a verbatim note now,
+still never the other slide; tests about something else keep their purpose with 128 characters of unchanged text between
+the run and the change.
+
+**The attackers' property tests**, re-run at full size on this tree's editor and core, find no wrong write that text
+could tell apart. The structural model fuzz (20,000 seeds, every operation): 1 of 18,210 cases where it found 61 of
+18,313; the table and list fuzz (6,000 seeds): 0 of 5,411 where it found 23; every permutation of 3- and 4-record lists
+in four formats: 0 where the swap gave 4 per format; the literal model fuzz (1,000 seeds in 15 formats): 0 of 13,512
+where it found 51; the timing lens's sequence fuzz (4,000 sequences of 14 steps: edits, undos and redos among another
+program's changes): 3 edits and 3 undos where it found 26 and 89. Those 7 are cases no text can tell apart: the file
+left byte-identical to the version the write was made on (4), one of three byte-identical slides deleted (1), and the
+author's slide deleted while a byte-identical copy of it stands where it was or one slide on (2). A sequence fuzz
+written in this round (the page left on one version across several edits, so each edit is stale across the author's own
+writes, their undos and redos, and other programs' changes; 10,000 sequences, 98,309 edits) wrote 53,202 and made 45,053
+notes, with no wrong write text could tell apart: its 54 stops were all writes where a slide byte-identical to the
+author's stood at the author's place, or into one of two identical slides that were swapped or moved.
+
+**The round's final runs.** Linux, Electron 44.7.2, 2026-10-21, on the tree with every fix of the round, from a clean
+build (`rm -rf packages/app/dist packages/cli/dist`, `npm run build:reader-only`, `npm run build`), each suite in turn
+and the two fuzz runs side by side; logs and reports in `test-results/p2-harden-final/` (not committed; `tree.txt`
+fingerprints the tree, Markdown aside).
+
+| Suite | Result (`test-results/p2-harden-final/`) |
+|---|---|
+| `npm run build:reader-only`, then `npm run build` | both exit 0: no `dist/editor.cjs` after the first, `dist/editor.cjs` after the second |
+| `npx tsc -p tsconfig.json --noEmit` | 0 errors; `tsconfig.reader.json` too |
+| `npx vitest run` | 112 files, 2,100 tests, all pass, 79 s; the Node fuzz among them: 1,200 edits over 44 documents, 912 written (76.0%), 239 notes by rule (19.9%), 49 no-ops, **0 failures** |
+| `vitest -c test/fuzz/vitest.config.mts` and `-c test/parity/vitest.config.mts` | 55 and 37 tests pass, 4 files each |
+| `node scripts/fuzz-selftest.mjs` | all 14 cases as expected: the 11 it must fail fail, the 3 it must pass pass |
+| `node packages/cli/dist/blueline.cjs check --auto` | 6 of 6 PASS |
+| `npm run package:smoke` | 17 of 17 PASS, 0 FAIL |
+| `node scripts/fuzz.mjs --committed` (the gate) | exit 0: 1,000 edits over the 47 UTF-8 committed decks, 894 written (89.4%), 81 notes by rule (10 `ambiguous`), 25 no-ops, **0 failures**, 894 probed (0 on their own, 0 unprobed); 78 stale-version requests, 69 written; 18 min (`fuzz.json`) |
+| `node scripts/fuzz.mjs --local` (the extra run) | **exit 1**: 1,000 edits over D1–D12, 915 written and passed, 58 notes by rule (none `ambiguous`), 26 no-ops, **1 failure**: a D5 edit written exactly whose node, holding the new text and the sentinel, D5's ticker kept out of view at every stop (the known limit, a lead decision); 916 probed (1 on its own, the failure), 0 unprobed; 106 stale-version requests, 99 written; 28 min (`fuzz-local.json`). D1–D4 and D6–D12 gave the same counts, deck for deck, as the final runs before the round; only D5, whose ticker moves its nodes, differs |
+| `npm run test:reader-only` | **PASSED** in 944 s: vitest 96 files, 1,892 tests; the E2E suite without `@edit`, 168 tests (1 the note-card ordering limit, an expected failure); the security suite without `@edit`, 57 tests (the 6 known limits, expected failures) |
+| `npm run test:e2e`, three times | 301 tests, 11 of them new (`edit-fix-hardening.spec.ts`): the third run all as expected, 300 pass and 1 is the expected failure (the note-card ordering limit), 16.0 min; the first two each had one other test fail by chance, a different one each time, in code the round did not change (Open issues): `views-reload-twice.spec.ts` "two saves 300, 400 and 600 ms apart …" in the first (and the serial test after it did not run), `views-open.spec.ts` "File › Open Recent …" in the second (3 did not run); each passed in the other runs, and its file passed 40 of 40 tests when run ten times alone |
+| `npm run test:security` | 65 tests: 59 pass and 6 are the expected failures (SECURITY.md), none unexpected, none flaky, 5.0 min; the flood test let 108 of 5,000 note creates through in 1.38 s |
+| typed-edit and concurrency specs, `--repeat-each 3` | 30 of 30, 44 s (`gates-x3`) |
+| `npx playwright test -c test/parity/playwright.config.ts` | 9 of 9, 8.8 min |
+| the flood test, `--repeat-each 30` | 30 of 30, 106 to 109 note creates through in 1.32 to 1.39 s; with 4 CPU-bound processes beside it, 30 of 30, 104 to 110 in 1.24 to 1.49 s |
+| the PDF close test, `--repeat-each 20`, 2 workers, 4 CPU-bound processes beside it | 20 of 20, every one `RenderCancelled: the render view was closed` |
+
+**The cost** is in stale edits next to another program's change, which are notes now. The Node fuzz
+(`test/unit/editor/fuzz.test.ts`, the same seed): 917 written (76.4%) before the round, 912 (76.0%) after; its
+stale-version edits 83 of 118 written before, 85 of 121 after (an earlier outcome that changes shifts the seed's later
+draws); undo case 2 188 restored before, 181 restored and 4 refused by rule (case 3) after, a change of another program
+within the record's anchors; 0 failures. The fuzz gate in Chromium (the same seed and 1,000 edits a run as the final
+runs below): on the committed decks 894 written where the final runs wrote 903, 81 notes by rule where they had 72 (10
+now `ambiguous`, none then), stale-version requests 69 of 78 written where 71 were; on Josh's decks 915 where they wrote
+917, and the 2 points are D5's, as is its 1 failure (the other 11 decks are unchanged deck for deck); stale-version
+requests 99 of 106 written, 98 of 105 then. In the attackers' fuzzers, built to put another program's change close to
+the edited run, the share written fell: the structural fuzz from 28.4% of its cases to 17.4%, the literal fuzz from
+25.9% to 5.0% (compact records, where 128 characters hold several neighbours), the sequence fuzz's edits from 77.4% to
+71.6% and its undos and redos from 75.5% to 50.8%; the table fuzz writes 8.4%. Some false notes went: a footer edit when
+another program inserts or moves a slide elsewhere (10 slides: 28 of 41 written for an inserted copy, where 1 was
+before, and 22 of 33 for a move, where none was), an unrelated slide inserted at the top or the end, the other copy
+respelled, a re-serialised doctype. Still notes by rule: any change within the anchors (a whole-file CRLF conversion or
+re-indent, the edited slide's own subtitle or kicker, the author's heading re-wrapped), another slide made identical to
+the edited one, and an undo whose version the queue no longer holds.
+
 ### The final runs
 
 Linux, Electron 44.7.2, 2026-10-21, on the tree with every fix of the review and of the repair in it (commit 9a735aa,
@@ -200,32 +338,34 @@ since these pages were written while they ran). The repair's runs (`test-results
 
 Known after the final runs; none is a write to the wrong place or a lost change.
 
-- **A PDF cancelled by its document's close can give the wrong reason.** `RenderView.overlayMounted()` answers
-  "mounted" when its check cannot run, so under load a PDF whose document closed mid-walk failed with "a render view
-  showed the overlay" instead of "closed" (`render-products-pdf.spec.ts` "a PDF running when its document closes …",
-  once, in the review's reader-only run 1 beside two fuzz runs; it passed in every other run, these final runs
-  included). A closed view should end the walk as cancelled.
-- **The flood rate-limit test fails by chance** (`forged-ipc.spec.ts` "a flood is rate-limited …", which must let
-  fewer than 2,000 of a flood's 5,000 note creates through). Measured alone during the integration, it failed 4 of 20
-  runs on commit 91b58dc and 6 of 25 on the integrated tree: not a regression. The rate limiter refills by main's
-  processing time, not by send time, and each accepted note create costs main more as the notes add up (the shell
-  receives the whole state), so once main falls behind nearly every create gets a token, up to the 2,000-note cap. The
-  document is never written either way. A fix is product code (coalesce the shell's state pushes, or a lower rate for
-  note creates) and was left for a decision; until then a gate run that fails only on this test is run again.
+- **Deck IPC limits are per channel now** (the hardening round's fix of the flood test; a decision to record): a token
+  bucket per document, view kind and channel, note operations 50 a second with a burst of 100 and every other deck
+  channel 1,000 a second with a burst of 1,000 (SECURITY.md, Rate limits; docs/spec-amendments/README.md, 9.1). So a
+  view's 20 deck channels together can pass more than 9.1's example of 1,000 messages a second per sender; each one
+  alone keeps it. Only the note operations' pushes to the deck and the shell are coalesced: other deck handlers still
+  push the shell's state once per accepted message, so a flood of slide reports costs main one push per message (1,000 a
+  second after a burst of 1,000).
+- **Two E2E tests failed by chance in the hardening round's final runs, once each**, in code the round did not change
+  (each passed in the other two full runs, and its file passed 40 of 40 tests when run ten times alone):
+  `views-reload-twice.spec.ts` "two saves 300, 400 and 600 ms apart …" saw one reload, not two, for two saves 400 ms
+  apart (cause not found; the file also passed 40 of 40 beside 4 CPU-bound processes, on this tree and on the tree
+  without the round's placement and timing fixes), and `views-open.spec.ts` "File › Open Recent …" read `recent.json`
+  while the atomic write of the second open had not landed yet, though the menu already listed it (the test reads the
+  file once instead of waiting for it).
+- **A PDF whose document closes between two stages of its job** (after one stage ends, before the next asks for a
+  renderer) ends as `RenderCancelled` in a unit test only: in the stressed E2E runs every close landed on a busy view.
 - **Real use has not started** (the fourth criterion): it needs the Mac build. The checklist is below and in the
   README.
 - **The caret can land in text Blueline cannot place.** A label whose element also holds an unmapped glyph (D3): End
   puts the caret after the glyph, and what is typed there lands outside every run, so it becomes a verbatim note by
   rule (the toast says so). Correct by rule, surprising in use.
 - **Stale requests and notes.** A request on an older version is placed by position (9.2 Write protocol step 2 as
-  amended), and next to other copies of its text only when the text around every copy confirms the place; it becomes
-  a verbatim note by rule when a change overlaps its run, its version is no longer known, the diff runs past its time
-  limit, or the copies cannot be told apart. In the final runs: on Josh's decks 105 stale-version requests, 98 written
-  on their run, 7 notes by the escape rule, none `ambiguous` or `stale` (the integration's run, by the old context
-  rule: 22 of 111 ambiguous; a run of the repair with an earlier form of its copy rules: 8 `ambiguous` notes, 6 of
-  them stale-version requests); in the Node fuzz 118 stale-version edits, 83 written, and among its notes 17 `stale`
-  and 9 `ambiguous`. A page left open while another program rewrites the text around a field is where such notes
-  come from: worth watching in real use.
+  amended), and written only when the text on both sides of the place confirms it (the hardening round); it becomes a
+  verbatim note by rule when a change overlaps its run or comes within its anchors (at least 128 characters on each
+  side), its version is no longer known, the diff runs past its time limit, or the copies cannot be told apart. So a
+  page left open while another program rewrites text near a field gives a note, never a guess: worth watching in real
+  use. The numbers before the round (Josh's decks: 105 stale-version requests, 98 written) are in Results, below; the
+  hardening round's are in its section above.
 - **`<pre>`, `<listing>` and `<textarea>` with a character reference right after the dropped leading newline**:
   parse5 8 places the text node late, so the mapper leaves the run unaligned (not editable) and the queue refuses to
   create that state (core-edit). A mapper fix would make such runs editable.
@@ -251,7 +391,8 @@ Known after the final runs; none is a write to the wrong place or a lost change.
   the matcher places it exactly, as a script literal (`edit-fix-overlay.spec.ts`); that is the rule for D10's chrome
   title, whose only candidate was text the deck's script replaces at load, but D10 was not driven by hand again.
 - **Small windows the review left.** Cmd+Z pressed before the commit's message reaches main undoes the previous edit
-  (the commit's undo slot is reserved only when main accepts it). While a press waits for the answer to the commit it
+  (the commit's undo slot is reserved only when main accepts it); once main has it, Cmd+Z is for that commit, and does
+  nothing when it becomes a note (the hardening round's E-3 amendment, which the lead has to confirm). While a press waits for the answer to the commit it
   triggered (at most the commit timeout), the keys typed are held and typed into the field when it opens; from a key
   that cannot be replayed (a shortcut, an arrow, a composition) on, the rest are dropped, and a toast says to check
   the text.
@@ -738,8 +879,8 @@ module of the copy, the reader-only build fails ("reader-only build: … imports
 The review's final runs (`test-results/p2-final/reader-only-{1,2}.log`) failed this gate at vitest only, on
 `test/unit/preload/env.test.ts`, whose expected list of input types predated the drag-move fix's `deleteByDrag`; that
 list now holds it, and the test passes in both builds. Run 1 of those, beside both fuzz runs, also failed one PDF test
-and the security flood test under load; both passed in run 2, in the repair's run and here. The PDF test's race and
-the flood test are in Open issues.
+and the security flood test under load; both passed in run 2, in the repair's run and here. The hardening round
+fixed the PDF test's race and the flood test (The hardening round).
 
 The first integration run of the gate found one more test that needs the Edit capability: the control of
 `trust-identity.spec.ts` ("Blueline's own atomic write keeps both switches") calls an own write, which a reader-only
@@ -858,3 +999,10 @@ The gate: Josh finishes 3 real decks using only Edit for text changes (Mac build
   `test/e2e/edit-fix-{stale,typed-text,overlay,undo-toast,locks}.spec.ts` and of `test/security/edit-expiry.spec.ts`
   (V-close); `test/helpers/xclick.{c,ts}` (real XTEST clicks); the self-test cases `sorted-*` and `sortrunc-*`; their
   decks `fixtures/edit/{scrim,covers,spell-block}.html` and `test/fuzz/selftest/decks/{sorted,sortrunc}.html`.
+- The hardening round's: `packages/editor/src/anchors.ts`; `test/unit/editor/queue-stale-anchors.test.ts`,
+  `test/unit/app/edit-trust-write.edit.test.ts`, the note case of `test/unit/app/edit-undo-inflight.edit.test.ts`,
+  `test/e2e/edit-fix-hardening.spec.ts`; and the tests it changed (`write-queue`, `queue-phase2`, `queue-stale-copies`,
+  `queue-stale-position`, `undo` and `fuzz` in `test/unit/editor/`, `edit-history-requeue`, `edit-lane-pins` and
+  `edit-lane` in `test/unit/app/`, `test/e2e/edit-fix-stale.spec.ts`); for the two flaky tests, the new cases of
+  `test/unit/app/ipc-guard.test.ts` and `render-service.test.ts`, and the tightened `test/security/forged-ipc.spec.ts`
+  (flood) and `test/e2e/render-products-pdf.spec.ts` (a PDF running when its document closes).

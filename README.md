@@ -297,6 +297,25 @@ Coverage equals the baselines on all 19 committed fixtures, and holds on Josh's 
 D5's ticker moves a few nodes, as in Phase 1). Left: real use on a Mac, and a decision on how the probe treats
 D5's ticker.
 
+The Phase 2 hardening round (2026-10-21, after those runs; docs/PHASE2-RESULTS.md, "The hardening round"): three
+attackers found 13 ways a write could land on another copy of the text than the one the author typed in, or in another
+run of the element pressed. All are fixed: a stale edit, an undo and a redo are written only where the text on both
+sides of the place confirms it (`packages/editor/src/anchors.ts`), the caret is placed as the text looked when the
+author pressed, no write replaces bytes whose trust differs from the window's, and Cmd+Z right after an Enter that
+became a note undoes nothing. Each finding has a regression test that fails before the round and passes after it, and
+the attackers' property tests find no wrong write that the text could tell apart. The round also fixed the two tests
+that failed by chance: the flood rate limit (note operations are now limited to 50 a second per document, SECURITY.md)
+and a PDF cancelled by its document's close. From a clean build after the round (logs in
+`test-results/p2-harden-final/`): all 2,100 unit tests pass (112 files, the Node fuzz's 1,200 edits among them, 0
+failures); the E2E suite runs 301 tests, and in the third of three runs all 300 pass and 1 is the expected failure
+(each of the first two had one other test fail by chance, in code the round did not change; docs/PHASE2-RESULTS.md,
+Open issues); the security suite runs 65 tests, 59 pass and 6 are the expected failures; `blueline check --auto`
+passes 6 of 6, `npm run package:smoke` 17 of 17, the parity Playwright suite 9 of 9, the typed-edit and concurrency
+tests 30 of 30 over three repeats, and `npm run test:reader-only` passes. The cost: a stale edit with another
+program's change within about 128 characters of it is a verbatim note now. The fuzz gate in Chromium writes 894 of
+1,000 edits on the committed decks with **0 failures** (903 before the round); on Josh's decks 915 written edits pass
+(917 before) and 1 fails, again D5's ticker.
+
 Phase 1 results (2026-10-18, Linux, Electron 44.7.2, from a clean build, after review round 1): 1,639 unit
 tests pass (84 files; the exit-gate parity harness adds 37 more); the E2E suite runs 194 tests, 193 pass and 1 is
 an expected failure for the note-card ordering limit described in SECURITY.md; the security suite runs 57 tests,

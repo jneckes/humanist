@@ -71,22 +71,38 @@ describe('moved and inserted templated slides (finding 0 re-verification, S-B an
     }
   });
 
-  it('the changes finding 0 was about still land on the slide the author typed on', async () => {
+  it('the changes finding 0 was about never land on the other slide: a note now, the text next to the run changed (E-1, the hardening round)', async () => {
     const s1 = slide(0, 's1', 'Body text 1');
     const s2 = slide(1, 's2', 'Body text 2');
     const A2 = render([s1, s2]);
     for (const changed of [{ ...s2, sub: 'Agent rewrote this subtitle' }, { ...s2, kicker: 'Section recap' }, { ...s2, sub: 'Not Same subtitle' }]) {
       const C = render([s1, changed]);
       const { out, io } = await staleHeadingEdit(A2, C, 1);
+      expect(out).toMatchObject({ ok: false, code: 'ambiguous', verbatim: { before: 'Key takeaways', after: EDITED } });
+      expect(io.text).toBe(C);
+    }
+  });
+
+  it('a change two slides away still lands on the slide the author typed on', async () => {
+    const ss = [slide(0, 's1', 'Body text 1'), slide(1, 's2', 'Body text 2'), slide(2, 's3', 'Body text 3'), slide(3, 's4', 'Body text 4')];
+    for (const [which, changed] of [
+      [1, 3],
+      [2, 0],
+    ] as const) {
+      const cur = ss.map((s) => (s.uid === changed ? { ...s, sub: 'Agent rewrote this subtitle', body: 'Agent body' } : s));
+      const C = render(cur);
+      const { out, io } = await staleHeadingEdit(render(ss), C, which);
       expect(out.ok).toBe(true);
-      expect(io.text).toBe(render([s1, { ...changed, head: EDITED }]));
+      expect(io.text).toBe(render(cur.map((s) => (s.uid === which ? { ...s, head: EDITED } : s))));
     }
   });
 });
 
-describe('a copy another program adds (rule 3)', () => {
-  const deck = (pre: string, sub = 'Hire two engineers') =>
-    `<!doctype html><html><head><meta charset="utf-8"><title>T</title></head><body>\n${pre}<section id="s1">\n  <h2 class="title">Agenda</h2>\n  <p class="sub">${sub}</p>\n</section>\n<section id="s2">\n  <h2 class="title">Next steps</h2>\n</section>\n</body></html>\n`;
+describe('a copy another program adds (rule 2 of place.ts)', () => {
+  const intro = '<section id="s0">\n  <h2 class="title">Welcome</h2>\n  <p class="sub">A deck about the quarter, for the whole team</p>\n</section>\n';
+  const outro = '<section id="s9">\n  <h2 class="title">Thank you</h2>\n  <p class="sub">Questions and answers come at the very end</p>\n</section>\n';
+  const deck = (pre: string, sub = 'Hire two engineers', post = '') =>
+    `<!doctype html><html><head><meta charset="utf-8"><title>T</title></head><body>\n${intro}${pre}<section id="s1">\n  <h2 class="title">Agenda</h2>\n  <p class="sub">${sub}</p>\n</section>\n<section id="s2">\n  <h2 class="title">Next steps</h2>\n</section>\n${outro}${post}</body></html>\n`;
   async function edit(C: string) {
     const A = deck('');
     const io = new MemIO(A);
@@ -98,7 +114,7 @@ describe('a copy another program adds (rule 3)', () => {
   }
 
   it('the same words pasted into a new paragraph elsewhere: the edit is written on the heading', async () => {
-    const C = deck('<p>Agenda</p>\n');
+    const C = deck('', 'Hire two engineers', '<p>Agenda</p>\n');
     const { out, io } = await edit(C);
     expect(out.ok).toBe(true);
     expect(io.text).toBe(C.replace('<h2 class="title">Agenda</h2>', '<h2 class="title">Agenda today</h2>'));
@@ -125,9 +141,10 @@ describe('repeated markup around copies the diff left unchanged (rule 2)', () =>
   // file, so the text around both copies is as it was: each is written where the author typed, not a note.
   const L1 = '<ul><li class="a">Item</li><li class="b">Other</li></ul>\n';
   const L2 = '<ul><li class="a">Other</li><li class="b">Item</li></ul>\n';
+  const filler = Array.from({ length: 4 }, (_, i) => `<p>Filler line ${i}: words that stay as they are.</p>\n`).join('');
   const lists = (tail = '', first = L1, second = L2) =>
     `<!doctype html><html><head><meta charset="utf-8"><title>T</title></head><body>\n` +
-    `${first}${second}<ul><li class="b">Other</li></ul>\n${tail}</body></html>\n`;
+    `${first}${second}<ul><li class="b">Other</li></ul>\n${filler}${tail}</body></html>\n`;
   for (const which of [0, 1]) {
     it(`an unrelated change at the end of the file: copy ${which + 1} of two is written where the author typed`, async () => {
       const io = new MemIO(lists());
