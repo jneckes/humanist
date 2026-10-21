@@ -272,8 +272,9 @@ one run of the version it shows, and only right after the user pressed a key or 
   an SVG text field's overlay input included (seen from the page, its right-click lands on the overlay host).
 - **Commit requests from main** (`bl:edit:commit-now`): before a window closes, the app quits, or a click in the
   shell takes focus from the deck view (also the click that brings an inactive window back), main asks the deck to
-  commit its open field and waits (at most 3 s). The answer is an ordinary `commit`, checked as above, and taken
-  for 5 s after the request even when the field's authorisation otherwise ended (Known limits).
+  commit its open field; before a close or a quit it waits for the answer (at most 3 s). The answer is an ordinary
+  `commit`, checked as above, and taken for 5 s after the request even when the field's authorisation otherwise
+  ended (Known limits).
 
 `test/security/edit-forged.spec.ts` forges every edit message from a Trusted deck in Edit (begin, commit with an
 edit, a verbatim note, a pick and a no-op, candidates, undo tokens, busy) and from a Protected one right after a

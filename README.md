@@ -9,8 +9,9 @@ one-pagers that AI tools produce. Think Adobe Acrobat Reader, but for HTML.
 - **Hand off to Claude Code:** notes go to the agent as an anchored change list.
 
 Status: **Phase 2 (Edit) built.** Its exit gate is measured in
-[docs/PHASE2-RESULTS.md](docs/PHASE2-RESULTS.md); the criteria left are the reader-only gate, which fails on one
-unit test that the Phase 2 review's fixes made stale, and Josh finishing 3 real decks with Edit on a Mac build (see
+[docs/PHASE2-RESULTS.md](docs/PHASE2-RESULTS.md): the fuzz, concurrency and reader-only criteria are met (the extra
+fuzz run on Josh's decks has 2 failures from a known limit of the probe on one deck's ticker); the one left is Josh
+finishing 3 real decks with Edit on a Mac build (see
 [Real use of Edit on a Mac](#real-use-of-edit-on-a-mac)). Phase 1 (Reader) is measured in
 [docs/PHASE1-RESULTS.md](docs/PHASE1-RESULTS.md); its week of real use is also Mac work
 (see [Dogfooding on a Mac](#dogfooding-on-a-mac)). See [SPEC.md](SPEC.md) for the build spec,
@@ -58,19 +59,25 @@ unit test that the Phase 2 review's fixes made stale, and Josh finishing 3 real 
   the deck with reduced motion and pauses its animations. Hover outlines show what you can edit: solid for text
   Blueline can place exactly, dashed for text it finds in several places. Press the text to place a caret (the press
   never reaches the deck, so it does not advance the slide or follow a link), type, and press Enter (Esc cancels;
-  clicking elsewhere commits). Only that piece of text changes in the file: Blueline writes the smallest splice into
-  the HTML text or the script or JSON string the page shows, with the file's own encoding, escapes and line endings,
-  and verifies the new file before it replaces the old one. Pasted and dictated line breaks become spaces; smart
-  punctuation (Settings › General, on by default) curls your quotes only where the text already uses curly ones.
+  clicking elsewhere commits). Text under a transparent click-to-advance area, or in a label layer the deck makes
+  click-through, can usually be pressed too. In the field, right-click a misspelled word for the dictionary's
+  suggestions, and drag selected text to move it. Only that piece of text changes in the file: Blueline writes the smallest
+  splice into the HTML text or the script or JSON string the page shows, with the file's own encoding, escapes and
+  line endings, and verifies the new file before it replaces the old one. Pasted and dictated line breaks become
+  spaces; smart punctuation (Settings › General, on by default) curls your quotes only where the text already uses
+  curly ones.
   A badge warns when the edit adds a line, overflows its box or leaves a widow, and "Showing source case" when the
   deck shows the text in another case than the file stores.
 - **Dashed text** opens a picker: each place the text appears, with ±40 characters of context and its line, and a
   warning when the deck also uses the text as a key. Text that is not editable (numbers a script computes, text
-  Blueline cannot place) says "Not editable".
-- **When a write cannot be placed** (the file changed meanwhile and the text is no longer unique, markup would be
-  needed, and the like), your exact words are kept as a `verbatim` note, and the file is left exactly as it was.
+  the deck's script rewrote, unless Blueline finds that text in the script itself; text Blueline cannot place) says
+  "Not editable".
+- **When a write cannot be placed** (the file changed meanwhile and Blueline cannot be sure which copy of the text
+  you edited, markup would be needed, the file was moved, deleted or became Protected, and the like), your exact
+  words are kept as a `verbatim` note, and the file is left exactly as it was.
 - **"Saved · deck.html:142"** with **Undo**, and "· also changes N other places" when one piece of text shows in
-  several places. Outside a text field, Cmd+Z and Cmd+Shift+Z undo and redo your edits byte for byte, even after
+  several places; the toast stays when the deck reloads. Outside a text field, Cmd+Z and Cmd+Shift+Z undo and redo
+  your edits byte for byte, newest first (an edit still being written counts as the newest), even after
   another program changed the file elsewhere; when the change touched your edit, Blueline says "Can't undo in
   place" and offers **Make a note**. Inside a field, Cmd+Z is the field's own undo.
 - **History** (File › History): Blueline keeps the file as it was before each of its writes (the newest 100) and
@@ -274,20 +281,21 @@ it as root with `--no-sandbox`.
 `fixtures/decks/<name>.expect.json`, and fails when a deck's coverage drops more than 1 point below its
 baseline in `fixtures/expected/`.
 
-Phase 2 results (2026-10-20, Linux, Electron 44.7.2, from a clean build, after the Phase 2 review;
-docs/PHASE2-RESULTS.md, logs in `test-results/p2-final/`): of 2,021 unit tests (108 files, the Node fuzz's 1,200
-edits among them) 2,020 pass and 1 fails, a test whose expected list of input types predates the review's
-drag-move fix; the fuzz and parity harnesses add 51 and 37 that pass; the E2E suite runs 271 tests, 270 pass and 1
-is the expected failure for the note-card ordering limit, in two consecutive runs; the security suite runs 64
-tests, 58 pass and 6 are the expected failures listed in SECURITY.md (as in Phase 1), in two runs;
-`blueline check --auto` passes 6 of 6 and `npm run package:smoke` 17 of 17. The exit gate: the Chromium fuzz makes
-1,000 seeded edits on the committed fixtures with **0 failures** (903 written, every one through the mutation probe
-on the node the author typed in; 72 notes by rule; 25 no-ops), and 1,000 on Josh's 12 decks with 0 failures (920
-written, 54 notes, 26 no-ops); the typed-edit and concurrency E2E tests pass (24 of 24 over three repeats);
-`npm run test:reader-only` fails at its unit-test step only, on that same test (its build, bundle check, E2E and
-security steps pass). Coverage equals the baselines on all 19 committed fixtures, and holds on Josh's 12 decks (11
-equal run for run; D5's ticker moves a few nodes, as in Phase 1). Left: that test's expected list and a new
-reader-only run, and real use on a Mac.
+Phase 2 results (2026-10-21, Linux, Electron 44.7.2, from a clean build, after the Phase 2 review and its repair;
+docs/PHASE2-RESULTS.md, logs in `test-results/p2-measure/`): all 2,042 unit tests pass (110 files, the Node fuzz's
+1,200 edits among them, 0 failures); the fuzz and parity harnesses add 55 and 37 that pass; the E2E suite runs 290
+tests, 289 pass and 1 is the expected failure for the note-card ordering limit; the security suite runs 65 tests, 59
+pass and 6 are the expected failures listed in SECURITY.md (as in Phase 1); `blueline check --auto` passes 6 of 6 and
+`npm run package:smoke` 17 of 17. The exit gate: the Chromium fuzz makes 1,000 seeded edits on the committed
+fixtures with **0 failures** (903 written, every one through the mutation probe on the node the author typed in; 72
+notes by rule; 25 no-ops); on Josh's 12 decks, the extra run, 917 written edits pass and 2 fail (55 notes, 26
+no-ops): two D5 edits written exactly, whose text the probe found in the page but never in view, because D5's ticker
+had carried it off screen at every stop, a limit of the method that awaits a decision, not a wrong write; the fuzz's
+self-test fails each of the 11 cases it must fail and passes the 3 it must pass; the typed-edit and concurrency E2E
+tests pass (30 of 30 over three repeats, two duplicated-text cases among them); `npm run test:reader-only` passes.
+Coverage equals the baselines on all 19 committed fixtures, and holds on Josh's 12 decks (11 equal run for run;
+D5's ticker moves a few nodes, as in Phase 1). Left: real use on a Mac, and a decision on how the probe treats
+D5's ticker.
 
 Phase 1 results (2026-10-18, Linux, Electron 44.7.2, from a clean build, after review round 1): 1,639 unit
 tests pass (84 files; the exit-gate parity harness adds 37 more); the E2E suite runs 194 tests, 193 pass and 1 is

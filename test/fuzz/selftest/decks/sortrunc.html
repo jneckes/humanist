@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sorted plans</title>
+<style>body{font:18px sans-serif;margin:20px} li{margin:2px 0} ul{display:inline-block;vertical-align:top;margin-right:40px}</style>
+</head>
+<body>
+<ul id="full"></ul>
+<ul id="nav"></ul>
+<script>
+const labels = ['Plan F', 'Plan B', 'Plan H', 'Plan D', 'Plan A', 'Plan G', 'Plan C', 'Plan E'];
+const sorted = labels.slice().sort();
+// The deck lists the labels in order, in full, and again as a short nav list: long labels are cut.
+sorted.forEach(function (t) {
+  const li = document.createElement('li');
+  li.textContent = t;
+  document.getElementById('full').appendChild(li);
+  const n = document.createElement('li');
+  n.textContent = t.length > 13 ? t.slice(0, 6) + '...' : t;
+  document.getElementById('nav').appendChild(n);
+});
+</script>
+</body>
+</html>

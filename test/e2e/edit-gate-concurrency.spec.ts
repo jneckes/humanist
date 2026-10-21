@@ -10,7 +10,8 @@
 //
 // The variants: an unrelated change 50 ms before the commit; the same text rewritten 50 ms before (the edit must
 // become a note); an element inserted before the target 50 ms before (every stamp after it shifts, so a stale run id
-// paired with the new version would name another element); a change that arrives while the field stays open long
+// paired with the new version would name another element); duplicated text whose neighbour changes on the edited
+// copy (the edit's context then matches only the other copy: E-1 places it by position); a change that arrives while the field stays open long
 // enough for the watcher to decide (the reload waits for the field); and a write that lands inside the atomic write,
 // after the temp file and before the re-hash (a one-shot test hook in main). The window between the re-hash and the
 // rename is the protocol's stated limit (9.2 Atomic write steps 3–4): an external write there is lost; it is not
@@ -156,13 +157,18 @@ async function verbatimNotes(app: BlApp, docId: string): Promise<{ before: strin
  * The gate's oracle: the external change survived, and the heading holds the edit (`landed`) or the external text
  * with the edit kept as a verbatim note (`note`). Anything else (the edit on another element, a lost change) fails.
  */
-async function judge(o: Opened, external: string, outcome: { landed: string; noteOk: boolean }): Promise<'landed' | 'note'> {
+async function judge(
+  o: Opened,
+  external: string,
+  outcome: { landed: string; noteOk: boolean },
+  texts: { before: string; after: string } = { before: HEADING, after: HEADING + TYPED },
+): Promise<'landed' | 'note'> {
   // Wait for the edit's own outcome, then for the file to settle. A quiet file alone is no outcome: under the full
   // suite's load a requeued write (9.2 Atomic write step 3) can land more than a second after the external write,
   // and two equal reads 500 ms apart in between once made this oracle judge the external bytes alone.
   // The note holds the exact text before and after (SPEC 10 Phase 2: "the note holds the exact before and after").
   const hasNote = async (): Promise<boolean> =>
-    (await verbatimNotes(o.app, o.deck.docId)).some((n) => n.before === HEADING && n.after === HEADING + TYPED);
+    (await verbatimNotes(o.app, o.deck.docId)).some((n) => n.before === texts.before && n.after === texts.after);
   let decided: 'landed' | 'note';
   try {
     decided = await until(
@@ -245,6 +251,59 @@ test('@edit an element inserted before the heading 50 ms before the commit: the 
     o.s.cleanup();
   }
 });
+
+// Duplicated text whose neighbour changes (lead decision E-1; review findings 0, 1 and 22). Two slides hold the same
+// heading, kicker and subtitle. Another program changes the text right beside the copy the author is editing, so the
+// 32 characters of context the edit was made with now match only the OTHER copy. The edit must land on the copy the
+// author typed in or become a verbatim note: judge() accepts the file only as exactly that write or exactly the
+// external bytes, so a write into the other copy fails. Both positions of the edited copy, with the changed
+// neighbour after it (the subtitle) and before it (the kicker).
+{
+  const DUP = 'Key takeaways';
+  const inSection = (src: string, id: string, from: string, to: string): string => {
+    const start = src.indexOf(`<section id="${id}">`);
+    const end = src.indexOf('</section>', start);
+    if (start < 0 || end < 0) throw new Error(`no section ${id}`);
+    const part = src.slice(start, end);
+    if (part.indexOf(from) < 0 || part.indexOf(from) !== part.lastIndexOf(from)) throw new Error(`${JSON.stringify(from)} must occur once in ${id}`);
+    return src.slice(0, start) + part.replace(from, to) + src.slice(end);
+  };
+  const cases = [
+    { slide: 's1', neighbour: 'the subtitle after it', from: '<p class="sub">Same subtitle</p>', to: '<p class="sub">Agent rewrote this subtitle</p>' },
+    { slide: 's2', neighbour: 'the kicker before it', from: '<div class="kicker">Section summary</div>', to: '<div class="kicker">Section overview</div>' },
+  ];
+  for (const c of cases) {
+    test(`@edit duplicated text, ${c.neighbour} changed on the edited copy (${c.slide}) 50 ms before the commit: the edit lands on that copy or becomes a verbatim note, never on the other copy`, async () => {
+      const o = await openEditing('edit/dup-slides.html', `race-dup-${c.slide}.html`);
+      try {
+        expect(o.original.split(`<h2 class="title">${DUP}</h2>`).length - 1, 'the fixture holds the heading twice').toBe(2);
+        await openField(o.deck, `#${c.slide} h2`);
+        await typeKeys(o.deck, TYPED);
+        const external = inSection(o.original, c.slide, c.from, c.to);
+        externalSave(o.s, o.file, external);
+        await sleep(50);
+        await o.deck.key('Enter');
+        const landed = inSection(external, c.slide, `<h2 class="title">${DUP}</h2>`, `<h2 class="title">${DUP}${TYPED}</h2>`);
+        const outcome = await judge(o, external, { landed, noteOk: true }, { before: DUP, after: DUP + TYPED });
+        test.info().annotations.push({ type: 'outcome', description: outcome });
+        // The page reloads once the field has closed and shows the file: the external change, and the edit only on
+        // the copy the author typed in.
+        const want = outcome === 'landed' ? (c.slide === 's1' ? [DUP + TYPED, DUP] : [DUP, DUP + TYPED]) : [DUP, DUP];
+        const marker = c.to.replace(/<[^>]+>/g, '');
+        await until('the page to show the file', async () =>
+          (await o.deck.eval<boolean>(
+            `JSON.stringify(Array.from(document.querySelectorAll('h2')).map(function(h){return h.textContent})) === ${JSON.stringify(JSON.stringify(want))} && document.querySelector('#${c.slide}').textContent.includes(${JSON.stringify(marker)})`,
+          ))
+            ? true
+            : undefined,
+        );
+      } finally {
+        await o.app.close();
+        o.s.cleanup();
+      }
+    });
+  }
+}
 
 test('@edit an external write while the field stays open: the reload waits for the field, then both changes are on disk and on the page', async () => {
   const o = await openEditing('decks/single.html', 'race-open.html');

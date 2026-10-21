@@ -196,6 +196,76 @@ test('@edit text hidden under a layer whose ::before paints it over: no outline,
   }
 });
 
+// The repair's re-verification of finding 9: an empty layer can paint over text without a background or a pseudo-
+// element fill: an inset box-shadow, a thick border, an outline drawn inside it, a ::after border, a ::before shadow,
+// a shadow tree (a custom element), a border the page scales up. The text under each is invisible (no dark pixel on
+// its row), so it gets no outline and no field, and the press goes to the layer. Text inside a thin frame, under an
+// outline drawn outside a layer, and under a clear layer shows, and is reached as before.
+test('@edit text hidden by a layer that paints without a background: no outline, no field, the press goes to the layer; text that shows is reached', async () => {
+  const o = await openDeck({ fixture: path.join(FIXTURES, 'edit/covers.html'), name: 'covers.html' });
+  const hidden = [
+    ['shd', 'shade'],
+    ['bdr', 'border'],
+    ['oli', 'outline'],
+    ['pbd', 'pborder'],
+    ['psh', 'pshadow'],
+    ['hst', 'host'],
+    ['scl', 'scaled'],
+  ] as const;
+  const shown = [
+    ['frm', 'frame'],
+    ['olo', 'olout'],
+    ['clr', 'clear'],
+  ] as const;
+  try {
+    // The fixture does what it says: a capture with the pointer away shows no dark pixel on a hidden text's row.
+    await o.deck.input([{ type: 'mouseMove', x: 5, y: 600 }], 20);
+    await sleep(400);
+    const cap = await o.app.electronApp.evaluate(async ({ webContents }, id) => {
+      const img = await webContents.fromId(id)!.capturePage();
+      return { w: img.getSize().width, data: img.toBitmap().toString('base64') };
+    }, o.deck.wcId);
+    const bmp = Buffer.from(cap.data, 'base64');
+    // Capture pixels per CSS px of the page.
+    const scale = cap.w / (await o.deck.eval<number>('innerWidth'));
+    const darkOnRow = async (id: string): Promise<number> => {
+      const r = await o.deck.eval<{ left: number; mid: number }>(`(function(){var r=document.getElementById(${JSON.stringify(id)}).getBoundingClientRect();return {left:r.left,mid:r.top+r.height/2};})()`);
+      const y = Math.round(r.mid * scale);
+      let dark = 0;
+      for (let x = Math.round(r.left * scale); x < Math.round((r.left + 380) * scale); x++) {
+        const i = (y * cap.w + x) * 4;
+        if (bmp[i] < 128 && bmp[i + 1] < 128 && bmp[i + 2] < 128) dark++;
+      }
+      return dark;
+    };
+    for (const [id] of hidden) expect(await darkOnRow(id), `#${id} is hidden`).toBe(0);
+    for (const [id] of shown) expect(await darkOnRow(id), `#${id} shows`).toBeGreaterThan(0);
+    for (const [id, layer] of hidden) {
+      expect(await hover(o.deck, `#${id}`), `#${id}: no outline`).toBeNull();
+      const p = await centreOf(o.deck, `#${id}`);
+      await o.deck.click(p.x, p.y);
+      await until(`#${layer}'s own click`, async () => ((await o.deck.eval<string | null>(`document.documentElement.getAttribute('data-${layer}')`)) === 'clicked' ? true : undefined), 5_000);
+      expect((await state(o.deck)).field, `#${id}: no field`).toBeNull();
+    }
+    for (const [id, layer] of shown) {
+      expect(await hover(o.deck, `#${id}`), `#${id}: an outline`).toMatchObject({ kind: 'solid' });
+      const q = await centreOf(o.deck, `#${id}`);
+      await o.deck.click(q.x, q.y);
+      const st = await until(`a field on #${id}`, async () => {
+        const s = await state(o.deck);
+        return s.field ? s : undefined;
+      }, 5_000);
+      expect(st.field?.rootId).toBe(id);
+      expect(await o.deck.eval<string | null>(`document.documentElement.getAttribute('data-${layer}')`)).toBeNull();
+      await o.deck.key('Escape');
+      await sleep(300);
+    }
+    expect(fs.readFileSync(o.file, 'utf8')).toBe(o.original);
+  } finally {
+    await closeAll(o);
+  }
+});
+
 test('@edit control: in Read the same click on covered text still goes to the nav button', async () => {
   const o = await openDeck({ fixture: path.join(FIXTURES, 'edit/nav-cover.html'), name: 'nav.html', edit: false });
   try {

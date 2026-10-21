@@ -7,9 +7,13 @@
 // from run end to end in scripts/fuzz-selftest.mjs.
 
 import { describe, expect, it } from 'vitest';
-import { authorNodes, judgeAlone, roundCheck, selectNodes, type AloneStop, type SeenNode, type WrittenEdit } from '../harness/probe-select';
+import { authorNodes, judgeAlone, roundCheck, sameList, selectNodes, type AloneStop, type SeenNode, type WrittenEdit } from '../harness/probe-select';
 
 const n = (key: string, data: string, exact: string | null = null): SeenNode => ({ key, data, exact });
+/** A locator key as probe.ts locatorKey makes it: stamp, CSS path and text index joined by NUL. */
+const key = (cssPath: string, stamp = '', childIndex = 0): string => `${stamp}\u0000${cssPath}\u0000${childIndex}`;
+/** The key of the text of the i-th <li> (1-based) of a list. */
+const li = (list: string, i: number): string => key(`${list} > li:nth-of-type(${i})`);
 
 /** wrongplace.html: #a is computed (['Quarterly','total'].join(' ')) and only reads like literal l:0:0, which feeds #b. */
 const quarterly = (typedIn: '#a' | '#b', text = 'Quarterly total!'): WrittenEdit => ({
@@ -64,20 +68,73 @@ describe('selectNodes: the node the author typed in is always judged (finding 25
     // edit makes it 'Dictated text with a breakLemon', which sorts 4th; the 7th <li> now reads 'Kiwi' (l:5:0).
     const labels = ['Apple', 'Banana', 'Cherry', 'Fig', 'Grape', 'Kiwi', 'Lemon', 'Mango'];
     const runOf = (t: string) => `l:${labels.indexOf(t)}:0`;
-    const b = labels.map((t, i) => n(`li:${i + 1}`, t, runOf(t)));
+    const b = labels.map((t, i) => n(li('#list', i + 1), t, runOf(t)));
     const now = [...labels.filter((t) => t !== 'Lemon'), 'Dictated text with a breakLemon'].sort();
-    const a = now.map((t, i) => n(`li:${i + 1}`, t, t === 'Dictated text with a breakLemon' ? 'l:6:0' : runOf(t)));
-    const e: WrittenEdit = { runId: 'l:6:0', text: 'Dictated text with a breakLemon', pick: false, target: { key: 'li:7', data: 'Lemon', runId: 'l:6:0' }, field: [{ key: 'li:7', data: 'Lemon', runId: 'l:6:0' }] };
+    const a = now.map((t, i) => n(li('#list', i + 1), t, t === 'Dictated text with a breakLemon' ? 'l:6:0' : runOf(t)));
+    const e: WrittenEdit = { runId: 'l:6:0', text: 'Dictated text with a breakLemon', pick: false, target: { key: li('#list', 7), data: 'Lemon', runId: 'l:6:0' }, field: [{ key: li('#list', 7), data: 'Lemon', runId: 'l:6:0' }] };
     const sel = selectNodes(e, b, a);
     expect(sel.kind).toBe('probe');
     if (sel.kind !== 'probe') return;
-    expect(sel.author.map((x) => [x.key, x.data])).toEqual([['li:4', 'Dictated text with a breakLemon']]);
+    expect(sel.author.map((x) => [x.key, x.data])).toEqual([[li('#list', 4), 'Dictated text with a breakLemon']]);
     // But the locator reading text no run holds is still a failure, though the new text shows elsewhere.
-    const broken = a.map((x) => (x.key === 'li:7' ? n('li:7', 'Kiwi?') : x));
-    expect(selectNodes(e, b, broken)).toMatchObject({ kind: 'render', node: { key: 'li:7', data: 'Kiwi?' } });
+    const broken = a.map((x) => (x.key === li('#list', 7) ? n(li('#list', 7), 'Kiwi?') : x));
+    expect(selectNodes(e, b, broken)).toMatchObject({ kind: 'render', node: { key: li('#list', 7), data: 'Kiwi?' } });
     // And with no exact render of the run holding the new text, a node reading another run's text fails too.
     const nowhere = a.map((x) => (x.exact === 'l:6:0' ? n(x.key, x.data) : x));
-    expect(selectNodes(e, b, nowhere)).toMatchObject({ kind: 'render', node: { key: 'li:7', data: 'Kiwi' } });
+    expect(selectNodes(e, b, nowhere)).toMatchObject({ kind: 'render', node: { key: li('#list', 7), data: 'Kiwi' } });
+  });
+
+  it('a moved label is looked for in the author’s own list only: a render in another container never stands in (repair re-verification)', () => {
+    // sortrunc.html: 'Plan A'…'Plan H' sorted into #full in full and into #nav, where labels over 13 characters are
+    // cut to 6 plus '...'. The author types in #nav's 3rd item; 'Plan C' becomes 'Plan Dzz long text', which sorts
+    // 4th: #nav's 3rd item now reads 'Plan D' (another run, exactly), the edited label shows in full only in #full,
+    // and in #nav it is cut. The node the author typed in never shows the new text: a failure.
+    const labels = ['Plan A', 'Plan B', 'Plan C', 'Plan D', 'Plan E', 'Plan F', 'Plan G', 'Plan H'];
+    const runOf = (t: string) => `l:${t.charCodeAt(5) - 65}:0`;
+    const walk = (texts: [string, string][]): SeenNode[] => {
+      const sorted = [...texts].sort((x, y) => (x[1] < y[1] ? -1 : x[1] > y[1] ? 1 : 0));
+      const full = sorted.map(([r, t], i) => n(li('#full', i + 1), t, r));
+      const nav = sorted.map(([r, t], i) => {
+        const d = t.length > 13 ? `${t.slice(0, 6)}...` : t;
+        return n(li('#nav', i + 1), d, d === t ? r : null);
+      });
+      return [...full, ...nav];
+    };
+    const b = walk(labels.map((t) => [runOf(t), t]));
+    const typed = (list: string, text: string): WrittenEdit => ({ runId: 'l:2:0', text, pick: false, target: { key: li(list, 3), data: 'Plan C', runId: 'l:2:0' }, field: [{ key: li(list, 3), data: 'Plan C', runId: 'l:2:0' }] });
+    const moves = walk(labels.map((t) => [runOf(t), t === 'Plan C' ? 'Plan Dzz long text' : t]));
+    expect(selectNodes(typed('#nav', 'Plan Dzz long text'), b, moves)).toMatchObject({ kind: 'render', node: { key: li('#nav', 3), data: 'Plan D' } });
+    // Typed in #full, the label moved within #full: that is the author's node, and the run's other renders are extra.
+    const full = selectNodes(typed('#full', 'Plan Dzz long text'), b, moves);
+    expect(full).toMatchObject({ kind: 'probe', author: [{ key: li('#full', 4), data: 'Plan Dzz long text' }] });
+    // A short label that moves within #nav (shown whole there) is the author's, moved.
+    const short = walk(labels.map((t) => [runOf(t), t === 'Plan C' ? 'Plan Dz' : t]));
+    expect(selectNodes(typed('#nav', 'Plan Dz'), b, short)).toMatchObject({ kind: 'probe', author: [{ key: li('#nav', 4), data: 'Plan Dz' }] });
+    // A label that does not move and is cut in #nav fails, as before.
+    const stays = walk(labels.map((t) => [runOf(t), t === 'Plan C' ? 'Plan Czz long text' : t]));
+    expect(selectNodes(typed('#nav', 'Plan Czz long text'), b, stays)).toMatchObject({ kind: 'render', node: { key: li('#nav', 3), data: 'Plan C...' } });
+  });
+
+  it('a locator that still reads its old text is never the author’s node moved (a duplicate label in another run)', () => {
+    // Two literals both read 'Plan C'; the author's node is fed by l:9:0 but the write went to l:2:0, whose own
+    // render, a sibling, shows the new text. The author's node still reads 'Plan C', now exactly l:9:0's.
+    const b = [n(li('#list', 1), 'Plan C', 'l:2:0'), n(li('#list', 2), 'Plan C', 'l:2:0')];
+    const a = [n(li('#list', 1), 'Plan C!', 'l:2:0'), n(li('#list', 2), 'Plan C', 'l:9:0')];
+    const e: WrittenEdit = { runId: 'l:2:0', text: 'Plan C!', pick: false, target: { key: li('#list', 2), data: 'Plan C', runId: 'l:2:0' }, field: [{ key: li('#list', 2), data: 'Plan C', runId: 'l:2:0' }] };
+    expect(selectNodes(e, b, a)).toMatchObject({ kind: 'render', node: { key: li('#list', 2), data: 'Plan C' } });
+  });
+
+  it('sameList: one :nth-of-type index apart, the same stamp, text index, container and depth', () => {
+    expect(sameList(li('#full', 3), li('#full', 7))).toBe(true);
+    expect(sameList(key('#chart > g:nth-of-type(2) > text:nth-of-type(1)'), key('#chart > g:nth-of-type(5) > text:nth-of-type(1)'))).toBe(true);
+    expect(sameList(li('#full', 3), li('#full', 3))).toBe(false);
+    expect(sameList(li('#full', 3), li('#nav', 4))).toBe(false);
+    expect(sameList(key('#full > li:nth-of-type(3)'), key('#full > p:nth-of-type(4)'))).toBe(false);
+    expect(sameList(key('#c > g:nth-of-type(2) > text:nth-of-type(1)'), key('#c > g:nth-of-type(5) > text:nth-of-type(2)'))).toBe(false);
+    expect(sameList(key('#full > li:nth-of-type(3)'), key('#full > li:nth-of-type(4) > b:nth-of-type(1)'))).toBe(false);
+    expect(sameList(key('#full > li:nth-of-type(3)', 'bl-1'), key('#full > li:nth-of-type(4)', 'bl-2'))).toBe(false);
+    expect(sameList(key('#full > li:nth-of-type(3)', '', 0), key('#full > li:nth-of-type(4)', '', 1))).toBe(false);
+    expect(sameList('li:3', 'li:4')).toBe(false);
   });
 
   it('a commit that went to another run of the field is judged on that run’s node in the field', () => {

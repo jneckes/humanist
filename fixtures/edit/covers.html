@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cover layers</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { font: 22px/1.3 system-ui, sans-serif; color: #111; background: #fff; }
+  p { position: absolute; margin: 0; white-space: nowrap; }
+  p.l { left: 30px; }
+  p.r { left: 480px; }
+  .layer { position: absolute; display: block; width: 400px; height: 50px; z-index: 5; }
+  .layer.l { left: 10px; }
+  .layer.r { left: 460px; }
+  /* Hidden: each layer paints white over its paragraph without a background colour or image of its own. */
+  #shade { top: 20px; box-shadow: inset 0 0 0 200px #fff; }
+  #border { top: 90px; height: 0; border-top: 50px solid #fff; }
+  #outline { top: 160px; outline: 30px solid #fff; outline-offset: -30px; }
+  #pborder { top: 230px; }
+  #pborder::after { content: ''; position: absolute; inset: 0; border: 25px solid #fff; }
+  #pshadow { top: 300px; }
+  #pshadow::before { content: ''; position: absolute; inset: 0; box-shadow: inset 0 0 0 100px #fff; }
+  #host { top: 370px; }
+  /* A thick border on a layer the page scales up twice: 40px of white on screen, 20px as laid out. */
+  #scaled { top: 440px; width: 200px; height: 5px; border-top: 20px solid #fff; transform-origin: 0 0; transform: scale(2); }
+  /* Controls: text that shows inside a thin frame, under an outline drawn outside a layer, and under a clear layer. */
+  #frame { top: 20px; height: 120px; border: 1px solid #999; }
+  #olout { top: 160px; outline: 3px solid #999; }
+  #clear { top: 230px; }
+</style>
+</head>
+<body>
+<p class="l" style="top:30px" id="shd">Hidden under a box shadow</p>
+<p class="l" style="top:100px" id="bdr">Hidden under a thick border</p>
+<p class="l" style="top:170px" id="oli">Hidden under an inner outline</p>
+<p class="l" style="top:240px" id="pbd">Hidden under a pseudo border</p>
+<p class="l" style="top:310px" id="psh">Hidden under a pseudo shadow</p>
+<p class="l" style="top:380px" id="hst">Hidden under a shadow tree</p>
+<p class="l" style="top:450px" id="scl">Hidden under a scaled border</p>
+<p class="r" style="top:65px" id="frm">Inside a thin frame</p>
+<p class="r" style="top:170px" id="olo">Under an outer outline</p>
+<p class="r" style="top:240px" id="clr">Under a clear layer</p>
+<div class="layer l" id="shade"></div>
+<div class="layer l" id="border"></div>
+<div class="layer l" id="outline"></div>
+<div class="layer l" id="pborder"></div>
+<div class="layer l" id="pshadow"></div>
+<x-curtain class="layer l" id="host"></x-curtain>
+<div class="layer l" id="scaled"></div>
+<div class="layer r" id="frame"></div>
+<div class="layer r" id="olout"></div>
+<div class="layer r" id="clear"></div>
+<script>
+  customElements.define('x-curtain', class extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: 'closed' }).innerHTML = '<div style="position:absolute;inset:0;background:#fff"></div>';
+    }
+  });
+  ['shade', 'border', 'outline', 'pborder', 'pshadow', 'host', 'scaled', 'frame', 'olout', 'clear'].forEach(function (id) {
+    document.getElementById(id).addEventListener('click', function () { document.documentElement.setAttribute('data-' + id, 'clicked'); });
+  });
+</script>
+</body>
+</html>

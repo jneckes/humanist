@@ -23,7 +23,8 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const DECKS = 'test/fuzz/selftest/decks';
 
 /**
- * `code` is the gate's exit code; `tag` must match the `what` of at least one failure (and `min` failures at least).
+ * `code` is the gate's exit code; `tag` must match the `what` of at least one failure (and `min` failures at least);
+ * `batch`, when set, is the gate's --batch (edits per round; the gate's default otherwise).
  * Seeds were chosen so that the gate before the fixes exits 0 on every failing case (recorded in the README).
  */
 const CASES = [
@@ -45,6 +46,11 @@ const CASES = [
   // edit is written right and shows, so the gate must pass (it failed with a false '[render]' before the fix).
   { name: 'sorted-1', deck: `${DECKS}/sorted.html`, seed: 1, edits: 8, code: 0 },
   { name: 'sorted-6', deck: `${DECKS}/sorted.html`, seed: 6, edits: 8, code: 0 },
+  // The same, with the labels also listed cut short in a second list: an edit typed in the short list whose label
+  // moves shows whole only in the other list. The node the author typed in never shows it, so it fails; the other
+  // list's render must not stand in for it (the repair's re-verification). One edit per round (--batch 1).
+  { name: 'sortrunc-2', deck: `${DECKS}/sortrunc.html`, seed: 2, edits: 8, batch: 1, code: 1, tag: /^\[render\] after the edit the node the author typed in \(#nav > li:nth-of-type\(\d+\)\) reads "Plan [A-H]", not the new text/ },
+  { name: 'sortrunc-7', deck: `${DECKS}/sortrunc.html`, seed: 7, edits: 8, batch: 1, code: 1, tag: /^\[render\] after the edit the node the author typed in \(#nav > li:nth-of-type\(\d+\)\) reads "Plan [A-H]", not the new text/ },
   // The control: the gate passes a deck that renders what is written.
   { name: 'control-single', deck: 'fixtures/decks/single.html', seed: 1, edits: 10, code: 0 },
 ];
@@ -91,7 +97,7 @@ async function main() {
     const out = join(o.work, `${c.name}.json`);
     rmSync(out, { force: true });
     const t0 = Date.now();
-    const r = await run(o.fuzz, ['--decks', c.deck, '--seed', String(c.seed), '--edits', String(c.edits), '--work', work, '--out', out]);
+    const r = await run(o.fuzz, ['--decks', c.deck, '--seed', String(c.seed), '--edits', String(c.edits), ...(c.batch ? ['--batch', String(c.batch)] : []), '--work', work, '--out', out]);
     let result = null;
     try {
       result = JSON.parse(readFileSync(out, 'utf8'));

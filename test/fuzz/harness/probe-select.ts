@@ -7,9 +7,9 @@
 // "That DOM text node" is the node the author typed in (review finding 25): an edit is judged on it, never only on
 // the run's other renders, so a write that lands in another node while the author's node keeps its old text fails
 // ('[render]'). The run's other renders are judged with it. A deck that sorts what it renders moves the edited text
-// to another node: that node, an exact render of the run with the new text, is then the author's. An edit whose node the round's walk does not show is
-// probed on its own, every stop of the walk shown again after a reload (review finding 26), and fails when nothing
-// shows it then.
+// to another node of the same list: that node, an exact render of the run with the new text, is then the author's
+// (a render in another container never is). An edit whose node the round's walk does not show is probed on its
+// own, every stop of the walk shown again after a reload (review finding 26), and fails when nothing shows it then.
 
 /** A text node as a walk counted it: its locator key (probe.ts locatorKey), its text, its exact run if any. */
 export interface SeenNode {
@@ -73,6 +73,33 @@ export type Selection<N extends SeenNode> =
   /** The field holds no node of the run the commit names (the commit oracle would have failed it): a failure. */
   | { kind: 'lost' };
 
+/**
+ * Whether two locator keys name nodes of the same list: a deck that sorts what it renders moves a label between
+ * them. A key is probe.ts locatorKey, `stamp \0 cssPath \0 childIndex`, and core dom-walk cssPath steps down from
+ * the nearest id with one `tag:nth-of-type(n)` step per level. Same list: the same stamp, the same text index, and
+ * CSS paths that differ in exactly one step, and there only in its :nth-of-type index (`#full > li:nth-of-type(3)`
+ * and `#full > li:nth-of-type(7)`, or `#chart > g:nth-of-type(2) > text:nth-of-type(1)` and the same with `g:…(5)`).
+ * Another container (`#nav > li:…`), another tag, another depth or a key of another shape is not the same list.
+ */
+export function sameList(a: string, b: string): boolean {
+  if (a === b) return false;
+  const pa = a.split('\u0000');
+  const pb = b.split('\u0000');
+  if (pa.length !== 3 || pb.length !== 3 || pa[0] !== pb[0] || pa[2] !== pb[2]) return false;
+  const sa = pa[1].split(' > ');
+  const sb = pb[1].split(' > ');
+  if (sa.length !== sb.length) return false;
+  let differ = 0;
+  for (let i = 0; i < sa.length; i++) {
+    if (sa[i] === sb[i]) continue;
+    const ma = /^(.+):nth-of-type\((\d+)\)$/.exec(sa[i]);
+    const mb = /^(.+):nth-of-type\((\d+)\)$/.exec(sb[i]);
+    if (!ma || !mb || ma[1] !== mb[1]) return false;
+    if (++differ > 1) return false;
+  }
+  return differ === 1;
+}
+
 /** Whether a copy at an author's locator is the author's node (its old text, its new text, or text never seen there). */
 export function isAuthorCopy(a: AuthorNode, data: string, want: string): boolean {
   return data === want || !a.others.has(data);
@@ -96,7 +123,9 @@ export function selectNodes<N extends SeenNode>(e: WrittenEdit, before: readonly
   }
   const found: N[] = [];
   let missing = false;
-  for (const a of author) {
+  for (let i = 0; i < author.length; i++) {
+    const a = author[i];
+    const old = nodes[i].data;
     const here = after.filter((n) => n.key === a.key && isAuthorCopy(a, n.data, e.text));
     if (here.length === 0) {
       missing = true;
@@ -109,10 +138,13 @@ export function selectNodes<N extends SeenNode>(e: WrittenEdit, before: readonly
     }
     // A deck that orders what it renders by the text (a sorted list, a ranked chart) moves the edited label to
     // another node (finding 25 re-verification): the author's locator then reads another run's current text
-    // exactly, and the run's new text is an exact render elsewhere. That node is the author's, moved. A locator
-    // that reads text no run holds (a write that landed elsewhere, a render the deck cut short) still fails.
-    const moved = here.every((n) => n.exact !== null && n.exact !== e.runId)
-      ? after.find((n) => n.exact === e.runId && n.data === e.text && !found.includes(n))
+    // exactly, not its own old text, and a node of the same list (sameList) shows the run's new text exactly. That
+    // node is the author's, moved. A render in another container never stands in for it (the repair's
+    // re-verification: a deck that also lists the labels cut short elsewhere would be judged on the other list).
+    // A locator that reads text no run holds (a write that landed elsewhere, a render the deck cut short) or still
+    // reads its old text fails.
+    const moved = here.every((n) => n.exact !== null && n.exact !== e.runId && n.data !== old)
+      ? after.find((n) => n.exact === e.runId && n.data === e.text && !found.includes(n) && sameList(a.key, n.key))
       : undefined;
     if (!moved) return { kind: 'render', node: here[0] };
     found.push(moved);

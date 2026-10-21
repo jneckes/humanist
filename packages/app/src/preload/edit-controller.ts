@@ -88,11 +88,64 @@ export const SOME_NOT_TYPED = 'Some keys came before the field opened and were n
 /** Keys that type nothing by themselves (a key held with another). */
 const MODIFIER_KEYS: ReadonlySet<string> = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'CapsLock', 'Fn', 'FnLock', 'NumLock', 'ScrollLock', 'OS', 'Hyper', 'Super']);
 
+/** A computed colour that paints nothing: empty, `transparent`, or rgba() with alpha 0. Any other form paints. */
+function clearColor(c: string): boolean {
+  const v = c.replace(/\s+/g, '');
+  return v === '' || v === 'transparent' || /^rgba\([\d.]+,[\d.]+,[\d.]+,0(?:\.0+)?\)$/.test(v);
+}
+
 /** A computed style with no background colour (fully transparent) and no background image. */
 function clearFill(cs: CSSStyleDeclaration): boolean {
-  const bg = cs.backgroundColor.replace(/\s+/g, '');
-  const clear = bg === '' || bg === 'transparent' || /^rgba\(\d+,\d+,\d+,0(?:\.0+)?\)$/.test(bg);
-  return clear && (cs.backgroundImage === 'none' || cs.backgroundImage === '');
+  return clearColor(cs.backgroundColor) && (cs.backgroundImage === 'none' || cs.backgroundImage === '');
+}
+
+const SIDES = ['top', 'right', 'bottom', 'left'] as const;
+
+/** The width in CSS px of each border (top, right, bottom, left) that paints: a style other than none or hidden and a colour that is not clear; 0 for the others. */
+function paintedBorders(cs: CSSStyleDeclaration): number[] {
+  return SIDES.map((s) => {
+    const style = cs.getPropertyValue(`border-${s}-style`);
+    if (style === 'none' || style === 'hidden' || clearColor(cs.getPropertyValue(`border-${s}-color`))) return 0;
+    const w = parseFloat(cs.getPropertyValue(`border-${s}-width`));
+    return Number.isFinite(w) && w > 0 ? w : 0;
+  });
+}
+
+/** How far inside the border box the outline paints, in CSS px (a negative outline-offset); 0 when it paints only outside, or not at all. */
+function outlineInside(cs: CSSStyleDeclaration): number {
+  if (cs.outlineStyle === 'none' || clearColor(cs.outlineColor) || !(parseFloat(cs.outlineWidth) > 0)) return 0;
+  const off = parseFloat(cs.outlineOffset);
+  return Number.isFinite(off) && off < 0 ? -off : 0;
+}
+
+/**
+ * A generated box (::before, ::after, ::backdrop) that paints anything: a fill, a shadow, a border, a border image,
+ * an outline, a backdrop filter, or (`content`, for ::before and ::after) anything other than an empty string (text,
+ * an image, a counter). Its geometry is not known here, so any paint counts wherever it is (E-9, review finding 9).
+ */
+function boxPaints(ps: CSSStyleDeclaration, checkContent: boolean): boolean {
+  if (!clearFill(ps)) return true;
+  if (ps.boxShadow && ps.boxShadow !== 'none') return true;
+  const bf = (ps as CSSStyleDeclaration & { backdropFilter?: string }).backdropFilter;
+  if (bf && bf !== 'none') return true;
+  if (ps.borderImageSource && ps.borderImageSource !== 'none') return true;
+  if (paintedBorders(ps).some((w) => w > 0)) return true;
+  if (ps.outlineStyle !== 'none' && !clearColor(ps.outlineColor) && parseFloat(ps.outlineWidth) > 0) return true;
+  return checkContent && ps.content !== '""' && ps.content !== "''";
+}
+
+/** The largest border radius of a computed style in CSS px; `whole` for a percentage (a circle, a pill). */
+function maxRadius(cs: CSSStyleDeclaration, whole: number): number {
+  let r = 0;
+  for (const corner of ['top-left', 'top-right', 'bottom-right', 'bottom-left']) {
+    const v = cs.getPropertyValue(`border-${corner}-radius`);
+    if (v.includes('%')) return whole;
+    for (const part of v.split(/\s+/)) {
+      const n = parseFloat(part);
+      if (Number.isFinite(n) && n > r) r = n;
+    }
+  }
+  return r;
 }
 
 /** A KeyboardEvent.key that types itself: one character (one code point), not a control character. */
@@ -110,6 +163,7 @@ const FIELD_WATCH_MS = 300;
 const MAPS_AHEAD_MAX = 16;
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const HTML_NS = 'http://www.w3.org/1999/xhtml';
 const STAMP_RE = /^bl-[0-9]{1,9}$/;
 /** Elements whose text is never page text, or that the browser edits itself (section 10 step 4; 9.2 Strategy 1 step 4). */
 const NO_EDIT_TAGS = new Set(['script', 'style', 'noscript', 'template', 'textarea', 'title', 'input', 'select', 'option']);
@@ -117,7 +171,9 @@ const NO_EDIT_TAGS = new Set(['script', 'style', 'noscript', 'template', 'textar
 /** Elements a hit test looks through (E-9) at most: a press on a large slide still costs little. */
 const HIT_SEARCH_MAX = 2000;
 /** Empty elements that still show something (an image, a canvas): what is under them cannot be reached (E-9). */
-const COVER_BLOCKERS = new Set(['img', 'canvas', 'video', 'picture', 'iframe', 'object', 'embed', 'svg', 'input', 'textarea', 'select']);
+const COVER_BLOCKERS = new Set(['img', 'canvas', 'video', 'audio', 'picture', 'iframe', 'object', 'embed', 'svg', 'input', 'textarea', 'select', 'meter', 'progress']);
+/** The margin, in view px, a point must keep from a painted border or an inner outline to count as clear of it (E-9). */
+const BAND_PAD = 1.5;
 
 /** Why a commit is a verbatim note when the page changed or removed the field while it was open (P2-17). */
 const PAGE_CHANGED_WHY: VerbatimWhy = 'page-changed';
@@ -1310,7 +1366,7 @@ export class EditController implements FieldHost {
       if (el === this.overlay.host) continue;
       const t = this.textInside(el, x, y, budget);
       if (t) return t;
-      if (this.seeThrough(el)) continue;
+      if (this.seeThrough(el, x, y)) continue;
       // A layer the page made pointer-events: none takes no press, in Read either: what lies under it is reached.
       if (passNoPointer && this.win.getComputedStyle(el).pointerEvents === 'none') continue;
       return null;
@@ -1402,20 +1458,89 @@ export class EditController implements FieldHost {
    * text is not at the point: textInside looked). A transparent click layer, a nav button, a slide's wrapper. Not
    * one whose ::before or ::after paints a background (a scrim, a curtain, a modal backdrop drawn by a pseudo-
    * element: finding 9, re-verification, the text under it is not visible), nor one that blurs or filters what is
-   * behind it (backdrop-filter).
+   * behind it (backdrop-filter). Every other way a box paints counts too (the repair's re-verification: an empty
+   * layer painted by an inset box-shadow or a thick opaque border hid its text as well): see boxClearAt; a ::before,
+   * ::after or (in the top layer) ::backdrop that paints anything at all (boxPaints); a generated image in place of
+   * the element (`content: url()`); a list marker; a shadow host, whose shadow tree this walk does not look into
+   * (and a custom element's, which may be closed).
    */
-  private seeThrough(el: Element): boolean {
+  private seeThrough(el: Element, x: number, y: number): boolean {
     if (el === this.doc.documentElement || el === this.doc.body) return true;
-    if (el.namespaceURI === SVG_NS) return el.localName === 'svg';
+    if (el.namespaceURI === SVG_NS) {
+      if (el.localName !== 'svg') return false;
+      // An <svg> in an HTML parent has a CSS box of its own, which can paint like any other.
+      return el.parentElement?.namespaceURI === SVG_NS || this.boxClearAt(el, this.win.getComputedStyle(el), x, y);
+    }
     if (COVER_BLOCKERS.has(el.localName)) return false;
+    if (el.shadowRoot || el.localName.includes('-')) return false;
     const cs = this.win.getComputedStyle(el);
-    if (!clearFill(cs)) return false;
-    const bf = (cs as CSSStyleDeclaration & { backdropFilter?: string }).backdropFilter;
-    if (bf && bf !== 'none') return false;
+    if (!this.boxClearAt(el, cs, x, y)) return false;
+    if (cs.content && cs.content !== 'normal' && cs.content !== 'none') return false;
+    if (cs.display.includes('list-item') && (cs.listStyleType !== 'none' || cs.listStyleImage !== 'none')) return false;
     for (const pseudo of ['::before', '::after']) {
       const ps = this.win.getComputedStyle(el, pseudo);
       if (ps.content === 'none' || ps.content === 'normal' || ps.display === 'none') continue;
-      if (!clearFill(ps)) return false;
+      if (boxPaints(ps, true)) return false;
+    }
+    let topLayer = false;
+    try {
+      topLayer = el.matches(':modal') || el.matches(':popover-open') || this.doc.fullscreenElement === el;
+    } catch {
+      topLayer = this.doc.fullscreenElement === el;
+    }
+    if (topLayer && boxPaints(this.win.getComputedStyle(el, '::backdrop'), false)) return false;
+    return true;
+  }
+
+  /**
+   * E-9 (the repair's re-verification): the element's own box paints nothing at the point. No background colour or
+   * image, no inset box-shadow (an outer one paints only outside the box), no backdrop filter, no border image; and
+   * the point lies clear of every painted border, of an outline drawn inside the box (a negative outline-offset) and
+   * of scrollbars, by BAND_PAD. Those bands are measured on the box as laid out, scaled to the view: when the box or
+   * an ancestor is rotated, skewed, transformed in 3D or zoomed, or the element has no layout box to measure, any such
+   * band counts as covering the point. A rounded corner widens every band by its radius (a ring paints inside it).
+   */
+  private boxClearAt(el: Element, cs: CSSStyleDeclaration, x: number, y: number): boolean {
+    if (!clearFill(cs)) return false;
+    const bf = (cs as CSSStyleDeclaration & { backdropFilter?: string }).backdropFilter;
+    if (bf && bf !== 'none') return false;
+    if (/\binset\b/.test(cs.boxShadow)) return false;
+    if (cs.borderImageSource && cs.borderImageSource !== 'none') return false;
+    const band = paintedBorders(cs);
+    const outline = outlineInside(cs);
+    const h = el.namespaceURI === HTML_NS ? (el as HTMLElement) : null;
+    if (h && /(scroll|auto)/.test(`${cs.overflowX} ${cs.overflowY}`)) {
+      const bw = SIDES.map((s) => parseFloat(cs.getPropertyValue(`border-${s}-width`)) || 0);
+      band[0] += Math.max(0, h.clientTop - bw[0]);
+      band[1] += Math.max(0, h.offsetWidth - h.clientLeft - h.clientWidth - bw[1]);
+      band[2] += Math.max(0, h.offsetHeight - h.clientTop - h.clientHeight - bw[2]);
+      band[3] += Math.max(0, h.clientLeft - bw[3]);
+    }
+    for (let i = 0; i < 4; i++) band[i] = Math.max(band[i], outline);
+    if (band.every((w) => w === 0)) return true;
+    if (!h || !(h.offsetWidth > 0) || !(h.offsetHeight > 0) || !this.plainBox(el)) return false;
+    const radius = maxRadius(cs, Math.max(h.offsetWidth, h.offsetHeight));
+    if (radius > 0) for (let i = 0; i < 4; i++) band[i] += radius;
+    const r = el.getBoundingClientRect();
+    const sx = r.width / h.offsetWidth;
+    const sy = r.height / h.offsetHeight;
+    return x > r.left + band[3] * sx + BAND_PAD && x < r.right - band[1] * sx - BAND_PAD && y > r.top + band[0] * sy + BAND_PAD && y < r.bottom - band[2] * sy - BAND_PAD;
+  }
+
+  /** The element and every ancestor are at most scaled and moved: no rotation, skew, 3D transform or zoom (E-9 bands). */
+  private plainBox(el: Element): boolean {
+    for (let a: Element | null = el; a; a = a.parentElement) {
+      const s = this.win.getComputedStyle(a);
+      const t = s.transform;
+      if (t && t !== 'none') {
+        const m = /^matrix\(([^)]*)\)$/.exec(t);
+        if (!m) return false;
+        const v = m[1].split(',').map(Number);
+        if (v.length !== 6 || Math.abs(v[1]) > 1e-9 || Math.abs(v[2]) > 1e-9) return false;
+      }
+      if (s.rotate && s.rotate !== 'none') return false;
+      const z = (s as CSSStyleDeclaration & { zoom?: string }).zoom;
+      if (z && z !== '1' && z !== 'normal') return false;
     }
     return true;
   }
