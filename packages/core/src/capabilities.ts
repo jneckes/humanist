@@ -69,11 +69,16 @@ export interface WriteQueue {
    */
   restore(bytes: Uint8Array, expectVersion: string): Promise<RestoreOutcome>;
   /**
-   * Tells the queue about a version a client holds (P2-3): its source and map, so a stale edit made on it can
-   * use 32 characters of its context to tell duplicates apart (9.2 Write protocol step 2). Call it at open and
-   * after every external change main takes. Synchronous; it never reads or writes the file.
+   * Tells the queue about a version a client holds (P2-3): its source and map, so a stale edit made on it can be
+   * placed by position, through a diff from it to the current version (9.2 Write protocol step 2; lead decision
+   * E-1). Call it at open and after every external change main takes. `pin`: the version is held (a page shows it,
+   * a field is open on it, or its commit is unanswered) and is never evicted until unpin is called as many times
+   * (9.2 step 1: "Main keeps the map for each version a client still holds"). Synchronous; it never reads or writes
+   * the file.
    */
-  know(version: string, src: string, map: DeckMap): void;
+  know(version: string, src: string, map: DeckMap, opts?: { pin?: boolean }): void;
+  /** Releases one pin of `version` (know with `pin`); unknown or unpinned versions are ignored. */
+  unpin(version: string): void;
   /** The map of the file as of the last read or write through this queue, after the operations queued before it. */
   currentMap(): Promise<DeckMap>;
   /** Reads the file and rebuilds the map now (in the queue). */

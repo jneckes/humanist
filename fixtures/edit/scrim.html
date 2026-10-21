@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scrim deck</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { font: 24px/1.4 system-ui, sans-serif; color: #111; background: #fff; }
+  p { position: absolute; left: 40px; margin: 0; }
+  /* A layer whose ::before paints an opaque white fill over the text below it: the text cannot be seen. */
+  #scrim { position: absolute; left: 0; top: 230px; width: 900px; height: 80px; z-index: 5; }
+  #scrim::before { content: ''; position: absolute; inset: 0; background: #fff; }
+  /* A layer whose ::before paints nothing (no content would draw it, and a transparent one draws no fill). */
+  #veil { position: absolute; left: 0; top: 380px; width: 900px; height: 80px; z-index: 5; }
+  #veil::before { content: ''; position: absolute; inset: 0; background: transparent; }
+</style>
+</head>
+<body>
+<p style="top:40px" id="free">An uncovered paragraph</p>
+<p style="top:250px" id="scr">Hidden under a white scrim</p>
+<p style="top:400px" id="veiled">Under a clear veil</p>
+<div id="scrim"></div>
+<div id="veil"></div>
+<script>
+  document.getElementById('scrim').addEventListener('click', function () { document.documentElement.setAttribute('data-scrim', 'clicked'); });
+</script>
+</body>
+</html>

@@ -8,18 +8,168 @@ results are written by the scripts (paths under each section); they are not comm
 
 The gate item first ran its harnesses in the Linux dev container on 2026-10-19, while the other build items were
 still at work in the tree (its sections below say what each run saw). The integration step then made the pieces
-fit (the open contract requests, the fixes below, the `@edit` tags), and ran every harness and suite again on the
-final tree on 2026-10-19 and 20: section "Integration" gives those numbers, and the table gives the final result.
+fit (the open contract requests, its fixes, the `@edit` tags) and ran everything again (commit 91b58dc). An
+adversarial review of that tree confirmed 29 findings, and their fixes changed the write queue, main's edit
+session, the overlay, the clean-up and both fuzz harnesses (section "The Phase 2 review"). Every harness and suite
+then ran once more on the fixed tree, on 2026-10-20 ("The final runs"); the table and every result below come from
+those runs, unless a section says it describes an earlier one.
 
 | Criterion | Gate (SPEC 10 Phase 2) | Result here |
 |---|---|---|
-| Fuzz, committed fixtures | 1,000 seeded edits, the typed path, notes only by rule, every written edit through the checks and the mutation probe in Chromium, zero failures | **met**: 1,000 edits over the 47 UTF-8 committed decks: 903 written (90.3%), 72 notes by rule (7.2%), 25 no-ops (2.5%), **0 failures**; all 903 written edits passed the mutation probe on their new text (none unprobed); 18 min. The final tree's run repeats the gate item's runs record for record (1,000 of 1,000) |
-| Fuzz, Josh's decks | the extra run | **met**: 1,000 edits over D1–D12: 894 written (89.4%), 77 notes by rule (7.7%), 29 no-ops (2.9%), **0 failures**; 892 written edits passed the mutation probe and 2 could not be probed (no visible node showed their run after the edit, both D5); 77 picked candidates (66 written); 28 min |
-| Concurrency | an external write 50 ms before the commit: the edit lands on the right text or becomes a verbatim note; the external change survives | **met**: through the app, `test/e2e/edit-gate-concurrency.spec.ts` (an unrelated change, the same text rewritten, an element inserted before the target, a change while the field stays open, a write inside the atomic write before the re-hash): 5 of 5 in each of the final full E2E runs (one earlier run's failure was the test's own oracle, fixed: see Integration), and with the typed-edit spec 24 of 24 run three times; below the app, the queue's unit tests and the fuzz's external writes (none lost, every edit on its run or a note by rule). The window between the re-hash and the rename is the protocol's stated limit |
-| Reader-only | `npm run test:reader-only` passes with `packages/editor` removed | **met**: the copy without `packages/editor`, the reader-only build, the bundle check, tsc, vitest (93 files, 1,818 tests), the reader-only `map`, the E2E suite without `@edit` (168 tests, 1 of them the known note-card ordering limit, an expected failure) and the security suite without `@edit` (57 tests, 6 expected failures, the known limits) all pass: `PASSED` in 27 min, twice |
+| Fuzz, committed fixtures | 1,000 seeded edits, the typed path, notes only by rule, every written edit through the checks and the mutation probe in Chromium, zero failures | **met**: 1,000 edits over the 47 UTF-8 committed decks: 903 written (90.3%), 72 notes by rule (7.2%), 25 no-ops (2.5%), **0 failures**; every written edit passed the mutation probe on the node the author typed in (none probed on its own, none unprobed); 19 min. The same 1,000 records as the gate item's and the integration's runs |
+| Fuzz, Josh's decks | the extra run | **met**: 1,000 edits over D1–D12: 920 written (92.0%), 54 notes by rule (5.4%), 26 no-ops (2.6%), **0 failures**; every written edit passed the mutation probe on the author's node (1, on D5, probed on its own; none unprobed); 74 picked candidates (65 written); 102 stale-version requests, 95 written by position and none `ambiguous`; 29 min |
+| Concurrency | an external write 50 ms before the commit: the edit lands on the right text or becomes a verbatim note; the external change survives | **met**: through the app, `test/e2e/edit-gate-concurrency.spec.ts` (an unrelated change, the same text rewritten, an element inserted before the target, a change while the field stays open, a write inside the atomic write before the re-hash): 5 of 5 in each of the two final E2E runs, and with the typed-edit spec 24 of 24 run three times; the inserted element's edit landed on its heading in all 5 runs; below the app, the queue's unit tests and the fuzz's external writes (none lost, every edit on its run or a note by rule). The window between the re-hash and the rename is the protocol's stated limit |
+| Reader-only | `npm run test:reader-only` passes with `packages/editor` removed | **not met on this tree**, for one stale unit test: the copy without `packages/editor`, the reader-only build, the bundle check, tsc, the reader-only `map`, the E2E suite without `@edit` (168 tests, 1 the known note-card ordering limit, an expected failure) and the security suite without `@edit` (57 tests, 6 expected failures, the known limits) pass; vitest (96 files, 1,877 tests) fails on `env.test.ts`, whose expected list of input types predates the review's `deleteByDrag` (Open issues). `FAILED` in 17 min, for that reason alone in run 2 |
 | Real use | Josh finishes 3 real decks using only Edit for text changes | **not started**: needs the Mac build; checklist below |
 
-## Integration (the final tree)
+## The Phase 2 review
+
+An adversarial review of the integrated tree (commit 91b58dc) confirmed 29 findings, each reproduced by a second
+reviewer: 1 critical, 4 high, 13 medium and 11 low. Four could put an edit on the wrong text or undo the wrong edit
+(findings 0, 1, 14, 22); others lost typed text, left Edit waiting for a reload that never came, or made the gate
+weaker than this page said. SECURITY.md, docs/ARCHITECTURE.md ("What the Phase 2 review changed in the flows") and
+docs/spec-amendments/README.md give the rules the fixes set and the code that holds them. Each fix has a regression
+test that failed on the tree before it and passes after it (Files, below).
+
+- **A stale edit is placed by position** (findings 0, 1, 22). When the file changed since the field's version, the
+  queue maps the run's range through a diff of that version to the current bytes and writes only at exactly that
+  range, on the same text, with no change overlapping it. The 32 characters of context never choose between copies:
+  before, a repeated slide or label let them pick another copy, with no other program writing. A version the queue
+  does not hold, a diff past its time limit or an overlapping change makes a verbatim note (`ambiguous` or `stale`).
+  Main pins the version of every open field and of the page in the queue until the commit is answered, and the
+  overlay opens no field on a version with an unanswered commit of its own: the press waits for the answer.
+- **Typed text is never lost silently** (5, 19, 6, 7, 20, 16). Before a window closes (a D-1 reopen closes it too) or
+  the app quits, and when a click in the shell takes focus from the deck, main asks the deck to commit its open field
+  (before a close or a quit it waits, at most 3 s); the commit a deck makes as its view leaves Edit is still taken.
+  The mode is checked when main accepts a commit, so a commit accepted in Edit is written after a switch to Read. A
+  commit accepted from real input that cannot be written because the file moved, was deleted, stopped being UTF-8
+  or became Protected is kept as a verbatim note with its exact texts.
+- **Undo waits for the writes in flight** (14): Cmd+Z, Cmd+Shift+Z and the toast's Undo run in the document's lane,
+  behind its commits, and act on the newest write that landed.
+- **Edit authorisation expires** (4): a field's authorisation ends when it closes, when the view leaves Edit, or after
+  10 minutes without trusted input in that view.
+- **The Saved toast is the shell's** (8): "Saved · <file>:<line>", "· also changes N other places" and Undo survive the
+  reload that follows a literal or picked write.
+- **Own writes** (2, 3, 15, 17, 18): an own html-text write advances the page's version (no "Deck changed" state that
+  never ends); after adopting an own write main re-hashes the file and treats other bytes as an external change, and
+  `knownHash` never moves back; the content main knew advances after every own write, even one that lands after its
+  window closed, so locks are transformed from the right text.
+- **History** (21): one entry per write that landed, deduplicated by content; a requeued write adds none.
+- **The overlay** (9, 10, 11, 12, 13): text under an empty element (a click-to-advance button) or in a
+  `pointer-events: none` layer is found by its geometry and can be edited; a node a script rewrote (`touched`) offers
+  no candidate and is not editable; the fit guard measures the text as it will render (`text-transform`,
+  `font-variant-caps`); a space typed in a `<button>` or `<summary>` is inserted; dragging selected text inside a field
+  moves it; a right-click on a misspelled word offers the dictionary's suggestions.
+- **The clean-up** (23): the deck's own NBSPs, line breaks and straight quotes between two changes of one commit are
+  kept (Integration, "Three fixes", item 1).
+- **The gates** (24, 25, 26, 28, 27): the Chromium fuzz judges the node the author typed in, probes on its own an edit
+  the walk does not show, and checks console errors and the slide count for every round that wrote; both fuzzes judge
+  the clean-up with an oracle that shares no code with it; the Node fuzz requires a refusal after a conflicting write
+  to leave exactly the external write's bytes; and this page quotes only the final runs.
+
+### The final runs
+
+Linux, Electron 44.7.2, 2026-10-20, on the tree with every fix of the review in it. `rm -rf packages/app/dist
+packages/cli/dist`, then `npm run build`; every number on this page comes from these runs, whose logs and reports
+are in `test-results/p2-final/` (not committed; `tree.txt` there fingerprints the tree they ran on).
+
+| Suite | Result (`test-results/p2-final/`) |
+|---|---|
+| `npx tsc -p tsconfig.json --noEmit` | 0 errors (`tsc.log`) |
+| `npx vitest run` (`npm test`) | 108 files, 2,021 tests: 2,020 pass and **1 fails**, `test/unit/preload/env.test.ts` "allows exactly the 9.2 input types" (its expected list predates the review's `deleteByDrag`: Open issues), 84 s (`vitest.log`); the Node fuzz among them: 1,200 edits over 44 documents, 911 written (75.9%), 240 notes by rule (20.0%), 49 no-ops, **0 failures** |
+| `vitest -c test/fuzz/vitest.config.mts` and `-c test/parity/vitest.config.mts` | 51 and 37 tests pass (`vitest-fuzz.log`, `vitest-parity.log`) |
+| `npx playwright test -c test/e2e/playwright.config.ts` (`npm run test:e2e` without its build step) | 271 tests: 270 pass and 1 is the expected failure (the note-card ordering limit, SECURITY.md), none skipped, in two consecutive runs, 15.5 min each (2 workers; `e2e-1`, `e2e-2`) |
+| `npx playwright test -c test/security/playwright.config.ts` | 64 tests: 58 pass and 6 are the expected failures (the two DNS channels, and the two drop limits in both trust states; SECURITY.md), 4.9 min; the same in two consecutive runs (`security-1`, `security-2`) |
+| typed-edit and concurrency specs, `--repeat-each 3` | 24 of 24, 37 s (`gates-x3`) |
+| `npx playwright test -c test/parity/playwright.config.ts` | 9 of 9, 9.0 min (`parity-pw.log`) |
+| `node scripts/package-smoke.mjs` (`npm run package:smoke` without its build step) | 17 of 17 (`package-smoke.log`) |
+| `node packages/cli/dist/blueline.cjs check --auto` | 6 of 6 PASS (`check-auto.log`) |
+| `node scripts/fuzz.mjs --committed` | 1,000 edits, 903 written, 72 notes by rule, 25 no-ops, **0 failures**, 903 probed (0 on their own, 0 unprobed); the same 1,000 records as the integration's run; 19 min (`fuzz.json`) |
+| `node scripts/fuzz.mjs --local` | 1,000 edits, 920 written, 54 notes by rule, 26 no-ops, **0 failures**, 920 probed (1 on its own), 0 unprobed; 29 min (`fuzz-local.json`) |
+| `node scripts/fuzz.mjs --negative-control` (5 decks, 150 edits) | 26 of 26 planted changes caught, nothing else failed, 100 s (`fuzz-negative.json`) |
+| `node scripts/fuzz-selftest.mjs` | all 10 cases behaved as expected: the gate failed each of the 9 cases it must fail and passed the control, 37 s (`fuzz-selftest.log`) |
+| `npm run test:reader-only` | `FAILED` twice, both times at vitest only for the test above (run 2: every other step passes; run 1, under the load of both fuzz runs, also had two load failures that passed in run 2); see Reader-only gate |
+| `blueline map --report --json` | the 19 committed fixtures equal their baselines; Josh's 12 decks hold against theirs (Coverage, below) |
+
+### Coverage (`blueline map --report --json`, on copies)
+
+- **Committed fixtures** (the 19 baselines of `fixtures/expected/`, decks copied with their sibling scripts;
+  `test-results/p2-final/map-committed.json`): all 19 equal their baselines run for run (slide, text, strategy,
+  confidence, offsets, probe), 423 of 423 exact nodes pass the mutation probe, every original untouched.
+- **Josh's 12 decks, `--reduced-motion`** (copies, against `fixtures/local/expected/<deck>.reduced-motion.json`;
+  `map-local.json`, labels only): every slide reached; 6,053 of 6,673 visible text nodes exact and probed (90.7%;
+  94.5% of the wording), against 6,058 of 6,678 in the baselines. Eleven decks equal their baselines run for run, D3
+  with its one known probe failure (Phase 0 F30: a label the deck also keeps in a hidden element on another slide).
+  D5 differs only on its first and last slides, the ticker slides, as in Phase 1 (427 visible nodes here, 432 in the
+  baseline, 430 and 429 in the integration's runs); every one of its exact nodes passed the probe. 39 min.
+
+### Open issues
+
+Known after the final runs; none is a write to the wrong place or a lost change.
+
+- **One unit test is stale, so the unit suite and the reader-only gate fail.** `test/unit/preload/env.test.ts`
+  "allows exactly the 9.2 input types" (line 23) lists the input types an edit field allowed before the review; the
+  drag-move fix (finding 12) added `deleteByDrag` to `ALLOWED_INPUT_TYPES` in `edit-input.ts`, so the test fails in
+  `npx vitest run` and in the reader-only gate's vitest step (`npx vitest run test/unit/preload/env.test.ts`: 1
+  failed, 4 passed). The fix is to add `deleteByDrag` to the test's expected list; the measurement step changes no
+  test. Until it is made and the two suites run again, the reader-only criterion is not met.
+- **A PDF cancelled by its document's close can give the wrong reason.** `RenderView.overlayMounted()` answers
+  "mounted" when its check cannot run, so under load a PDF whose document closed mid-walk failed with "a render view
+  showed the overlay" instead of "closed" (`render-products-pdf.spec.ts` "a PDF running when its document closes …",
+  once, in reader-only run 1 beside two fuzz runs; it passed in every other run). A closed view should end the walk
+  as cancelled.
+- **Real use has not started** (the fourth criterion): it needs the Mac build. The checklist is below and in the
+  README.
+- **The caret can land in text Blueline cannot place.** A label whose element also holds an unmapped glyph (D3): End
+  puts the caret after the glyph, and what is typed there lands outside every run, so it becomes a verbatim note by
+  rule (the toast says so). Correct by rule, surprising in use.
+- **Stale requests and notes.** A request on an older version is placed by position (9.2 Write protocol step 2 as
+  amended); it becomes a verbatim note by rule when a change overlaps its run, its version is no longer known, or the
+  diff runs past its time limit. In the final runs: on Josh's decks 102 stale-version requests, 95 written on their
+  run, 7 notes by the escape rule, none `ambiguous` or `stale` (the integration's run, by the old context rule: 22 of
+  111 ambiguous); in the Node fuzz 119 stale-version edits, 78 written, 22 `stale` and 4 `ambiguous` notes. A page
+  left open while another program rewrites the text around a field is where such notes come from: worth watching in
+  real use.
+- **`<pre>`, `<listing>` and `<textarea>` with a character reference right after the dropped leading newline**:
+  parse5 8 places the text node late, so the mapper leaves the run unaligned (not editable) and the queue refuses to
+  create that state (core-edit). A mapper fix would make such runs editable.
+- **The run on Josh's decks can fail on D5's ticker by chance.** An edit to an item of D5's CSS marquee, probed on
+  its own, holds exactly the new text and its sentinel but can be out of view at every stop, and then fails
+  (Limits, below). It did not happen in the final run; it is a property of the method, not a wrong write. Options:
+  accept it as a known limit, pass such a node on its text and sentinel (counted apart), or pause animations for the
+  probe's loads.
+- **Linux tested no marker copy**: the atomic writer copies no extended attributes on Linux, so neither the fuzz nor
+  the E2E suite exercised the marker copy of a write, and history snapshots on Linux carry no marker. Recheck on the
+  Mac (below).
+- **Text Edit still cannot reach.** On copies of D1, D3 and D6 (slides 1–3), 50 of 57 exact nodes that sit under an
+  empty element or in a `pointer-events: none` layer now open a field (1 of 57 before the review); 7 get no outline
+  (most of them `pointer-events: none` labels the overlay probably does not hold as exact, not investigated), and a
+  press on one 4-character node under a D3 nav button still reaches the page. A node a script rewrote (`touched`) is
+  now not editable and offers no candidate (`edit-fix-overlay.spec.ts`); that is the rule for D10's chrome title,
+  whose only candidate was text the deck's script replaces at load, but D10 was not driven by hand again.
+- **Small windows the review left.** Cmd+Z pressed before the commit's message reaches main undoes the previous edit
+  (the commit's undo slot is reserved only when main accepts it). While a press waits for the answer to the commit it
+  triggered (at most the commit timeout), no field is open, so keys typed in that moment go to the deck as in Edit
+  with no field. Dragging text out of an SVG text field into the page's own editable element moves it out of the
+  field, and the blur then commits the deletion (HTML fields confine the drop to the field; the SVG field's input does
+  not yet).
+- **A deck that cannot answer before close or quit.** Before a window closes or the app quits, main asks the deck to
+  commit its open field and waits at most 3 s. If the deck cannot answer (a hung page), the window closes anyway:
+  nothing is written, and main keeps nothing it did not receive (SECURITY.md, Known limits added by Phase 2).
+- **Smaller ones.** A verbatim note made from a field that holds a lone surrogate stores U+FFFD (a note cannot hold
+  one). "· also changes N other places" (in the shell's Saved toast since the review) counts only the other nodes the
+  matcher places exactly. A drop rewritten for line breaks inserts at the selection, not at the drop point. If the
+  history's `index.json` is damaged, the next load lists no history and the one after removes the old snapshot files
+  (the deck is never touched). There is no per-document switch for smart punctuation yet (the session override is
+  honoured). The quit asks each deck to commit first (at most 3 s, above), then waits for writes and history with
+  Phase 1's 3 s cap; a write still running then is atomic (fully renamed or not at all).
+- **Inherent in P2-7**: a compromised page can open a field within 2 s of a real press in Edit, or press the toast's
+  Undo then. It can commit a change to one run while that field stays authorised: until a newer field begins, the
+  deck reports no field open, the view leaves Edit (main still takes the commit it asks for then, for 5 s), or 10
+  minutes pass without trusted input in that view (SECURITY.md, Known limits added by Phase 2). Before the review a
+  field never expired (finding 4).
+
+## Integration (before the review)
 
 ### What the integration step changed
 
@@ -67,7 +217,14 @@ Three fixes the runs led to:
   `core/edit-cleanup.ts`). One commit that changed a run in two places made the untouched text between them part of
   the changed region, so a line break the run already had there became a space (a visible change in a `<pre>`) and an
   `&nbsp;` became a space. A line break, NBSP, U+200B, U+FEFF or straight quote in the changed region now counts as
-  introduced only when the region holds more of it than before (`keptAt`; unit tests in `edit-cleanup.test.ts`).
+  the run's own when it is at the same position relative to the unchanged prefix or suffix, or when a character diff
+  of the changed region pairs it with one of the old text's (a longest common subsequence computed in
+  `core/edit-cleanup.ts` in a widening diagonal band, deterministic, no time limit; past about 2,000 × 2,000 changed
+  characters every class the old region held is kept). Only the others are cleaned. The integration's first fix
+  counted occurrences instead, which still rewrote the deck's own between two changes whenever the same commit added
+  one more (Phase 2 review finding 23: a pasted NBSP turned the deck's `&nbsp;` into a space, a typed `"c"` curled the
+  run's own `"b"`). Unit tests in `edit-cleanup.test.ts` and `edit-cleanup-two-changes.test.ts`, the write path in
+  `cleanup-write.test.ts`, the app in `edit-cleanup-two-changes.spec.ts`.
 - **A picked run's write and its undo did not show truly on the page** (found by the hand-driven run on D3, below).
   The overlay put the written text into the node the author edited, and an undo patched the run's own parser node,
   which a picked node is not (a script drew it, or it is another place with the same text): after Cmd+Z the page
@@ -76,48 +233,14 @@ Three fixes the runs led to:
 - The integration's own map check first copied `csp-nonce-strict-dynamic.html` without its sibling script; the check
   now copies it as `map.spec.ts` does (a harness slip, not a Blueline bug).
 
-### The suites, from a clean build
-
-Linux, Electron 44.7.2, 2026-10-20. `rm -rf packages/app/dist packages/cli/dist`, then `npm run build:reader-only`:
-no `dist/editor.cjs`, and against that build the reader-side specs pass (`edit-gate-reader.spec.ts`,
-`edit-main-reader.spec.ts`, `reader.spec.ts`: 4 of 4; Cmd/Ctrl+3, View › Edit and File › History say Edit is not
-available, Cmd+Z has nothing to undo, a click opens no field); then `npm run build`.
-
-| Suite | Result |
-|---|---|
-| `npx tsc -p tsconfig.json --noEmit` | 0 errors |
-| `npx vitest run` (`npm test`) | 99 files, 1,943 tests pass, 80 s; the Node fuzz among them: 1,200 edits over 44 documents, 908 written (75.7%), 242 notes by rule (20.2%), 50 no-ops, **0 failures** |
-| `vitest -c test/fuzz/vitest.config.mts` and `-c test/parity/vitest.config.mts` | 19 and 37 tests pass |
-| `npm run test:e2e` | 228 tests: 227 pass and 1 is the expected failure (the note-card ordering limit, SECURITY.md), in two consecutive runs on the final tree, 14 min each (2 workers). On the way: one run had 226 of 227 (the concurrency test's oracle, fixed above), and two more passed 227 of 227 before the Smart punctuation test was added |
-| `npm run test:security` | 60 tests: 54 pass and 6 are the expected failures (the two DNS channels, and the two drop limits in both trust states; SECURITY.md), 3.8 min; the same in two runs |
-| `npx playwright test -c test/parity/playwright.config.ts` | 9 of 9, 8.9 min |
-| `npm run package:smoke` | 17 of 17 |
-| `node packages/cli/dist/blueline.cjs check --auto` | 6 of 6 PASS |
-| typed-edit and concurrency specs, `--repeat-each 3` | 24 of 24 |
-| `node scripts/fuzz.mjs` | 1,000 edits, 903 written, 72 notes by rule, 25 no-ops, **0 failures**, 903 probed; the same 1,000 records as the gate item's runs; 18 min |
-| `node scripts/fuzz.mjs --local` | 1,000 edits, 894 written, 77 notes by rule, 29 no-ops, **0 failures**, 892 probed, 2 unprobed; 28 min |
-| `npm run test:reader-only` | `PASSED` twice, the second time on the final tree alone (27 min): vitest 93 files, 1,818 tests; E2E without `@edit` 168 tests (1 expected failure); security without `@edit` 57 tests (6 expected failures); see Reader-only gate |
-| `blueline map --report --json` | the 19 committed fixtures equal their baselines; Josh's 12 decks hold against theirs (Coverage, below) |
-
-### Coverage (`blueline map --report --json`, on copies)
-
-- **Committed fixtures** (the 19 baselines of `fixtures/expected/`, decks copied with their sibling scripts): all 19
-  equal their baselines run for run (slide, text, strategy, confidence, offsets, probe), 423 of 423 exact nodes pass
-  the mutation probe, every original untouched and every probe copy removed.
-- **Josh's 12 decks, `--reduced-motion`** (copies, against `fixtures/local/expected/<deck>.reduced-motion.json`):
-  every slide reached; 6,055 of 6,675 visible text nodes exact and probed (90.7%), against 6,058 of 6,678 in the
-  baselines. Eleven decks equal their baselines run for run, D3 with its one known probe failure (Phase 0 F30: a label
-  the deck also keeps in a hidden element on another slide). D5 differs only on its first and last slides, the ticker
-  slides, as in Phase 1 (430 and 429 visible nodes in two runs here, 432 in the baseline); every one of its exact
-  nodes passed the probe. 36 min.
-
 ### Edit by hand on two of Josh's decks
 
 A scratch Playwright driver (not committed: it reads `fixtures/local`) opened copies of D3 and D10 in the app (as
 `bltest`, sandbox on), pressed Cmd/Ctrl+3, and with real clicks and keys (`sendInputEvent`) edited five kinds of
 text, then pressed Cmd/Ctrl+Z twice and Cmd/Ctrl+Shift+Z once, checking after each step the file's bytes (one splice
 inside the edited run, covered by the new note's lock), the notes list, the history and the page. Both decks
-passed every step on the final build:
+passed every step on the integration build (before the Phase 2 review; the decks were not driven by hand again
+after it, and the "Saved" toast is now the shell's):
 
 | Step | D3 | D10 |
 |---|---|---|
@@ -133,37 +256,7 @@ end of a label whose element also holds text Blueline cannot place (D3's label h
 there if the user presses End: the edit then lands outside the run and becomes a verbatim note, by rule, with the
 toast saying so. And on D10 the only candidate the picker offered for a slide title was the static text of the
 deck's chrome title, which the deck's script rewrites at load: the write is exact and undoable, but after the reload
-the page shows the edit nowhere (Open issues).
-
-### Open issues
-
-Known after the integration run; none is a write to the wrong place or a lost change.
-
-- **Real use has not started** (the fourth criterion): it needs the Mac build. The checklist is below and in the
-  README.
-- **A pick can name text the deck's script replaces.** On D10 the picker's only candidate for a slide title was the
-  static text of the deck's chrome title, which the deck's script rewrites at load. The write is exact, noted, locked
-  and undoable, but after the reload the page shows the edit nowhere. Whether the picker should hide a candidate whose
-  node a script rewrote (the matcher marks it `touched`) is a product decision for Phase 3.
-- **The caret can land in text Blueline cannot place.** A label whose element also holds an unmapped glyph (D3): End
-  puts the caret after the glyph, and what is typed there lands outside every run, so it becomes a verbatim note by
-  rule (the toast says so). Correct by rule, surprising in use.
-- **A stale page on a real deck turns more edits into notes**: on Josh's decks 20 of 106 stale-version requests were
-  ambiguous by rule (repeated text that 32 characters of context do not single out). Worth watching in real use.
-- **`<pre>`, `<listing>` and `<textarea>` with a character reference right after the dropped leading newline**:
-  parse5 8 places the text node late, so the mapper leaves the run unaligned (not editable) and the queue refuses to
-  create that state (core-edit). A mapper fix would make such runs editable.
-- **Linux tested no marker copy**: the atomic writer copies no extended attributes on Linux, so neither the fuzz nor
-  the E2E suite exercised the marker copy of a write, and history snapshots on Linux carry no marker. Recheck on the
-  Mac (below).
-- **Smaller ones.** A verbatim note made from a field that holds a lone surrogate stores U+FFFD (a note cannot hold
-  one). "Also changes N other places" counts only the other nodes the matcher places exactly. A drop rewritten for
-  line breaks inserts at the selection, not at the drop point. If the history's `index.json` is damaged, the next
-  load lists no history and the one after removes the old snapshot files (the deck is never touched). There is no
-  per-document switch for smart punctuation yet (the session override is honoured). The quit wait for writes and
-  history keeps Phase 1's 3 s cap; a write still running then is atomic (fully renamed or not at all).
-- **Inherent in P2-7**: for 2 s after a real press in Edit, a compromised page can commit a change to one run or press
-  the toast's Undo (SECURITY.md, Known limits added by Phase 2).
+the page shows the edit nowhere. Since the review such a node offers no candidate and is not editable (Open issues).
 
 ## Environment
 
@@ -189,8 +282,8 @@ Options: `--seed n` (default 1592598566, the Node fuzz's), `--edits n` (1,000), 
 and the probe's batch), `--committed`, `--local`, `--decks <label|path>,…`, `--out`, `--work`, `--verbose`, `--negative-control` (never a
 gate run, below). `npm run
 fuzz` builds first. Results: `test-results/fuzz/fuzz.json` (`fuzz-local.json` for `--local`), the text summary on
-stdout, the bytes before any failed edit in `<work>/failures/`. Exit 0 when every edit passed and the requested
-number was made, 1 otherwise, 2 on a harness error.
+stdout, the bytes before any failed edit in `<work>/failures/`. Exit 0 when every edit passed, every written edit
+was probed and the requested number was made, 1 otherwise, 2 on a harness error.
 
 ### Method
 
@@ -230,7 +323,8 @@ seam), and its build fails on any import of `@blueline/editor`.
   `liftPick` for a picked substring or normalized candidate, then `EditRequest` as main builds it, then
   `WriteQueue.edit` of the shipped editor over the app's DeckIO (`atomic-write.ts createDeckIO`: temp file in the same
   folder, mode bits, extended attributes, fsync, re-hash, rename). The queue is told the version the page holds
-  (`know`, P2-3).
+  (`know`, P2-3), pinned for the round (each walk's version is pinned and released when the round's edits end, as
+  main pins an open field's version since the Phase 2 review).
 - **Concurrency inside the fuzz.** 10% of requests name the version the walk saw although the deck has moved on (the
   stale-version path); 4% follow an external write (an HTML comment at the end of the body, which moves no stamp);
   4% have that write land inside the atomic write, after the temp file and before the re-hash (`prepareTemp`). The
@@ -245,15 +339,24 @@ seam), and its build fails on any import of `@blueline/editor`.
   it wrote on another version than the request's. A quarter of the written edits are undone and redone through the
   queue, with the bytes compared exactly both times.
 - **The mutation probe on the new text** (P2-16, SPEC 10 Phase 0 probe steps 1–5): after a round, the version its
-  edits produced is walked, and each edited run's nodes there (its exact nodes, and the nodes where the author saw it
-  if they show its new text) go through `probe.ts probeTargets`, batched as `map` batches (24 runs per load, each run
-  alone on doubt): a sentinel is appended to the run through the same queue, the copy is reloaded and each stop
-  replayed, and every node must read **exactly** its new text plus its sentinel (`NodeCheck.expectData`), the sentinel
-  must be in no other node except reported renders of the run, the page must log no console error the version
-  before the edits did not log, and keep that version's slide count; the sentinels are undone and the copy must be
-  byte-identical to the round's edits. A picked run is judged on everything but its own node (whether the node
-  renders the run the author picked is the author's choice). A node that shows other text where the edit was made
-  fails; a run no node shows any more is counted as not probed.
+  edits produced is walked, and the nodes to judge are chosen there (`probe-select.ts`). The node the author typed in
+  (the clicked node when the commit landed on its run, else the field's node of the commit's run; the picked node for
+  a pick), found by its locator, is always judged: it must read exactly the new text plus its sentinel whatever the
+  run's other renders show, and otherwise the edit fails (`[render]`). The run's other renders (its exact nodes, and
+  the nodes where the walk before the edits saw it that now read the new text) are judged with it. They go through
+  `probe.ts probeTargets`, batched as `map` batches (24 runs per load, each run alone on doubt): a sentinel is
+  appended to the run through the same queue, the copy is reloaded and each stop replayed, and every node must read
+  **exactly** its new text plus its sentinel (`NodeCheck.expectData`), the sentinel must be in no other node except
+  reported renders of the run, the page must log no console error the version before the edits did not log, and keep
+  that version's slide count; the sentinels are undone and the copy must be byte-identical to the round's edits. A
+  picked run is judged on everything but its own node (whether the node renders the run the author picked is the
+  author's choice). An edit whose node the walk does not show is probed on its own: a load with its sentinel alone,
+  every stop of the walk replayed and settled as the walk settles; it fails when no stop shows it (`[probe] the edit
+  shows nowhere`). For every round that wrote anything, the walk of the new version must log no console error the walk
+  before did not and keep its slide count, whether or not a node is left to probe. "Not probed" now means only that
+  the walk after the edits failed, and `scripts/fuzz.mjs` exits 1 on it as on a failure. (Before the Phase 2 review the
+  gate judged a run on its other renders, so a write that showed elsewhere passed, and an edit no node showed was
+  counted as not probed and skipped the console and slide checks: findings 25 and 26.)
 - **Report.** Seed, corpus labels with sha256, edits, the shares written, noted and no-op, notes by code and by
   reason, the SPEC inputs typed and written, per-deck figures and timings, every edit's kind, and each failure with a
   reproduction: the seed (the same seed and corpus replay the run), the request, and the probe copy's bytes before the
@@ -261,10 +364,11 @@ seam), and its build fails on any import of `@blueline/editor`.
 
 ### Results: committed fixtures
 
-`node scripts/fuzz.mjs` (seed 1592598566, 1,000 edits, batch 24), 18 min wall time. It ran twice, before and after
-main-wiring's code entered the tree (the second time on the build the E2E tests below used), and the two reports
-agree edit for edit: the same 1,000 records (deck, round, kind, reason, strategy, pick, stale, merged, external,
-probe verdict), the same totals.
+`node scripts/fuzz.mjs --seed 1592598566 --edits 1000 --committed` (batch 24) on the final tree, after the Phase 2
+review (`test-results/p2-final/fuzz.json`, `fuzz.log`), 19 min wall time, beside the run on Josh's decks and the
+reader-only gate. Its report agrees edit for edit with the gate item's and the integration's runs: the same 1,000
+records (deck, round, kind, reason, strategy, pick, stale, merged, external, probe verdict), the same totals. What the
+Phase 2 review changed here is how each written edit is judged (Method), and every one passed that too.
 
 | | |
 |---|---|
@@ -273,60 +377,75 @@ probe verdict), the same totals.
 | Notes by rule | 72 (7.2%): markup 36 (`<` or `&` into a literal the page may set with innerHTML), escape 29 (15 with a character the HTML parser reports as an error, 13 where no raw splice of the HTML text decodes to the new text, such as NUL, 1 the same in an HTML literal), placeholder 4 (U+E000), commitField 3 (across-runs, boundary, invalid) |
 | No-ops | 25 (2.5%) |
 | Failures | **0** |
-| Mutation probe | 903 edited runs in 166 probe loads, all passed; 0 unprobed |
-| Picked candidates | 4 (3 written; 3 `equal`, 1 `normalized`): the committed fixtures have few ambiguous nodes |
+| Mutation probe | 903 edited runs in 166 probe loads, all passed: the author's node of every written edit read its new text; 0 probed on their own, 0 unprobed |
+| Picked candidates | 4 (3 `equal`, 1 `normalized`; 3 written): the committed fixtures have few ambiguous nodes |
 | Stale and concurrent | 78 stale-version requests (71 written, merged on the right run; 7 notes by rule); 54 external writes just before an edit (47 written, 7 notes); 35 inside the atomic write before the re-hash (all 35 written after the requeue); 150 merged writes; the external change survived every one |
 | Undo and redo | 224 written edits undone and redone, byte-exact both ways |
 | Walks | 213 (167 rounds) |
-| Time | walks 781 s, edits 13 s, probe 282 s |
+| Time | walks 792 s, edits 22 s, probe 297 s |
 
 The SPEC 10 Phase 2 inputs, typed into a field / reached the file in a written edit: `&` 134/106, `<` 164/134,
 `>` 133/113, `"` 14/12, `'` 29/24, `\` 92/85, `` ` `` 26/22, `${` 42/39, `}` 35/32, `</script>` 27/23, `<!--` 25/22,
 emoji 25/22, tab 22/21, NBSP 118/0, `\r\n` 166/0. NBSP and line breaks never reach the file by rule: the clean-up turns
 an NBSP the edit introduced into a space (Chrome's trailing and double spaces, 9.2 step 3) and a pasted line break into
-a space (step 2); an NBSP the run already had is kept, and the Node fuzz checks that.
+a space (step 2); an NBSP the run already had is kept. Both fuzzes check that with an oracle that shares no code
+with the clean-up (`test/fuzz/harness/cleanup-oracle.ts`): it re-derives 9.2 step 3, and a commit passes only when one
+longest common subsequence of the changed region pairs every NBSP, line break, zero-width space and straight quote
+the commit kept (unless the position rule kept it) and leaves out every one it cleaned. Before the Phase 2 review
+both fuzzes took their expectation from `cleanupCommit` itself, so a clean-up that dropped the deck's own NBSPs
+passed them (finding 24).
 
 ### Results: Josh's decks
 
-`node scripts/fuzz.mjs --local` (seed 1592598566, 1,000 edits, batch 24) on the final tree (the integration run of
-2026-10-20), 28 min wall time, made while the reader-only gate ran on the same machine:
+`node scripts/fuzz.mjs --seed 1592598566 --edits 1000 --local` (batch 24) on the final tree, after the Phase 2 review
+(`test-results/p2-final/fuzz-local.json`, `fuzz-local.log`; labels only), 29 min wall time, beside the committed run,
+the reader-only gate's first run and, for its last 10 minutes, the map of Josh's decks:
 
 | | |
 |---|---|
 | Edits | 1,000 over D1–D12 (71 to 94 each) |
-| Written | 894 (89.4%): html-text 854, script-literal 40 (no deck has a `json-literal` run) |
-| Notes by rule | 77 (7.7%): escape 35 (20 characters the HTML parser reports as errors, 15 where no raw splice of the HTML text decodes to the new text), ambiguous 22 (a stale-version request whose text is in several places that the 32 characters of context did not tell apart, 19, or that is also text Blueline never writes, 3), markup 10, commitField 7 (across-runs 3, emptied 3, boundary 1), placeholder 2, a picked substring that cannot be lifted 1 |
-| No-ops | 29 (2.9%) |
+| Written | 920 (92.0%): html-text 880, script-literal 40 (no deck has a `json-literal` run) |
+| Notes by rule | 54 (5.4%): escape 35 (19 characters the HTML parser reports as errors, 16 where no raw splice of the HTML text decodes to the new text), markup 13, commitField 4 (emptied 3, across-runs 1), placeholder 2 |
+| No-ops | 26 (2.6%) |
 | Failures | **0** |
-| Mutation probe | 892 edited runs in 47 probe loads, all passed; 2 not probed (both D5: the walk after the edit counted no visible node of the run, so there was nothing to probe; the checks in Node passed) |
-| Picked candidates | 77 (66 written: 35 `equal`, 31 `substring`) |
-| Stale and concurrent | 111 stale-version requests (84 written on the right run, 27 notes by rule); 31 external writes just before an edit (28 written, 3 notes); 42 inside the atomic write (40 landed before the re-hash and the edit was written after the requeue; 2 edits were notes by rule before the write); 144 merged writes; the external change survived every one |
-| Undo and redo | 220, byte-exact both ways |
+| Mutation probe | 920 edited runs in 48 probe loads, all passed: the author's node of every written edit read its new text; 1 edit (D5) whose node the walk after the round did not show was probed on its own and passed; 0 unprobed |
+| Picked candidates | 74 (65 written: 39 `equal`, 26 `substring`) |
+| Stale and concurrent | 102 stale-version requests (95 written on the right run, placed by position; 7 notes by rule, all escape; none `ambiguous` or `stale`); 30 external writes just before an edit (28 written, 2 notes); 33 inside the atomic write (31 landed before the re-hash and the edit was written after the requeue; 2 edits were notes by rule before the write); 151 merged writes; the external change survived every one |
+| Undo and redo | 242, byte-exact both ways |
 | Walks | 59 (47 rounds); every deck walked as a generic engine with key replay |
-| Time | walks 788 s, edits 258 s (the queue maps decks of up to 1.2 MB on every write), probe 618 s |
+| Time | walks 790 s, edits 290 s (the queue maps decks of up to 1.2 MB on every write), probe 675 s |
 
-The SPEC inputs, typed / written: `&` 121/107, `<` 153/140, `>` 123/108, `"` 22/21, `'` 18/14, `\` 93/88,
-`` ` `` 15/11, `${` 46/41, `}` 42/38, `</script>` 20/18, `<!--` 23/23, emoji 24/23, tab 21/20, NBSP 120/0, `\r\n` 177/0.
+The SPEC inputs, typed / written: `&` 112/102, `<` 156/138, `>` 119/107, `"` 22/20, `'` 20/17, `\` 91/84,
+`` ` `` 17/14, `${` 46/41, `}` 47/43, `</script>` 24/21, `<!--` 26/24, emoji 29/27, tab 19/18, NBSP 109/0, `\r\n` 182/0.
 
-The gate item's run on the tree before integration (the same seed) gave 897 written, 72 notes, 31 no-ops, 0 failures
-and 1 unprobed edit. The two runs were not compared record by record (that report was overwritten); the small
-difference can come from the code that changed in between (the clean-up fix below changes some commits, and with
-them the draws after them) and from what a walk sees on a deck whose animation ends at another moment (D5's ticker).
+Against the integration's run of the same seed on the same 12 files (`test-results/fuzz/fuzz-local.json`: 894
+written, 77 notes, 29 no-ops, 0 failures, 2 unprobed), 756 of the 1,000 records are the same. D4, D8 and D9 repeat
+it record for record. In the eight decks D1, D2, D3, D6, D7, D10, D11 and D12 the records are the same up to the
+first stale-version request that the old rule refused as `ambiguous` (its text in several places that 32 characters
+of context did not tell apart); the queue now places it by position: 7 of the 8 were written on their run (merged,
+probe passed), D1's became an escape note by rule, and the deck's later draws differ from there. D5 differs from its
+third edit on (a no-op where the integration's run wrote); D5's walks differ between runs (its ticker), and so can
+its draws.
 
-Josh's decks are where the picker matters (77 picks against 4 on the committed fixtures) and where a stale request
-meets repeated text: 22 of the 111 stale-version requests were refused as ambiguous, by rule, because their text
-appears in several places and the queue could not single one out (9.2 Write protocol step 2). None was written in the
-wrong place: every written edit landed on the run it was made on, and every probed node read the new text.
+Josh's decks are where the picker matters (74 picks against 4 on the committed fixtures) and where a stale request
+meets repeated text. None was written in the wrong place: every written edit landed on the run it was made on, and
+the node the author typed in read the new text every time.
 
 ### The negative control
 
 A gate that cannot fail proves nothing. `--negative-control` (never part of a gate run) changes the run once more
 after every fifth written edit, behind the oracle's back (its text plus "X"), and passes only if the mutation probe
-catches every such change. On 5 committed decks (entities, js-templates, json-data, single, inline-markup; 150 edits)
-the probe caught **26 of 26** planted changes, each because its node did not read the edited text, and nothing else
-failed. The oracle's own unit tests (`test/fuzz/unit/fuzz-core.test.ts`) show each check failing on a broken outcome:
-a reference left literal, a write to another run, a parse error, a record that does not describe the file, a wrong
-`merged`, a lost external change, a note that is not by rule or not byte-identical.
+catches every such change. On 5 committed decks (entities, js-templates, json-data, single, inline-markup; 150 edits;
+`test-results/p2-final/fuzz-negative.json`) the probe caught **26 of 26** planted changes, each because its node did
+not read the edited text, and nothing else failed. The self-test (`node scripts/fuzz-selftest.mjs`,
+`test/fuzz/selftest/README.md`) runs the gate in 9 cases on 6 synthetic decks that it must fail, each with a seed the
+gate before the Phase 2 review passed with 0 failures: a write that shows in another node than the author's
+(`[render]`), a round whose edits break the page's script (a new console error, nothing left to probe), and edits the
+page shows nowhere; and on one control deck it must pass. In the final run all 10 cases behaved as expected
+(`test-results/p2-final/fuzz-selftest.log`). The oracle's own unit tests (`test/fuzz/unit/fuzz-core.test.ts`) show
+each check failing on a broken outcome: a reference left literal, a write to another run, a parse error, a record that
+does not describe the file, a wrong `merged`, a lost external change, a note that is not by rule or not
+byte-identical.
 
 ### What the runs found
 
@@ -336,7 +455,8 @@ No patcher or matcher bug. The first full run on the committed fixtures had 13 f
   replayed the walk's scroll offsets on the edited version, whose text, and so its layout, had changed; "could not go
   back to its slide". Fixed by probing each round's edits on a walk of the version they produced (its nodes, stops and
   replay), with the baseline (console errors, slide count) from the version before the edits, so an edit that breaks a
-  script or the slide count still fails.
+  script or the slide count still fails. Since the Phase 2 review that holds for every round that wrote anything,
+  also when no node of its edits is left to probe (finding 26).
 - **Text a timer writes** (2 of 13: `render/chart-doc.html`, which fills two paragraphs at 300 and 800 ms): a node the
   walk collected before the timer was the parser's text, exact; the probe's later load saw the timer's text. Fixed by
   the scripted settle above, as the render products wait (D-5).
@@ -347,23 +467,36 @@ No patcher or matcher bug. The first full run on the committed fixtures had 13 f
 
 `test/unit/editor/fuzz.test.ts` stays (P2-16): the same commit path and oracle in Node over an in-memory DeckIO, on the
 committed decks, Josh's decks when present and 14 generated decks (BOM, CRLF, entities, `<pre>`, tables, SVG text, JS
-string, template and HTML literals, a keyed object, a JSON block, a notes block). On this tree (seed 1592598566): 1,200
-edits over 44 documents, 908 written (75.7%), 242 notes by rule (20.2%), 50 no-ops (4.2%), 65 picked candidates (52
-written), 118 stale-version edits, 154 merged writes, 113 conflicting writes, 183 undos in a changed file (case 2),
-**0 failures**, 75 s. It reaches what the Chromium half cannot draw from exact nodes (runs the overlay never offers:
-placeholders, unaligned and shadow readings, picks on many duplicates); the Chromium half adds the real writer, the
-field as the page has it, and the probe.
+string, template and HTML literals, a keyed object, a JSON block, a notes block). On the final tree (seed
+1592598566, inside `npx vitest run`, `test-results/p2-final/vitest.log`): 1,200 edits over 44 documents, 911 written
+(75.9%), 240 notes by rule (20.0%), 49 no-ops (4.1%), 65 picked candidates (57 written), 119 stale-version edits (78
+written; 22 became `stale` notes and 4 `ambiguous` notes, by rule), 155 merged writes, 110 conflicting writes, 183
+undos in a changed file (case 2), **0 failures**. Its clean-up oracle is the shared one above, computed without
+`cleanupCommit` (finding 24), and a refusal after a conflicting write passes only when the file holds exactly the
+bytes the external write left, nothing else (finding 28; before, a file that still held the external marker was
+enough). It reaches what the Chromium half cannot draw from exact nodes (runs the overlay never offers: placeholders,
+unaligned and shadow readings, picks on many duplicates); the Chromium half adds the real writer, the field as the
+page has it, and the probe.
 
 ### Limits
 
-- The same seed and corpus give the same edits as long as each walk sees the same nodes (the two committed runs did,
-  record for record); a deck whose animation or timer ends at another moment could see another set, and would draw
-  its targets from what it saw. The report records every deck's sha256 and every edit's kind, so two runs can be
-  compared deck by deck.
+- The same seed and corpus give the same edits as long as each walk sees the same nodes and each outcome is the same
+  (the committed runs did, record for record, before and after the review); a deck whose animation or timer ends at
+  another moment could see another set, and would draw its targets from what it saw, and a changed outcome (a stale
+  request now written where it was a note) changes that deck's later draws. The report records every deck's sha256 and
+  every edit's kind, so two runs can be compared deck by deck.
 - The fuzz writes through a bare queue, as the probe does: no history snapshots, no notes, no session (P2-11). The
   hooks main adds (`beforeWrite`, `afterWrite`) are the main-wiring item's and its tests'.
 - Picks: the committed fixtures offer few ambiguous nodes (4 picks in 1,000 edits). The Node fuzz covers the lift
-  (65 picks); Josh's decks offer more (75 picks, 64 written: 35 `equal`, 29 `substring`).
+  (65 picks, 57 written); Josh's decks offer more (74 picks, 65 written: 39 `equal`, 26 `substring`). These are the
+  final runs' figures; the page quoted an earlier run's here before the Phase 2 review (finding 27).
+- A node that moves out of view. Since the review an edit whose node the walk after its round does not show is probed
+  on its own and fails when no stop shows it. A node that holds exactly the new text and its sentinel but sits outside
+  the viewport at every stop of its slide, such as an item of D5's CSS marquee (cover and closing slides), therefore
+  fails or passes by where the ticker is at each stop: in runs of D5 alone with other seeds while the review's fixes
+  were made, such items failed in some runs and not in others. In the final run the one D5 edit probed on its own
+  passed. Whether such a node should pass on its text and sentinel, or animations be paused for the probe's loads, is
+  open (Open issues).
 - Every committed deck opens Trusted from the work folder; Protected view changes the served copy and the network,
   not the write path.
 
@@ -392,10 +525,12 @@ with real input (a real click opens the field, keys go through `sendInputEvent`,
 
     npx playwright test -c test/e2e/playwright.config.ts test/e2e/edit-gate-typed.spec.ts test/e2e/edit-gate-concurrency.spec.ts test/e2e/edit-gate-reader.spec.ts
 
-**Results: 9 of 9 pass** on the build with main-wiring's edit path, and 24 of 24 when the typed and concurrency specs
-run three times over (`--repeat-each 3`). The element inserted before the heading 50 ms before the commit landed on
-the heading every time: the queue found it by its text, since the request carried the version and run the field
-opened on (P2-5), never the shifted stamp. The hook for the write inside the atomic write is main-wiring's
+**Results: 9 of 9 pass** in each of the two final E2E runs, and 24 of 24 when the typed and concurrency specs run
+three times over (`--repeat-each 3`; `test-results/p2-final/gates-x3.results.json`). The element inserted before the
+heading 50 ms before the commit landed on the heading in all 5 of those runs (the test records its outcome): the
+request carries the version and run the field opened on (P2-5), and since the Phase 2 review the queue places the run
+by position, through a diff of that version to the bytes on disk (9.2 Write protocol step 2 as amended), never by the
+shifted stamp and never by its text alone. The hook for the write inside the atomic write is main-wiring's
 (`__blTest.onceBeforeRehash`, `BlDocument.armTestWriteInside`: a rename-replace in `prepareTemp`). One thing found
 while writing them: in a `contenteditable` heading that wraps, End moves the caret only to the end of the visual line,
 so the tests click at the end of the text instead (in view pixels: the page's CSS pixels times the deck view's zoom,
@@ -450,19 +585,30 @@ module of the copy, the reader-only build fails ("reader-only build: … imports
 
 ### Results on the final tree
 
-`npm run test:reader-only -- --workers 1` on the final tree, alone on the machine (27 min). It passed the same way
-once before, 28 min while the committed fuzz ran beside it, on the tree before the last test hook was added:
+`npm run test:reader-only -- --keep` (default workers; `--keep` only keeps the copy, so its Playwright reports could
+be read) on the final tree, twice. Run 2 (`test-results/p2-final/reader-only-2.log`, 16.5 min) ran beside the map of
+Josh's decks only; run 1 (`reader-only-1.log`, 16.7 min) ran beside both Chromium fuzz runs and the negative control
+(load average 4 to 5 on 4 CPUs):
 
-| Step | Result |
-|---|---|
-| copy, `node_modules` links, isolation check | pass |
-| build (`--reader-only`, the copy's own `dist`) | pass |
-| bundles | pass: no `editor.cjs`, no editor or magic-string source in any source map, no editor function in any bundle |
-| tsc (`tsconfig.reader.json`) | pass (2 s) |
-| vitest (`vitest.reader.config.ts`) | pass: 93 files, 1,818 tests (23 s) |
-| map (the copy's CLI on `single.html`) | pass |
-| E2E, `--grep-invert @edit` | pass: 168 tests (1 the expected failure of the note-card ordering limit), 23.6 min, one worker |
-| security, `--grep-invert @edit` | pass: 57 tests (6 the expected failures of the known limits), 3.4 min |
+| Step | Run 2 | Run 1 |
+|---|---|---|
+| copy, `node_modules` links, isolation check | pass | pass |
+| build (`--reader-only`, the copy's own `dist`) | pass | pass |
+| bundles | pass: no `editor.cjs`, no editor or magic-string source in any source map, no editor function in any bundle | pass |
+| tsc (`tsconfig.reader.json`) | pass (2 s) | pass (2 s) |
+| vitest (`vitest.reader.config.ts`) | **FAIL**: 96 files, 1,877 tests, 1,876 pass, 1 fails: `test/unit/preload/env.test.ts` "allows exactly the 9.2 input types", whose expected list predates `deleteByDrag` (the review's fix of finding 12 allows it in `edit-input.ts`) | the same |
+| map (the copy's CLI on `single.html`) | pass | pass |
+| E2E, `--grep-invert @edit` | pass: 168 tests, 167 pass and 1 is the expected failure of the note-card ordering limit, 12.4 min | **FAIL**: 166 pass, the expected failure, and `render-products-pdf.spec.ts` "a PDF running when its document closes …" (below) |
+| security, `--grep-invert @edit` | pass: 57 tests, 51 pass and 6 are the expected failures of the known limits, 3.6 min | **FAIL**: `forged-ipc.spec.ts` "a flood is rate-limited …" failed and the 2 serial tests after it did not run |
+| verdict | `FAILED` (vitest) | `FAILED` |
+
+So the gate is **not met on this tree** for one reason only: a unit test's expected list that the review's drag-move
+fix made stale; the same test fails in the full build's `npx vitest run`. Both run 1 failures passed in run 2, beside
+a lighter load. The flood test failed this way under load before (the gate item's run, below, and during the review's
+fixes) and passes alone. The PDF test's failure shows a race: `RenderView.overlayMounted()` answers "mounted" when its
+check cannot run (the view closed, was destroyed, or did not answer in 2 s), so a walk that reached that check just
+after the document closed ended with "a render view showed the overlay" instead of "closed" (`render-service.ts` and
+the test are unchanged by the review). It is in Open issues.
 
 The first integration run of the gate found one more test that needs the Edit capability: the control of
 `trust-identity.spec.ts` ("Blueline's own atomic write keeps both switches") calls an own write, which a reader-only
@@ -526,7 +672,10 @@ fixed (Results on the final tree, above).
   Wispr Flow dictation into a field (a paste with line breaks becomes spaces); macOS text substitutions (smart quotes
   and dashes, text replacements) in a field, against Blueline's own smart punctuation setting; Cmd+Z inside a field
   (native) and outside it (app undo); Esc and Enter; clicking away with the window active and inactive (blur commits
-  only while the window has focus, P2-17).
+  only while the window has focus, P2-17). Since the Phase 2 review: Cmd+W, Cmd+Q and a click on the toolbar or the
+  notes panel with a field open write what was typed first; a right-click on a misspelled word offers the macOS
+  dictionary's suggestions; dragging selected text inside a field moves it (Chromium's smart insert and delete is on
+  for macOS, so a space may move with a double-clicked word: measured on Linux only).
 - **SVG text** (the overlay input placed over it) and a heading with `user-select: none`.
 - **The fuzz on the Mac,** optionally: `npm run fuzz` (the same Chromium, the writer on APFS; the harness does not
   start the native helper the app configures at startup, so it says nothing about the marker copy).
@@ -553,11 +702,20 @@ The gate: Josh finishes 3 real decks using only Edit for text changes (Mac build
 
 ## Files
 
-- `scripts/fuzz.mjs`, `test/fuzz/harness/{bundle.mjs,main.ts,fuzz-core.ts,field-probe.ts,job.ts}`,
-  `test/fuzz/unit/*.test.ts`, `test/fuzz/vitest.config.mts`: the Chromium fuzz gate.
+- `scripts/fuzz.mjs`,
+  `test/fuzz/harness/{bundle.mjs,main.ts,fuzz-core.ts,field-probe.ts,job.ts,probe-select.ts,cleanup-oracle.ts}`,
+  `test/fuzz/unit/*.test.ts`, `test/fuzz/vitest.config.mts`: the Chromium fuzz gate. `scripts/fuzz-selftest.mjs` and
+  `test/fuzz/selftest/` (synthetic decks, each with the seed that makes the gate fail it): the gate's own self-test.
 - `packages/app/src/main/probe.ts`: `probeTargets` (explicit runs, the text the sentinel is appended to, the text the
   nodes must read), `NodeCheck.expectData` and `pickedRun`, `ProbeContext.queue`, `ProbeCopy.io(opts)` and
   `restore(bytes)`. `blueline map` sets none of them; `test/e2e/map*.spec.ts` pass unchanged (31 tests).
 - `scripts/reader-only-check.mjs`, `tsconfig.reader.json`, `vitest.reader.config.ts`; `npm run test:reader-only`,
   `npm run fuzz`.
 - `test/e2e/edit-gate-typed.spec.ts`, `edit-gate-concurrency.spec.ts`, `edit-gate-reader.spec.ts`.
+- The Phase 2 review's regression tests: `test/unit/editor/queue-stale-position.test.ts`, `cleanup-write.test.ts`;
+  `test/unit/core/edit-cleanup-two-changes.test.ts`;
+  `test/unit/app/{edit-lane-pins,edit-commit-rules,edit-undo-inflight,edit-known-content,edit-history-requeue,documents-knownhash}.edit.test.ts`;
+  `test/fuzz/unit/{probe-written,cleanup-oracle}.test.ts`;
+  `test/e2e/edit-fix-{stale,typed-text,undo-toast,locks,overlay}.spec.ts`, `edit-cleanup-two-changes.spec.ts`,
+  `edit-drag-move.spec.ts`; `test/security/edit-expiry.spec.ts`; and their decks in `fixtures/edit/`
+  (fixtures/edit/README.md, "Phase 2 review fixes").

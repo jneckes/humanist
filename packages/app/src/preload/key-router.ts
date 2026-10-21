@@ -27,6 +27,11 @@ export interface KeyContext {
   textField: TextFieldKind | null;
   /** Edit's ambiguity picker is open (6.3, P2-8): it takes the arrows, Enter, digits and Esc. */
   picker?: boolean;
+  /**
+   * Edit: a press waits for this page's unanswered commit before its field opens (E-1). The keys typed meanwhile
+   * are the field's: they are kept from the deck and typed into the field once it opens.
+   */
+  editPending?: boolean;
 }
 
 /** What a key does in the open picker: move the highlight, choose (the highlighted item or item n), or close. */
@@ -46,13 +51,19 @@ export type ShortcutAction =
   | 'escape'
   | 'help';
 
+/** What a key does in a text field besides typing (classifyKey step 2). */
+export type TextHandle = 'commit-edit' | 'cancel-edit' | 'close-card' | 'edit-space';
+
 export type KeyAction =
   /** isTrusted is false: the router does nothing at all (9.1: page scripts cannot drive it). */
   | { kind: 'ignore' }
   /** Untouched: the deck sees the key (Read mode, modifier chords). */
   | { kind: 'pass' }
-  /** In a text field: stopImmediatePropagation, never preventDefault; maybe an edit or card action. */
-  | { kind: 'text'; handle: 'commit-edit' | 'cancel-edit' | 'close-card' | null }
+  /**
+   * In a text field: stopImmediatePropagation, never preventDefault (the action may: `edit-space`, a Space the
+   * field types itself in a <button> or <summary>, E-10); maybe an edit or card action.
+   */
+  | { kind: 'text'; handle: TextHandle | null }
   /** Review/Edit shortcut: run it, then stopImmediatePropagation and preventDefault. */
   | { kind: 'shortcut'; action: ShortcutAction }
   /** Review/Edit: ArrowLeft and ArrowRight are forwarded to the deck untouched. */
@@ -60,7 +71,9 @@ export type KeyAction =
   /** Review/Edit: any other key is kept from the deck (stopImmediatePropagation and preventDefault). */
   | { kind: 'swallow' }
   /** Edit's open picker: its key, kept from the deck (stopImmediatePropagation and preventDefault). */
-  | { kind: 'picker'; key: PickerKey };
+  | { kind: 'picker'; key: PickerKey }
+  /** Edit: a key for the field that is about to open (E-1), kept from the deck (stopImmediatePropagation and preventDefault). */
+  | { kind: 'pending' };
 
 const TOOL_BY_CODE: Record<string, ShortcutAction> = {
   Digit1: 'tool-pen',
@@ -87,12 +100,15 @@ export function classifyKey(k: KeyInput, ctx: KeyContext): KeyAction {
   // The key is kept from the deck (stopImmediatePropagation) but never prevented, so typing, native undo
   // and Wispr Flow's simulated Cmd+V keep working.
   if (ctx.textField) {
-    let handle: 'commit-edit' | 'cancel-edit' | 'close-card' | null = null;
+    let handle: TextHandle | null = null;
     if (!k.composing) {
       const plain = !k.meta && !k.ctrl && !k.alt && !k.shift;
       if (ctx.textField === 'edit') {
         if (isEnter(k.code) && plain) handle = 'commit-edit';
         else if (k.code === 'Escape' && plain) handle = 'cancel-edit';
+        // E-10: the field decides whether it types this Space itself (a field on a <button> or <summary>). Shift+Space
+        // types a space in any text field too, and Chromium takes it as the button's activation all the same.
+        else if (k.code === 'Space' && !k.meta && !k.ctrl && !k.alt) handle = 'edit-space';
       } else if (ctx.textField === 'card') {
         if (k.code === 'Escape' && plain) handle = 'close-card';
         else if (isEnter(k.code) && (k.meta || k.ctrl) && !k.alt) handle = 'close-card';
@@ -103,6 +119,9 @@ export function classifyKey(k: KeyInput, ctx: KeyContext): KeyAction {
 
   // Step 3: Meta, Ctrl or Alt chords pass through untouched (Wispr Flow's Cmd+V must never fire a shortcut).
   if (k.meta || k.ctrl || k.alt) return { kind: 'pass' };
+
+  // Edit's field that waits for this page's commit (E-1): what is typed now is typed into it when it opens.
+  if (ctx.editPending && ctx.appMode === 'edit') return { kind: 'pending' };
 
   // Edit's picker (P2-8) has its own keys while it is open; nothing else runs and the deck sees none of them.
   if (ctx.picker && ctx.appMode === 'edit') return pickerKey(k);
@@ -155,7 +174,7 @@ export interface KeyRouterDeps {
   /** The text field the real target belongs to (6.2 step 1), given `t = e.composedPath()[0]`. */
   textFieldOf(t: EventTarget | null): TextFieldKind | null;
   /** Runs a shortcut or a text-field action. */
-  onAction(action: ShortcutAction | 'commit-edit' | 'cancel-edit' | 'close-card', e: KeyboardEvent): void;
+  onAction(action: ShortcutAction | TextHandle, e: KeyboardEvent): void;
   /** Diagnostics: called inside the listener, after the decision and before any action. */
   onDecision?(e: KeyboardEvent, action: KeyAction, consumed: boolean): void;
   /** A trusted key the deck was given in a mode where it may move the deck (6.7 Index replay). */
@@ -164,6 +183,10 @@ export interface KeyRouterDeps {
   pickerOpen?(): boolean;
   /** A key for the open picker. */
   onPickerKey?(key: PickerKey, e: KeyboardEvent): void;
+  /** Edit: a press waits to open its field (E-1). */
+  editPending?(): boolean;
+  /** A key for the field that is about to open (E-1). */
+  onPendingKey?(e: KeyboardEvent): void;
 }
 
 /**
@@ -202,9 +225,14 @@ export class KeyRouter {
         repeat: e.repeat,
         composing: e.isComposing,
       },
-      { appMode: this.deps.appMode(), textField: this.deps.textFieldOf(t), picker: this.deps.pickerOpen?.() ?? false },
+      {
+        appMode: this.deps.appMode(),
+        textField: this.deps.textFieldOf(t),
+        picker: this.deps.pickerOpen?.() ?? false,
+        editPending: this.deps.editPending?.() ?? false,
+      },
     );
-    const consumed = action.kind === 'text' || action.kind === 'shortcut' || action.kind === 'swallow' || action.kind === 'picker';
+    const consumed = action.kind === 'text' || action.kind === 'shortcut' || action.kind === 'swallow' || action.kind === 'picker' || action.kind === 'pending';
     if (action.kind !== 'ignore') this.lastDownStopped = consumed;
     if (consumed) {
       e.stopImmediatePropagation();
@@ -215,6 +243,7 @@ export class KeyRouter {
     if (action.kind === 'text' && action.handle) this.deps.onAction(action.handle, e);
     else if (action.kind === 'shortcut') this.deps.onAction(action.action, e);
     else if (action.kind === 'picker') this.deps.onPickerKey?.(action.key, e);
+    else if (action.kind === 'pending') this.deps.onPendingKey?.(e);
     else if ((action.kind === 'pass' || action.kind === 'forward') && e.isTrusted && !e.metaKey && !e.ctrlKey && !e.altKey) {
       this.deps.onDeckKey?.(e);
     }

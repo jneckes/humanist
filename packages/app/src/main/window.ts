@@ -143,6 +143,21 @@ const AFTER_FIRST_PAINT =
 const MOTION_RELOAD_DELAY_MS = 250;
 /** A reloaded page that never completes its handshake is given up after this long (the reload still happened). */
 const RELOAD_HANDSHAKE_MS = 15_000;
+/** 6.3 spellcheck (E-10): the suggestions the deck view's menu offers at most. */
+const SPELLING_SUGGESTIONS_MAX = 8;
+
+/**
+ * Test-only (E-4): BLUELINE_TEST_FIELD_IDLE_MS shortens the 10 minutes without trusted input after which a field's
+ * authorisation ends (the security suite's expiry test cannot wait 10 minutes). Honoured only when BLUELINE_TEST=1
+ * and main does not run from app.asar (a packaged app never reads it), and never below 1 s.
+ */
+function testFieldIdleMs(): number | undefined {
+  const env = process.env;
+  if (env.BLUELINE_TEST !== '1' || !env.BLUELINE_TEST_FIELD_IDLE_MS) return undefined;
+  if (/[\\/]app\.asar[\\/]/.test(__filename)) return undefined;
+  const n = Number(env.BLUELINE_TEST_FIELD_IDLE_MS);
+  return Number.isFinite(n) && n >= 1000 ? n : undefined;
+}
 /** 6.7 Index replay: after each key, how long the slide may take to move. */
 const REPLAY_WAIT_MS = 1000;
 /** 6.7 Index replay: presses that move nothing before the replay gives up (F25 patience: build steps move nothing). */
@@ -607,6 +622,9 @@ export class DocWindow {
   private loadVersion: string;
   /** Edit was asked for while editing was not allowed (6.2): Enable editing then enters it at once (6.10). */
   private editAskedAt = 0;
+  /** E-2: the commit asked for before this window closes (or the app quits), once; done once it settled. */
+  private typingCommit: Promise<void> | null = null;
+  private typingSettled = false;
   /** The history list shows in the rail (P2-11). */
   private historyOpen = false;
 
@@ -685,6 +703,11 @@ export class DocWindow {
     shellWc.on('focus', () => {
       this.sendDeck(MainToDeck.closeCard);
       if (this.present.active) this.focusDeck();
+      // 6.3 "blur commits" (lead decision E-2, review finding 6): a click in the shell of this focused window (the
+      // toolbar, the notes panel, the history, the name chip) ends the open field, as a click elsewhere in the deck
+      // does. The deck cannot tell this from another app taking focus (document.hasFocus), so main asks it to commit;
+      // a window that loses focus still does not commit (P2-17).
+      else if (this.win.isFocused()) void this.edit.requestCommit();
     });
     // 6.9 Present: Esc ends it wherever the keyboard is (the shell has it after a click on the letterbox).
     shellWc.on('before-input-event', (event, input) => {
@@ -762,6 +785,10 @@ export class DocWindow {
       // P2-7: the trusted presses and keys that may open an edit field (a page script makes none of these).
       this.edit.onInput(ev.type);
     });
+    // 6.3 "spellcheck … work as in any text field" (lead decision E-10, review finding 13): in Edit, with a field
+    // open, a right-click on a misspelled word offers the dictionary's suggestions, and nothing else; choosing one
+    // replaces the word (replaceMisspelling arrives in the field as insertReplacementText, which 9.2 step 2 allows).
+    deckWc.on('context-menu', (_e, params) => this.onDeckContextMenu(params));
     deckWc.on('render-process-gone', (_e, details) => {
       deps.log(`deck renderer gone (${details.reason}) for ${doc.fileName}`);
       // The page went away: it holds no edit and no card now, so a deferred reload may go ahead (6.6).
@@ -829,6 +856,9 @@ export class DocWindow {
       notesChanged: () => this.notesChanged(),
       adopted: (e) => this.onOwnWrite(e),
       taken: (e) => this.onTaken(e),
+      // E-8: the read-back after an own write found another version: the watcher looks again.
+      recheck: () => this.watcher?.recheck(),
+      fieldIdleMs: testFieldIdleMs(),
       clipboard: (text) => clipboard.writeText(text),
       confirm: (o) => this.confirm(o),
       log: (m) => deps.log(m),
@@ -858,10 +888,22 @@ export class DocWindow {
     // the window is created, which shortens it (Phase 0 finding).
     this.win.contentView.on('bounds-changed', () => this.relayout());
     this.win.on('show', () => this.relayout());
-    this.win.on('focus', () => deps.onViewChange?.(this));
+    this.win.on('focus', () => {
+      deps.onViewChange?.(this);
+      // Lead decision E-2 (review finding 6, re-verification): a click on the toolbar or the notes panel of a window
+      // that was not active (the author was in another window or app) focuses the shell first and activates the
+      // window after, so the shell's 'focus' above saw a window that was not focused yet. The click is still a click
+      // in the shell: the open field ends. A window that comes back any other way (its deck clicked, the title bar,
+      // the app switcher) gives the focus back to the deck view, and the field stays open (P2-17).
+      if (!this.present.active && !this.closedOnce && !shellWc.isDestroyed() && shellWc.isFocused()) void this.edit.requestCommit();
+    });
     // The deck view closes with its window, in 'close' (see closeDeck); nothing may prevent 'close' after
-    // this listener (a later "keep editing?" prompt must be registered before it and decide first).
-    this.win.on('close', () => this.closeDeck());
+    // this listener. Lead decision E-2 (review findings 5, 19): first, while the deck holds an open field or an
+    // unanswered commit, the close waits for the deck to commit it (holdCloseForTyping), then closes for real.
+    this.win.on('close', (e) => {
+      if (this.holdCloseForTyping(e)) return;
+      this.closeDeck();
+    });
     this.win.on('closed', () => this.onClosed());
   }
 
@@ -986,8 +1028,8 @@ export class DocWindow {
       pageVersion: this.loadVersion,
       settings: this.deckSettings(),
     };
-    // A new page: its edit field ids start again.
-    this.edit.onPageInit();
+    // A new page: its edit field ids start again, and the lane holds the version it was served (E-1).
+    this.edit.onPageInit(this.loadVersion);
     this.sendDeck(MainToDeck.init, init);
     // The document moved on while this page loaded (an undo, a change taken meanwhile): it shows that version next.
     if (this.loadVersion !== doc.version) this.reload.requestReload(doc.version, { force: true });
@@ -1190,6 +1232,22 @@ export class DocWindow {
     if (this.win.isDestroyed()) return false;
     const r = await dialog.showMessageBox(this.win, { type: 'warning', message: o.message, detail: o.detail, buttons: [o.button, 'Cancel'], defaultId: 1, cancelId: 1, noLink: true });
     return r.response === 0;
+  }
+
+  /** E-10: the spelling suggestions of an open field's misspelled word, as a native menu (nothing else in it). */
+  private onDeckContextMenu(params: Electron.ContextMenuParams): void {
+    if (this.closing || this.mode !== 'edit' || !this.edit.fieldOpen || !params.isEditable || !params.misspelledWord) return;
+    const words = params.dictionarySuggestions.filter((w) => typeof w === 'string' && w.length > 0 && w.length <= 100).slice(0, SPELLING_SUGGESTIONS_MAX);
+    if (words.length === 0) return;
+    const menu = Menu.buildFromTemplate(
+      words.map((w) => ({
+        label: w,
+        click: () => {
+          if (this.mode === 'edit' && this.edit.fieldOpen) this.liveDeck()?.replaceMisspelling(w);
+        },
+      })),
+    );
+    menu.popup({ window: this.win });
   }
 
   /** Cmd+Z / Cmd+Shift+Z outside a text field (6.2, P2-10). */
@@ -2507,6 +2565,51 @@ export class DocWindow {
     if (this.deckCloseRequested) return;
     this.deckCloseRequested = true;
     this.liveDeck()?.close();
+  }
+
+  /**
+   * E-2: the deck holds an open field or a commit main has not answered, and the window has not asked it to commit
+   * before closing yet (a build without the Edit capability never holds anything).
+   */
+  get holdsTyping(): boolean {
+    return !this.typingSettled && !this.closing && this.edit.holdsTyping;
+  }
+
+  /**
+   * E-2 (review findings 5, 19): before the window closes or the app quits, the deck commits what it holds and main
+   * waits for the answer (EditSession.requestCommit, at most COMMIT_REQUEST_TIMEOUT_MS). If the deck cannot answer
+   * in time the window closes anyway: nothing is written, and main keeps nothing it did not receive (SECURITY.md,
+   * Known limits). Once this settled, a close goes ahead without asking again (no loop, and a quit is not held).
+   */
+  commitTyping(): Promise<void> {
+    if (!this.typingCommit) {
+      const before = this.edit.commitsTaken;
+      this.typingCommit = this.edit
+        .requestCommit()
+        .then((ok) => {
+          if (ok) return;
+          // A commit main took meanwhile was handled as any other (written, or kept as a note); only what the deck
+          // still holds after it is not kept. A deck that answers and still reports an open field is that case.
+          if (this.edit.commitsTaken > before) {
+            this.deps.log(`edit: ${this.doc.fileName}: the deck's commit was taken, but it still reports an open field; closing without it`);
+          } else this.deps.log(`edit: ${this.doc.fileName}: the deck did not answer before closing; nothing it held was kept`);
+        })
+        .catch((e: unknown) => this.deps.log(`edit: commit before closing: ${errText(e)}`))
+        .finally(() => {
+          this.typingSettled = true;
+        });
+    }
+    return this.typingCommit;
+  }
+
+  /** The window's 'close': held (true) while the deck commits what it holds, then closed again (E-2). */
+  private holdCloseForTyping(e: Electron.Event): boolean {
+    if (!this.holdsTyping) return false;
+    e.preventDefault();
+    void this.commitTyping().then(() => {
+      if (!this.win.isDestroyed()) this.win.close();
+    });
+    return true;
   }
 
   /** Gives the keyboard back to the deck view after a click in the shell (deck keys, Wispr Flow). */

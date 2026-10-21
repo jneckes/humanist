@@ -216,6 +216,15 @@ export class DeckWatcher {
     this.holder.knownHash = hash;
   }
 
+  /**
+   * Lead decision E-8: looks at the file again soon (after the usual settle), as an event would make it. Main calls
+   * this when the read-back after one of its own writes found another version on disk, so that change goes the
+   * external way (trust decided again, the locks, the reload) even if no event comes for it.
+   */
+  recheck(): void {
+    this.trigger();
+  }
+
   /** The file is gone from its path (onGone ran, and onBack has not yet). */
   get isGone(): boolean {
     return this.gone;

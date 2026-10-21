@@ -65,9 +65,14 @@ export interface EditRecord {
   /** The external write inside the atomic write happened (the queue reached it). */
   fired?: boolean;
   undoRedo?: boolean;
-  /** For a written edit: the mutation probe's verdict on its run (P2-16), or `unprobed` when no node showed the run. */
+  /**
+   * For a written edit: the mutation probe's verdict on it (P2-16), or `unprobed` when the probe could not reach it
+   * at all (the walk of the version after it failed); scripts/fuzz.mjs exits 1 on either `fail` or `unprobed`.
+   */
   probe?: 'pass' | 'fail' | 'unprobed';
   unprobed?: string;
+  /** Probed on its own: the round's walk did not show the node the author typed in (main.ts probeAlone). */
+  alone?: boolean;
 }
 
 export interface FuzzFailure {
@@ -114,8 +119,10 @@ export interface DeckResult {
   rounds: number;
   /** Walks: one per version (the edits of a round are probed on the walk of the version they produced). */
   walks: number;
-  /** Written edits the probe could not check (no node showed the run after the edit). */
+  /** Written edits the probe could not reach (the walk after them failed): each one fails the gate run. */
   unprobed: number;
+  /** Written edits probed on their own (the round's walk did not show the node the author typed in). */
+  probedAlone: number;
   /** Exact and pickable nodes the last walk offered. */
   exactNodes: number;
   pickableNodes: number;
@@ -155,6 +162,8 @@ export interface FuzzResult {
     externalFired: number;
     undoRedo: number;
     probedRuns: number;
+    /** Of probedRuns: edits probed on their own, every stop of the walk replayed (review finding 26). */
+    probedAlone: number;
     unprobed: number;
     probeLoads: number;
     rounds: number;
@@ -168,7 +177,7 @@ export interface FuzzResult {
   notesByCode: Record<string, number>;
   /** The queue's free-text reasons behind its codes, folded (fuzz-core reasonKey). */
   notesByReason: Record<string, number>;
-  /** Written edits the mutation probe could not check, by why. */
+  /** Written edits the mutation probe could not reach, by why. */
   unprobedByReason: Record<string, number>;
   byStrategy: Record<string, { written: number; notes: number }>;
   /** SPEC 10 Phase 2 Inputs: how often each was typed into a field, and how often it reached the file in a written edit. */

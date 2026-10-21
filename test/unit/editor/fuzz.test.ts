@@ -6,15 +6,20 @@
 // a picked substring or normalized candidate is lifted with liftPick, and the write queue runs the full write
 // protocol over an in-memory DeckIO with the atomic writer's conflict contract.
 //
+// Each commit's text is judged by the clean-up oracle (test/fuzz/harness/cleanup-oracle.ts), which re-derives 9.2
+// step 3 and 6.3 and shares no code with core/edit-cleanup: the field's own NBSPs, line breaks, zero-width spaces
+// and straight quotes stay, and only what was inserted is cleaned (the "user"'s record of what it inserted names
+// the units in a failure).
+//
 // After each written edit: the file decodes and parses with no new parse errors; the diff touches only the
 // target run's range; re-mapping finds the new text at the target and every other run unchanged; undo restores
 // the bytes exactly, and redo restores the edit's bytes exactly. Notes count only when they are notes BY RULE:
 // commitField's typed reasons, and the queue's typed refusal codes other than internal, conflict, verify and
 // refused, which are failures; such a note must leave the file byte-identical and hold the exact before and
-// after text. No-ops (nothing changed after the clean-up) are counted apart. An edit made inside one run with
-// the caret in it must be that run's edit (or a no-op, or structural). Some edits go in against a stale
-// version, after an external change (or while a conflicting write lands), and the external change must survive.
-// Zero failures.
+// after text (after a conflicting write landed inside the atomic write: byte-identical to what that write left).
+// No-ops (nothing changed after the clean-up) are counted apart. An edit made inside one run with the caret in it
+// must be that run's edit (or a no-op, or structural). Some edits go in against a stale version, after an
+// external change (or while a conflicting write lands), and the external change must survive. Zero failures.
 //
 // Reproduce with BL_FUZZ_SEED=<n> BL_FUZZ_EDITS=<n> npx vitest run test/unit/editor/fuzz.test.ts --silent=false
 // (the report goes to stderr). The Chromium half (each written edit through the mutation probe, P2-16) is the
@@ -24,12 +29,12 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createWriteQueue } from '@blueline/editor';
-import { cleanupCommit } from '@blueline/core/edit-cleanup';
 import { commitField, liftPick, type CommitResult, type FieldRun } from '@blueline/core/edit-commit';
 import { buildMap } from '@blueline/core/mapper';
 import { normalizeForMatch } from '@blueline/core/matcher';
 import { decodeDeck } from '@blueline/core/text';
 import type { DeckMap, EditPick, EditRequest, HtmlRun, LiteralRun, RefusalCode } from '@blueline/core/types';
+import { judgeCleanup } from '../../fuzz/harness/cleanup-oracle';
 import { bytesEqual, MemIO, sha256 } from './helpers';
 
 const SEED = Number(process.env.BL_FUZZ_SEED ?? 0x5eed2026) >>> 0;
@@ -86,9 +91,18 @@ function boundaries(s: string): number[] {
   return out;
 }
 
-/** What the edit field holds at commit: one or two edits, the way a person or a dictation tool makes them. */
-function browserEdit(r: Rng, before: string): string {
+/**
+ * What the edit field holds at commit: one or two edits, the way a person or a dictation tool makes them, with
+ * the record of which UTF-16 units the "user" put there (`inserted`, for the clean-up oracle). The record draws
+ * nothing from the seeded source: the same seed gives the same edits as without it.
+ */
+function browserEdit(r: Rng, before: string): { text: string; inserted: boolean[] } {
   let s = before;
+  let inserted: boolean[] = new Array<boolean>(before.length).fill(false);
+  const put = (i: number, j: number, text: string): void => {
+    s = s.slice(0, i) + text + s.slice(j);
+    inserted = [...inserted.slice(0, i), ...new Array<boolean>(text.length).fill(true), ...inserted.slice(j)];
+  };
   const ops = 1 + (r.chance(0.2) ? 1 : 0);
   for (let k = 0; k < ops; k++) {
     const b = boundaries(s);
@@ -96,28 +110,28 @@ function browserEdit(r: Rng, before: string): string {
     const j = r.pick(b.filter((x) => x >= i));
     switch (r.int(7)) {
       case 0: // insert
-        s = s.slice(0, i) + randomText(r) + s.slice(i);
+        put(i, i, randomText(r));
         break;
       case 1: // delete
-        s = s.slice(0, i) + s.slice(j);
+        put(i, j, '');
         break;
       case 2: // replace a selection
-        s = s.slice(0, i) + randomText(r) + s.slice(j);
+        put(i, j, randomText(r));
         break;
       case 3: // the mutation probe's append (section 10)
-        s = s + '\u27E6bl\u27E7';
+        put(s.length, s.length, '\u27E6bl\u27E7');
         break;
       case 4: // type at the end; Chrome writes a trailing space as NBSP
-        s = s + (r.chance(0.5) ? ' ' + randomText(r) : '\u00A0');
+        put(s.length, s.length, r.chance(0.5) ? ' ' + randomText(r) : '\u00A0');
         break;
       case 5: // a dictated sentence pasted with a line break
-        s = s.slice(0, i) + 'Dictated text\r\nwith a break' + s.slice(i);
+        put(i, i, 'Dictated text\r\nwith a break');
         break;
-      default: // retype the whole run (select all, type)
-        s = r.chance(0.5) ? randomText(r) + ' ' + before.slice(0, 8) : 'Rewritten ' + randomText(r);
+      default: // retype the whole run (select all, type): every unit is typed, the run's first 8 included
+        put(0, s.length, r.chance(0.5) ? randomText(r) + ' ' + before.slice(0, 8) : 'Rewritten ' + randomText(r));
     }
   }
-  return s;
+  return { text: s, inserted };
 }
 
 // ------------------------------------------------------------------------------------------ documents
@@ -306,9 +320,9 @@ function fieldFor(r: Rng, map: DeckMap, target: HtmlRun | LiteralRun): Field {
   return { text, runs, at: at! };
 }
 
-/** Curly quotes read as straight ones: smart punctuation changes only those (6.3). */
-function plainQuotes(s: string): string {
-  return s.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
+/** Whether a text already uses curly double and single quotes (6.3: then smart punctuation curls typed ones). */
+function curlyIn(s: string): { double: boolean; single: boolean } {
+  return { double: /[\u201C\u201D]/.test(s), single: /[\u2018\u2019]/.test(s) };
 }
 
 /** A node the picker would offer for this run, and how it relates (P2-8): a unique piece of it, or its normalized text. */
@@ -389,12 +403,14 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
       let pick: EditPick | undefined;
       let fieldText = '';
       let fieldRaw = '';
+      /** Which units of fieldRaw the author put there (browserEdit's record). */
+      let inserted: boolean[] = [];
       let caret: string | null = null;
       let fieldInfo: Field | null = null;
       if (picked) {
         // The field holds the node; its FieldRun names the picked run but carries the node's text.
         fieldText = picked.node;
-        fieldRaw = browserEdit(r, picked.node);
+        ({ text: fieldRaw, inserted } = browserEdit(r, picked.node));
         caret = target.id;
         commit = commitField({ before: fieldText, after: fieldRaw, runs: [{ runId: target.id, start: 0, end: fieldText.length, value: fieldText }], caretRunId: caret }, { smartPunctuation: smart });
       } else {
@@ -402,10 +418,12 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
         fieldInfo = f;
         fieldText = f.text;
         if (inTarget) {
-          fieldRaw = f.text.slice(0, f.at.start) + browserEdit(r, target.value) + f.text.slice(f.at.end);
+          const inner = browserEdit(r, target.value);
+          fieldRaw = f.text.slice(0, f.at.start) + inner.text + f.text.slice(f.at.end);
+          inserted = [...new Array<boolean>(f.at.start).fill(false), ...inner.inserted, ...new Array<boolean>(f.text.length - f.at.end).fill(false)];
           caret = r.chance(0.9) ? target.id : null;
         } else {
-          fieldRaw = browserEdit(r, f.text);
+          ({ text: fieldRaw, inserted } = browserEdit(r, f.text));
           caret = r.chance(0.7) ? r.pick(f.runs).runId : null;
         }
         commit = commitField({ before: f.text, after: fieldRaw, runs: f.runs, caretRunId: caret }, { smartPunctuation: smart });
@@ -418,18 +436,25 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
       try {
         if (commit.kind === 'verbatim') {
           expect(commit.before, `${ctx()} [verbatim before]`).toBe(fieldText);
+          // The note's text after is the field cleaned as 9.2 step 3 says, with the field's quotes deciding (6.3).
+          // A note for text with a lone surrogate holds U+FFFD in its place ('invalid'): no clean-up to judge.
+          if (commit.why !== 'invalid') {
+            expect(judgeCleanup({ before: fieldText, raw: fieldRaw, result: commit.after, inserted, smart, curly: curlyIn(fieldText) }), `${ctx()} [verbatim after]`).toBeNull();
+          }
           // An edit inside one run with the caret in it is that run's edit, a no-op, or structural.
           if (inTarget && caret === target.id) expect(['emptied', 'run-emptied', 'invalid'], `${ctx()} [in-run verbatim]`).toContain(commit.why);
-        } else if (commit.kind === 'edit' && fieldInfo) {
-          const fr = fieldInfo.runs.find((x) => x.runId === commit.runId);
+        } else if (commit.kind === 'edit') {
+          // A picked node is a field of its own: one run, the node's text (P2-8).
+          const fieldRuns = fieldInfo ? fieldInfo.runs : [{ runId: target.id, start: 0, end: fieldText.length, value: fieldText }];
+          const fr = fieldRuns.find((x) => x.runId === commit.runId);
           expect(fr, `${ctx()} [unknown run]`).toBeTruthy();
           expect(commit.beforeText, ctx()).toBe(fr!.value);
           if (inTarget && caret === target.id) expect(commit.runId, `${ctx()} [caret run]`).toBe(target.id);
-          // The field with the run's new text is the cleaned field, up to the quotes smart punctuation curled.
-          const owners = fieldInfo.runs.filter((x) => x.runId === commit.runId);
-          const cleaned = plainQuotes(cleanupCommit(fieldInfo.text, fieldRaw));
-          const rebuilt = owners.map((o) => plainQuotes(fieldInfo!.text.slice(0, o.start) + commit.afterText + fieldInfo!.text.slice(o.end)));
-          expect(rebuilt, `${ctx()} [rebuilt field]`).toContain(cleaned);
+          // The field with the run's new text is the field cleaned as 9.2 step 3 says; the run's own quotes decide
+          // which typed quotes smart punctuation curled (6.3).
+          const owners = fieldRuns.filter((x) => x.runId === commit.runId);
+          const whys = owners.map((o) => judgeCleanup({ before: fieldText, raw: fieldRaw, result: fieldText.slice(0, o.start) + commit.afterText + fieldText.slice(o.end), inserted, smart, curly: curlyIn(o.value) }));
+          expect(whys.some((w) => w === null) ? null : whys[0], `${ctx()} [rebuilt field]`).toBeNull();
         }
       } catch (err) {
         failures.push(err instanceof Error ? err.message.split('\n')[0] : String(err));
@@ -469,6 +494,7 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
       let marker: string | null = null;
       let externalKind = '';
       let fired = false; // the conflicting write landed (the queue reached its atomic write)
+      let extBytes: Uint8Array | null = null; // the file as that write left it
       const mode = r.int(10);
       if (mode === 0) {
         const ext = externalChange(r, decodeDeck(d.io.bytes).src, map, editRun);
@@ -481,6 +507,7 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
         const ext = externalChange(r, src, map, editRun);
         d.io.beforeWrite = () => {
           d.io.external(ext.text);
+          extBytes = d.io.bytes.slice();
           fired = true;
         };
         marker = ext.marker;
@@ -501,10 +528,11 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
         if (!out.ok) {
           if (process.env.BL_FUZZ_TRACE && new RegExp(process.env.BL_FUZZ_TRACE).test(out.why)) process.stderr.write(`TRACE ${qctx()} :: ${out.why}\n`);
           expect(out.verbatim, `${qctx()} [note text]`).toEqual({ before: req.beforeText, after: req.afterText });
-          // Byte-identical: to the file before the edit, or to the external write that raced it.
+          // Byte-identical: to the file before the edit, or to exactly what the external write that raced it left
+          // (SPEC 10 Phase 2: "the file is byte-identical afterwards"; a refusal's own splice must not land).
           const now = decodeDeck(d.io.bytes).src;
           if (mode === 1 && fired) {
-            expect(marker !== null && now.includes(marker), `${qctx()} [note: file changed]`).toBe(true);
+            expect(extBytes !== null && bytesEqual(d.io.bytes, extBytes), `${qctx()} [note: not the external write's bytes] ${out.why}`).toBe(true);
           } else {
             expect(bytesEqual(d.io.bytes, before), `${qctx()} [note: not byte-identical] ${out.why}`).toBe(true);
           }

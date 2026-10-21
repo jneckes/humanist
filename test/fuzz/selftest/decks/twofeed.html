@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- Fuzz gate self-test (finding 25): #lit shows a literal, #calc a join that reads the same; an edit typed in #calc lands in #lit. Not a gate fixture: scripts/fuzz-selftest.mjs runs it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Two feeds</title>
+<style>body{font:18px sans-serif;margin:20px} p{margin:6px 0}</style>
+</head>
+<body>
+<h1>Overview</h1>
+<p id="lit"></p>
+<p id="calc"></p>
+<script>
+document.getElementById('lit').textContent = 'Net revenue grew';
+var parts = ['Net', 'revenue', 'grew'];
+document.getElementById('calc').textContent = parts.join(' ');
+</script>
+</body>
+</html>

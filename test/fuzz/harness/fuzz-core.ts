@@ -8,14 +8,15 @@
 // the gate judge alike: notes count only BY RULE (commitField's typed reasons and the queue's rule codes), a note
 // leaves the file byte-identical and holds the exact before and after text, no-ops are counted apart, and a
 // written edit decodes, adds no parse error, changes only the target run's range, and re-maps to the new text at
-// the target with every other run as it was.
+// the target with every other run as it was. The commit's text is judged by the clean-up oracle
+// (cleanup-oracle.ts), which re-derives 9.2 step 3 and shares no code with core/edit-cleanup.
 
-import { cleanupCommit } from '@blueline/core/edit-cleanup';
 import type { CommitResult, FieldRun } from '@blueline/core/edit-commit';
 import { buildMap } from '@blueline/core/mapper';
 import { findNotesBlock } from '@blueline/core/notes-block';
 import { decodeDeck, encodeDeck } from '@blueline/core/text';
 import type { DeckMap, EditRequest, HtmlRun, LiteralRun, MatchReason, RefusalCode, WriteOutcome } from '@blueline/core/types';
+import { judgeCleanup } from './cleanup-oracle';
 
 // ------------------------------------------------------------------------------------------- randomness
 
@@ -180,11 +181,6 @@ export function fieldRuns(field: CapturedField, runOf: RunOfKey, override?: { ke
   return at === field.text.length ? runs : null;
 }
 
-/** Curly quotes read as straight ones: smart punctuation changes only those (6.3). */
-export function plainQuotes(s: string): string {
-  return s.replace(/[\u201C\u201D]/g, '"').replace(/[\u2018\u2019]/g, "'");
-}
-
 /**
  * The ambiguity reasons whose candidates the fuzz picks (P2-8). `split` and `short` are never offered (core
  * pickKindFor); `key` and `shadow` are offered with a warning that the deck also uses the text elsewhere ("This
@@ -193,11 +189,18 @@ export function plainQuotes(s: string): string {
  */
 export const PICKED_REASONS: ReadonlySet<MatchReason> = new Set<MatchReason>(['duplicate', 'stamp-other', 'not-equal', 'substring']);
 
+/** Whether a text already uses curly double and single quotes (6.3: then smart punctuation curls typed ones). */
+export function curlyIn(s: string): { double: boolean; single: boolean } {
+  return { double: /[\u201C\u201D]/.test(s), single: /[\u2018\u2019]/.test(s) };
+}
+
 /**
- * The commit path's own oracle (the Node fuzz's): a verbatim note holds the field's exact text before, and the
- * cleaned text after up to the quotes smart punctuation curled; an edit names a run of the field with its whole
- * text before, and putting its new text into the field gives the cleaned field; an edit made inside one run with
- * the caret there is that run's (or a no-op, or structural). Returns why it fails, or null.
+ * The commit path's own oracle (the Node fuzz's): a verbatim note holds the field's exact text before, and after
+ * it the field's text as the clean-up oracle (cleanup-oracle.ts) allows it; an edit names a run of the field with
+ * its whole text before, and putting its new text into the field gives a text the clean-up oracle allows; an edit
+ * made inside one run with the caret there is that run's (or a no-op, or structural). Its caller passes neither
+ * what the author inserted nor the smart punctuation setting, so the clean-up oracle tells the field's own units
+ * from inserted ones by the diff alone and accepts either setting. Returns why it fails, or null.
  */
 export function checkCommit(o: {
   commit: CommitResult;
@@ -212,7 +215,11 @@ export function checkCommit(o: {
   if (c.kind === 'noop') return null;
   if (c.kind === 'verbatim') {
     if (c.before !== o.fieldText) return '[verbatim before] the note does not hold the field text';
-    if (plainQuotes(c.after) !== plainQuotes(cleanupCommit(o.fieldText, o.raw)) && c.why !== 'invalid') return '[verbatim after] the note does not hold the cleaned text';
+    // A note made for text that holds a lone surrogate holds U+FFFD in its place ('invalid'): no clean-up to judge.
+    if (c.why !== 'invalid') {
+      const why = judgeCleanup({ before: o.fieldText, raw: o.raw, result: c.after, curly: curlyIn(o.fieldText) });
+      if (why) return `[verbatim after] ${why}`;
+    }
     if (o.inTarget && o.caret === o.targetRunId && !['emptied', 'run-emptied', 'invalid'].includes(c.why)) return `[in-run verbatim] an edit inside one run with the caret in it became ${c.why}`;
     return null;
   }
@@ -220,10 +227,13 @@ export function checkCommit(o: {
   if (owners.length === 0) return `[unknown run] ${c.runId} is no run of the field`;
   if (!owners.some((x) => x.value === c.beforeText)) return '[beforeText] the edit does not carry its run\'s whole text';
   if (o.inTarget && o.caret === o.targetRunId && c.runId !== o.targetRunId) return `[caret run] the edit went to ${c.runId}, not the caret's run ${o.targetRunId}`;
-  const cleaned = plainQuotes(cleanupCommit(o.fieldText, o.raw));
-  const rebuilt = owners.map((x) => plainQuotes(o.fieldText.slice(0, x.start) + c.afterText + o.fieldText.slice(x.end)));
-  if (!rebuilt.includes(cleaned)) return '[rebuilt field] the run\'s new text in the field is not the cleaned field';
-  return null;
+  // Smart punctuation curls by the run's own text (6.3), so the run decides which curly quotes the field may gain.
+  let why: string | null = null;
+  for (const x of owners) {
+    why = judgeCleanup({ before: o.fieldText, raw: o.raw, result: o.fieldText.slice(0, x.start) + c.afterText + o.fieldText.slice(x.end), curly: curlyIn(x.value) });
+    if (!why) return null;
+  }
+  return `[rebuilt field] ${why}`;
 }
 
 // ------------------------------------------------------------------------------------------- the write oracle

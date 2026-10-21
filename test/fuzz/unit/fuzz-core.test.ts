@@ -80,6 +80,26 @@ describe('checkCommit: the commit path oracle', () => {
     expect(checkCommit({ commit: { kind: 'edit', runId: 'h:bl-2:0', beforeText: 'grew', afterText: 'rise' }, fieldText: text, raw, runs, inTarget: true, caret: null, targetRunId: 'h:bl-2:0' })).toMatch('[rebuilt field]');
   });
 
+  it("fails a commit that loses the run's own NBSP, or that curls the run's own quote (finding 24)", () => {
+    // Two changes with an NBSP of the run's between them; the former oracle took its expectation from
+    // cleanupCommit, so it accepted whatever the clean-up did.
+    const before = `Delivery in 10${NBSP}km`;
+    const raw = `Deliveries in 10${NBSP}km soon${NBSP}`;
+    const one = [{ runId: 'h:bl-1:0', start: 0, end: before.length, value: before }];
+    const lost = { kind: 'edit' as const, runId: 'h:bl-1:0', beforeText: before, afterText: 'Deliveries in 10 km soon ' };
+    expect(checkCommit({ commit: lost, fieldText: before, raw, runs: one, inTarget: true, caret: 'h:bl-1:0', targetRunId: 'h:bl-1:0' })).toMatch('[rebuilt field]');
+    const kept = { ...lost, afterText: `Deliveries in 10${NBSP}km soon ` };
+    expect(checkCommit({ commit: kept, fieldText: before, raw, runs: one, inTarget: true, caret: 'h:bl-1:0', targetRunId: 'h:bl-1:0' })).toBeNull();
+    const q = '\u201CA\u201D and "b" end';
+    const qraw = '\u201CAA\u201D and "b" end "c"';
+    const qrun = [{ runId: 'h:bl-1:0', start: 0, end: q.length, value: q }];
+    const curled = { kind: 'edit' as const, runId: 'h:bl-1:0', beforeText: q, afterText: '\u201CAA\u201D and \u201Cb\u201D end \u201Cc\u201D' };
+    expect(checkCommit({ commit: curled, fieldText: q, raw: qraw, runs: qrun, inTarget: true, caret: 'h:bl-1:0', targetRunId: 'h:bl-1:0' })).toMatch('[rebuilt field]');
+    // A note's text after is judged the same way.
+    const note = { kind: 'verbatim' as const, before, after: 'Deliveries in 10 km soon ', why: 'across-runs' as const };
+    expect(checkCommit({ commit: note, fieldText: before, raw, runs: one, inTarget: false, caret: null, targetRunId: 'h:bl-1:0' })).toMatch('[verbatim after]');
+  });
+
   it('fails an edit inside the caret\'s run that went elsewhere, and a note that lost the text', () => {
     const raw = 'Revenue grows fast';
     expect(checkCommit({ commit: { kind: 'edit', runId: 'h:bl-1:0', beforeText: 'Revenue ', afterText: 'Revenue ' }, fieldText: text, raw, runs, inTarget: true, caret: 'h:bl-2:0', targetRunId: 'h:bl-2:0' })).toMatch('[caret run]');

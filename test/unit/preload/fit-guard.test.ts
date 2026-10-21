@@ -3,7 +3,7 @@
 // (test/e2e/edit-overlay-ui.spec.ts).
 
 import { describe, expect, it } from 'vitest';
-import { WIDOW_WIDTH_SHARE, fitWarnings, isWidow, lineBoxes, overflowOf, type FitState } from '../../../packages/app/src/preload/fit-guard';
+import { WIDOW_WIDTH_SHARE, fitWarnings, isWidow, lineBoxes, measureFitAs, overflowOf, type FitState } from '../../../packages/app/src/preload/fit-guard';
 
 const r = (top: number, bottom: number, left: number, right: number) => ({ top, bottom, left, right });
 const fit = (o: Partial<FitState>): FitState => ({ lines: 1, overflow: 0, containerOverflow: 0, widow: false, ...o });
@@ -72,5 +72,56 @@ describe('fitWarnings (the badge: +1 line, overflows, widow; against the state b
   });
   it('lists every warning in the badge order', () => {
     expect(fitWarnings(fit({}), fit({ lines: 3, containerOverflow: 30, widow: true }))).toEqual(['+2 lines', 'overflows', 'widow']);
+  });
+});
+
+describe('measureFitAs: the reading as the deck renders the text, not the source case the field shows (E-10)', () => {
+  /** An element whose layout depends on its inline text-transform: uppercase takes two lines, the source case one. */
+  function fakeElement(inline: Record<string, [string, string]>) {
+    const style = {
+      getPropertyValue: (p: string) => inline[p]?.[0] ?? '',
+      getPropertyPriority: (p: string) => inline[p]?.[1] ?? '',
+      setProperty: (p: string, v: string, prio = '') => void (inline[p] = [v, prio]),
+      removeProperty: (p: string) => void delete inline[p],
+    };
+    const rendered = () => (inline['text-transform']?.[0] ?? 'uppercase') === 'uppercase';
+    const range = {
+      selectNodeContents: () => undefined,
+      getClientRects: () => (rendered() ? [r(0, 20, 0, 390), r(24, 44, 0, 40)] : [r(0, 20, 0, 336)]),
+      setStart: () => undefined,
+      setEnd: () => undefined,
+      getBoundingClientRect: () => ({ top: 24, bottom: 44, left: 0, right: 40, width: 40, height: 20 }),
+    };
+    const el = {
+      style,
+      ownerDocument: { createRange: () => range, createTreeWalker: () => ({ nextNode: () => null }) },
+      scrollWidth: 400,
+      clientWidth: 400,
+      scrollHeight: 44,
+      clientHeight: 44,
+      getBoundingClientRect: () => ({ width: 400 }),
+      parentElement: null,
+    };
+    const win = { getComputedStyle: () => ({ display: 'block', paddingLeft: '0', paddingRight: '0' }) };
+    return { el: el as unknown as HTMLElement, win: win as unknown as Window, inline };
+  }
+
+  it('puts the deck\'s own case back for the reading, then the field\'s source case again', () => {
+    // The field set text-transform: none !important (6.3 Source case); before, the element had no inline value.
+    const { el, win, inline } = fakeElement({ 'text-transform': ['none', 'important'], 'font-variant-caps': ['normal', 'important'] });
+    const asRendered = measureFitAs(el, win, null, [
+      ['text-transform', '', ''],
+      ['font-variant-caps', '', ''],
+    ]);
+    expect(asRendered.lines).toBe(2);
+    expect(inline).toEqual({ 'text-transform': ['none', 'important'], 'font-variant-caps': ['normal', 'important'] });
+    // Without the case to put back (no Source case), the reading is of what shows now.
+    expect(measureFitAs(el, win, null, []).lines).toBe(1);
+  });
+
+  it('an inline value the element had is the one put back', () => {
+    const { el, win, inline } = fakeElement({ 'text-transform': ['none', 'important'] });
+    expect(measureFitAs(el, win, null, [['text-transform', 'uppercase', '']]).lines).toBe(2);
+    expect(inline['text-transform']).toEqual(['none', 'important']);
   });
 });

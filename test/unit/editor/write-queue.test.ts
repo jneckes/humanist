@@ -120,14 +120,39 @@ describe('write queue: the version check (9.2 Write protocol step 2)', () => {
     expect(io.text).toBe(doc('<h1>New heading</h1><p>Alpha</p><p>Beta two</p>'));
   });
 
-  it('duplicates become verbatim when the context does not single one out', async () => {
+  it('duplicates are told apart by position even when the change lands inside both runs\' 32-character context (E-1)', async () => {
+    // A change right after the second copy: inside both runs' 32-character context, so context cannot tell them
+    // apart; their places can, because what tells them apart (what comes before each) is unchanged.
+    const changed = doc('<p>Owner</p><p>Owner</p><div>An agent added this</div>');
+    for (const [which, want] of [
+      [1, doc('<p>Owner</p><p>Owner X</p><div>An agent added this</div>')],
+      [0, doc('<p>Owner X</p><p>Owner</p><div>An agent added this</div>')],
+    ] as const) {
+      const io = new MemIO(doc('<p>Owner</p><p>Owner</p>'));
+      const q = createWriteQueue(io);
+      const map = await q.refresh();
+      const run = map.runs.filter((r) => r.value === 'Owner')[which];
+      io.external(changed);
+      expect(await q.edit({ version: map.version, runId: run.id, beforeText: 'Owner', afterText: 'Owner X' })).toMatchObject({ ok: true, merged: true });
+      expect(io.text).toBe(want);
+    }
+  });
+
+  it('two adjacent copies, one wrapped by another program: a note, because nothing unchanged around them tells a wrap from a move (E-1, finding 0 re-verification)', async () => {
     const io = new MemIO(doc('<p>Owner</p><p>Owner</p>'));
     const q = createWriteQueue(io);
     const map = await q.refresh();
-    // The change lands inside both runs' 32-character context.
-    io.external(doc('<p>Owner</p><div><p>Owner</p></div>').replace('<body>', '<body>\n'));
-    const out = await q.edit(requestFor(map, 'Owner', 'Owner X'));
-    expect(out).toMatchObject({ ok: false, verbatim: { before: 'Owner', after: 'Owner X' } });
+    const [first, second] = map.runs.filter((r) => r.value === 'Owner');
+    const changed = doc('<p>Owner</p><div><p>Owner</p></div>').replace('<body>', '<body>\n');
+    io.external(changed);
+    for (const run of [second, first]) {
+      expect(await q.edit({ version: map.version, runId: run.id, beforeText: 'Owner', afterText: 'Owner X' })).toMatchObject({
+        ok: false,
+        code: 'ambiguous',
+        verbatim: { before: 'Owner', after: 'Owner X' },
+      });
+    }
+    expect(io.text).toBe(changed);
     expect(io.writes).toBe(0);
   });
 
@@ -160,14 +185,15 @@ describe('write queue: the version check (9.2 Write protocol step 2)', () => {
     expect(io.text).toBe(base.replace('<p>Owner</p>', '<p>Lead</p>'));
   });
 
-  it('a version the queue never saw: unique text is applied, duplicates refused (no context)', async () => {
+  it('a version the queue never saw is a stale note, unique text or not (E-1: text alone never picks a run)', async () => {
     const io = new MemIO(doc('<p>Solo</p><p>Twin</p><p>Twin</p>'));
     const q = createWriteQueue(io);
     const map = await q.refresh();
     const unknown = 'f'.repeat(64);
-    expect((await q.edit({ ...requestFor(map, 'Solo', 'Solo!'), version: unknown })).ok).toBe(true);
+    expect(await q.edit({ ...requestFor(map, 'Solo', 'Solo!'), version: unknown })).toMatchObject({ ok: false, code: 'stale' });
     const m2 = await q.currentMap();
-    expect((await q.edit({ ...requestFor(m2, 'Twin', 'Twin!'), version: unknown })).ok).toBe(false);
+    expect(await q.edit({ ...requestFor(m2, 'Twin', 'Twin!'), version: unknown })).toMatchObject({ ok: false, code: 'stale' });
+    expect(io.writes).toBe(0);
   });
 
   it('never moves an edit between parsed text and a script literal', async () => {
@@ -208,7 +234,7 @@ describe('write queue: findings 5 and 0 through the real queue', () => {
     expect(io.text).toBe(base.replace("'<b>x</b> &amp; y'", "'<b>x</b> &amp; y &amp; z'"));
   });
 
-  it('a stale version: a beforeText that is also a shadow value is not unique, so it needs the context (D-a)', async () => {
+  it('a stale version: a beforeText that is also a shadow value is placed by position, never by its text (D-a, E-1)', async () => {
     const filler = 'z'.repeat(40);
     const base = doc(`<p>${filler}</p><script>var s = 'Revenue';</script><p>${filler}</p>`);
     const io = new MemIO(base);
@@ -217,11 +243,11 @@ describe('write queue: findings 5 and 0 through the real queue', () => {
     // The deck changes: a <template> now shows "Revenue" too (a shadow value; never a run).
     const changed = base.replace('<body>', '<body><template><h3>Revenue</h3></template>');
     io.external(changed);
-    // A version the queue never saw: no context, so the edit is a verbatim note.
+    // A version the queue never saw: nothing places the edit, so it is a verbatim note.
     const unknown = { ...requestFor(map, 'Revenue', 'Net revenue'), version: 'e'.repeat(64) };
     expect(await q.edit(unknown)).toMatchObject({ ok: false, verbatim: { before: 'Revenue', after: 'Net revenue' } });
     expect(io.text).toBe(changed);
-    // The client's own version is known: its 32 characters of context single the literal out.
+    // The client's own version is known: the literal's place in it maps to the current file.
     const out = await q.edit(requestFor(map, 'Revenue', 'Net revenue'));
     expect(out.ok).toBe(true);
     expect(io.text).toBe(changed.replace("'Revenue'", "'Net revenue'"));
@@ -305,10 +331,17 @@ describe('concurrency gate (section 10, Phase 2): an external write lands 50 ms 
     expect(io.text).toBe(external);
   });
 
-  it('an external change that duplicates the text right beside it: verbatim, and the change survives', async () => {
+  it('an external change that duplicates the text right beside it: verbatim, and the change survives (E-1: the copy has the same surroundings, so neither place is sure)', async () => {
     const external = base.replace('<p>Next steps follow.</p>', '<p>Next steps follow.</p><p>Next steps follow.</p>');
     const { io, out } = await race(external, 'Next steps follow.', 'Next steps follow below.');
-    expect(out.ok).toBe(false);
+    expect(out).toMatchObject({ ok: false, code: 'ambiguous', verbatim: { before: 'Next steps follow.', after: 'Next steps follow below.' } });
+    expect(io.text).toBe(external);
+  });
+
+  it('an external change that rewrites the run and leaves a copy elsewhere: verbatim, and the change survives', async () => {
+    const external = base.replace('<p>Next steps follow.</p>', '<p>Next steps, later.</p>').replace('<p>Revenue grew in every region.</p>', '<p>Next steps follow.</p>');
+    const { io, out } = await race(external, 'Next steps follow.', 'Next steps follow below.');
+    expect(out).toMatchObject({ ok: false, code: 'ambiguous' });
     expect(io.text).toBe(external);
   });
 

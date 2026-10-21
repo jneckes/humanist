@@ -27,7 +27,9 @@ import { liftPick, type CommitResult, type VerbatimWhy } from '@blueline/core/ed
 import {
   EDIT_LIMITS,
   MainToDeckEdit,
+  MainToDeckEditRequest,
   candidateContext,
+  failureToast,
   type EditApplied,
   type EditBegin,
   type EditBusy,
@@ -44,7 +46,7 @@ import { LOCK_DIFF_TIMEOUT_SEC, applyOwnWrite, lockForRun, transformLockedSpans 
 import { decodeDeck } from '@blueline/core/text';
 import type { DeckMap, EditRequest, HtmlRun, LockedSpan, Note, RefusalCode, WriteOutcome, WriteRecord } from '@blueline/core/types';
 import { readRegularFile, sha256Hex } from './atomic-write';
-import { contentHashOfBytes } from './documents';
+import { contentHashOfBytes, extractTitle } from './documents';
 import { HistoryStore, type HistoryEntry } from './history';
 import { RateLimiter } from './ipc-guard';
 import type { NotesStore } from './notes';
@@ -59,12 +61,23 @@ import { UndoStack, newUndoToken, type UndoEntry } from './undo-stack';
 export const BEGIN_WINDOW_MS = 2000;
 /** The picker's request follows the click on dashed text; the toast's Undo follows the click on its button. */
 export const PRESS_WINDOW_MS = 2000;
+/**
+ * Lead decision E-4 (review finding 4): a field's trusted-input authorisation also ends after this long without
+ * trusted input of any kind in its view; a commit after that is refused silently (it is not the user's).
+ */
+export const FIELD_IDLE_MS = 10 * 60_000;
+/**
+ * E-2, E-4: a commit main itself asked for (the deck left Edit, or main asked it to commit before the window
+ * closes, the app quits or the shell takes focus) is accepted this long after the request, whatever else ended the
+ * field's authorisation.
+ */
+export const COMMIT_REQUEST_WINDOW_MS = 5000;
+/** E-2: how long a close or a quit waits for the deck to answer a commit request (then it goes ahead). */
+export const COMMIT_REQUEST_TIMEOUT_MS = 3000;
 /** A lane whose window closed is kept this long, so a D-1 reopen finds the same queue (P2-3). */
 export const LANE_KEEP_MS = 30_000;
 /** Versions whose source and map are kept for the picker and picked edits (P2-8: "the DeckMap of the field's version"). */
 export const VERSIONS_KEPT = 8;
-/** Field records kept per window (the overlay has at most one open field and a few commits in flight). */
-const FIELDS_KEPT = 16;
 /** Lines of the restore dialog's diff. */
 const DIFF_LINES = 14;
 const DIFF_LINE_CHARS = 120;
@@ -129,6 +142,17 @@ export function refusalText(code: RefusalCode): string {
   }
 }
 
+/**
+ * 6.3 Saving: "Saved · deck.html:142", and "· also changes N other places" when the run feeds other places on the
+ * page (P2-14; the shell's toast, E-5).
+ */
+export function savedToastText(fileName: string, line: number, alsoPlaces: number): string {
+  let text = Number.isInteger(line) && line >= 1 ? `Saved \u00b7 ${fileName}:${line}` : `Saved \u00b7 ${fileName}`;
+  const n = Number.isInteger(alsoPlaces) && alsoPlaces > 0 ? alsoPlaces : 0;
+  if (n > 0) text += ` \u00b7 also changes ${n} other place${n === 1 ? '' : 's'}`;
+  return text;
+}
+
 // ------------------------------------------------------------------------------------------- Edit availability
 
 export interface EditAvailabilityInput {
@@ -167,20 +191,55 @@ const PRESS_TYPES: ReadonlySet<string> = new Set(['mouseDown', 'keyDown', 'rawKe
  */
 export class TrustedInput {
   private lastPress = Number.NEGATIVE_INFINITY;
+  private lastInput = Number.NEGATIVE_INFINITY;
   private pressTaken = true;
+  /** E-1: the last press came while a commit of this view was unanswered (its field waits for the answer). */
+  private pressWhileBusy = false;
+  private answeredAt = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly now: () => number = () => Date.now()) {}
 
-  /** One InputEvent the deck view received. */
-  note(type: string): void {
+  /**
+   * One InputEvent the deck view received (any kind counts as input; a press may also open a field). `busy`: a
+   * commit of this view is unanswered.
+   */
+  note(type: string, busy = false): void {
+    this.lastInput = this.now();
     if (!PRESS_TYPES.has(type)) return;
     this.lastPress = this.now();
     this.pressTaken = false;
+    this.pressWhileBusy = busy;
   }
 
-  /** A press within `windowMs` that no field took yet; taking it means no other field opens on it. */
+  /**
+   * E-1: main took a commit. A press no field took yet (the click on another text that commits the open field)
+   * waits for this answer: the field it opens comes after it.
+   */
+  commitTaken(): void {
+    if (!this.pressTaken) this.pressWhileBusy = true;
+  }
+
+  /** A commit was answered: a field that waited for it may open now (takePress). */
+  answered(): void {
+    this.answeredAt = this.now();
+  }
+
+  /** E-4: no trusted input of any kind for more than `ms`. */
+  idleFor(ms: number): boolean {
+    return this.now() - this.lastInput > ms;
+  }
+
+  /**
+   * A press within `windowMs` that no field took yet; taking it means no other field opens on it. A press made
+   * while a commit was unanswered counts from that answer instead (E-1: its field opens only once the answer is in,
+   * which on a large deck can be later than `windowMs` after the press).
+   */
   takePress(windowMs: number): boolean {
-    if (this.pressTaken || this.now() - this.lastPress > windowMs) return false;
+    if (this.pressTaken) return false;
+    const now = this.now();
+    const fresh = now - this.lastPress <= windowMs;
+    const waited = this.pressWhileBusy && this.answeredAt >= this.lastPress && now - this.answeredAt <= windowMs;
+    if (!fresh && !waited) return false;
     this.pressTaken = true;
     return true;
   }
@@ -192,7 +251,10 @@ export class TrustedInput {
 
   reset(): void {
     this.lastPress = Number.NEGATIVE_INFINITY;
+    this.lastInput = Number.NEGATIVE_INFINITY;
     this.pressTaken = true;
+    this.pressWhileBusy = false;
+    this.answeredAt = Number.NEGATIVE_INFINITY;
   }
 }
 
@@ -204,19 +266,41 @@ export interface FieldRecord {
   /** The runs of its text nodes: a commit may write only one of these (P2-7). */
   runIds: ReadonlySet<string>;
   openedAt: number;
-  /** Main left Edit while it was open: its commit (sent because of that) is still taken. */
-  leftEdit: boolean;
+  /** The lane holds `version` for it (E-1: until its commit is answered or the record is dropped). */
+  pinned: boolean;
+  /**
+   * E-2, E-4: main asked the deck to commit this field (the deck left Edit, the window closes, the app quits, the
+   * shell took focus): its commit is taken until this time even when its authorisation otherwise ended.
+   */
+  requestedUntil: number;
+  /** E-4: the deck left Edit while it was open: its authorisation ends at this time, in any mode. */
+  expiresAt: number;
 }
 
-/** The fields of one page load (the preload's field ids restart with each load). */
+/**
+ * The fields of one page load (the preload's field ids restart with each load). The deck has one open field, so
+ * a field's authorisation (P2-7, lead decision E-4) ends when its commit is taken, when a newer field begins, when
+ * the deck reports no field open, and when the deck leaves Edit (except the field open then, whose commit main
+ * asked for). `onDrop` hears of every record removed without its commit (the lane's version pin goes with it).
+ */
 export class FieldRegistry {
   private readonly fields = new Map<number, FieldRecord>();
 
+  constructor(private readonly onDrop: (r: FieldRecord) => void = () => undefined) {}
+
   begin(b: EditBegin, at: number): FieldRecord {
-    const rec: FieldRecord = { id: b.fieldId, version: b.version, runIds: new Set(b.runIds), openedAt: at, leftEdit: false };
-    this.fields.delete(b.fieldId);
+    const rec: FieldRecord = {
+      id: b.fieldId,
+      version: b.version,
+      runIds: new Set(b.runIds),
+      openedAt: at,
+      pinned: false,
+      requestedUntil: Number.NEGATIVE_INFINITY,
+      expiresAt: Number.POSITIVE_INFINITY,
+    };
+    // One open field: a newer one replaces every field whose commit was not sent (E-4).
+    this.dropWhere(() => true);
     this.fields.set(b.fieldId, rec);
-    while (this.fields.size > FIELDS_KEPT) this.fields.delete(this.fields.keys().next().value as number);
     return rec;
   }
 
@@ -224,20 +308,52 @@ export class FieldRegistry {
     return this.fields.get(id) ?? null;
   }
 
-  /** Removes the record: one commit per field. */
+  /** Removes the record: one commit per field. The caller answers it (and lets go of its pin). */
   take(id: number): FieldRecord | null {
     const r = this.fields.get(id) ?? null;
     this.fields.delete(id);
     return r;
   }
 
-  /** Main left Edit: the fields open now may still commit (the mode change itself makes the preload commit them). */
-  leftEdit(): void {
-    for (const f of this.fields.values()) f.leftEdit = true;
+  /** The field main would ask the deck to commit: the newest one (null when none is open). */
+  newest(): FieldRecord | null {
+    let last: FieldRecord | null = null;
+    for (const f of this.fields.values()) last = f;
+    return last;
+  }
+
+  /** E-2: main asked the deck to commit its open field; that field's commit is taken until `until`. */
+  request(until: number): FieldRecord | null {
+    const f = this.newest();
+    if (f) f.requestedUntil = Math.max(f.requestedUntil, until);
+    return f;
+  }
+
+  /**
+   * E-4: main left Edit. The mode change itself makes the preload commit the field open now (main asked for it);
+   * every other field's authorisation ends.
+   */
+  leftEdit(until: number): void {
+    const keep = this.request(until);
+    if (keep) keep.expiresAt = Math.min(keep.expiresAt, until);
+    this.dropWhere((f) => f !== keep);
+  }
+
+  /** The deck reports no open field: none of these will commit (E-4). */
+  noneOpen(): void {
+    this.dropWhere(() => true);
   }
 
   clear(): void {
-    this.fields.clear();
+    this.dropWhere(() => true);
+  }
+
+  private dropWhere(test: (f: FieldRecord) => boolean): void {
+    for (const [id, f] of [...this.fields]) {
+      if (!test(f)) continue;
+      this.fields.delete(id);
+      this.onDrop(f);
+    }
   }
 
   get size(): number {
@@ -252,23 +368,39 @@ export interface GateState {
   capEdit: boolean;
   /** doc.editable(): editing allowed, UTF-8, not gone. */
   editable: boolean;
+  /** Now (the clock FieldRecord.requestedUntil uses). */
+  now: number;
+  /** E-4: no trusted input in the view for FIELD_IDLE_MS. */
+  idle: boolean;
 }
 
-export type CommitGate = { ok: true; field: FieldRecord } | { ok: false; reply: boolean; why: string };
+/**
+ * `reply`: the commit is the preload's own, so the field is told; `keep`: and what it holds is the user's, kept
+ * as a verbatim note (E-2: the file went away, stopped being UTF-8 or became Protected while the field was open).
+ * `ended`: the field's authorisation ended (E-4): its record goes, silently.
+ */
+export type CommitGate = { ok: true; field: FieldRecord } | { ok: false; reply: boolean; keep?: FieldRecord; ended?: boolean; why: string };
 
 /**
- * P2-7: whether main takes a commit. Only a field main accepted (a trusted press opened it), for the version it
- * opened on, and for an edit only one of that field's runs. Then Edit (or Edit left while the field was open),
- * the Edit capability and editing allowed, at this moment. `reply`: the commit is the preload's own (its field is
- * known), so the field is told it was refused; anything else is dropped without a word.
+ * P2-7 and lead decision E-4: whether main takes a commit, when it ACCEPTS it. Only a field main accepted (a
+ * trusted press opened it) whose authorisation has not ended, for the version it opened on, and for an edit only
+ * one of that field's runs; in Edit, with no 10 minutes without trusted input, unless main itself asked for this
+ * commit (requestedUntil: the deck left Edit, the window closes); the Edit capability. Anything else is dropped
+ * without a word: it is not the user's. A commit that passes all that but meets a file that cannot be edited now
+ * (gone, not UTF-8, Protected: doc.editable()) is the user's text: it is kept as a verbatim note (E-2, 6.3 When a
+ * write fails). The mode is not checked again when the write runs (9.1 checks only editing allowed and the
+ * capability then; EditSession.canWrite).
  */
 export function gateCommit(c: EditCommit, field: FieldRecord | null, s: GateState): CommitGate {
   if (!field) return { ok: false, reply: false, why: 'no such field' };
   if (field.version !== c.version) return { ok: false, reply: false, why: 'another version than the field opened on' };
   if (c.result.kind === 'edit' && !field.runIds.has(c.result.runId)) return { ok: false, reply: false, why: 'a run the field does not hold' };
+  const requested = field.requestedUntil >= s.now;
+  if (field.expiresAt < s.now) return { ok: false, reply: false, ended: true, why: 'Edit was left while it was open' };
+  if (s.mode !== 'edit' && !requested) return { ok: false, reply: false, ended: true, why: 'Edit is off' };
+  if (s.idle && !requested) return { ok: false, reply: false, ended: true, why: 'no trusted input in this view for 10 minutes' };
   if (!s.capEdit) return { ok: false, reply: true, why: 'Edit is not available in this version of Blueline' };
-  if (s.mode !== 'edit' && !field.leftEdit) return { ok: false, reply: true, why: 'Edit is off' };
-  if (!s.editable) return { ok: false, reply: true, why: 'editing is not allowed for this file' };
+  if (!s.editable) return { ok: false, reply: true, keep: field, why: 'editing is not allowed for this file' };
   return { ok: true, field };
 }
 
@@ -512,24 +644,63 @@ export class SerialLane {
   }
 }
 
-/** Sources and maps of recent versions (the picker and picked edits name the field's version, P2-8). */
+/**
+ * Sources and maps of recent versions (the picker and picked edits name the field's version, P2-8). A version a
+ * client still holds is pinned (9.2 Write protocol step 1: "Main keeps the map for each version a client still
+ * holds"; lead decision E-1): the LRU of `max` never evicts it.
+ */
 export class VersionCache {
   private readonly m = new Map<string, { src: string; map: DeckMap }>();
+  private readonly pins = new Map<string, number>();
 
   constructor(private readonly max = VERSIONS_KEPT) {}
 
   put(version: string, src: string, map: DeckMap): void {
     this.m.delete(version);
     this.m.set(version, { src, map });
-    while (this.m.size > this.max) this.m.delete(this.m.keys().next().value as string);
+    this.trim(version);
+  }
+
+  /** Least recently used first, never a pinned version nor `keep` (pinned versions may exceed `max`). */
+  private trim(keep?: string): void {
+    if (this.m.size <= this.max) return;
+    for (const k of [...this.m.keys()]) {
+      if (this.m.size <= this.max) break;
+      if (k !== keep && !this.pins.has(k)) this.m.delete(k);
+    }
   }
 
   get(version: string): { src: string; map: DeckMap } | null {
     return this.m.get(version) ?? null;
   }
 
+  /** One more holder of a version the cache has; false (nothing pinned) when it has none. */
+  pin(version: string): boolean {
+    if (!this.m.has(version)) return false;
+    this.pins.set(version, (this.pins.get(version) ?? 0) + 1);
+    return true;
+  }
+
+  /** One holder let go; once nobody holds it the LRU may evict it. */
+  unpin(version: string): void {
+    const n = this.pins.get(version);
+    if (n === undefined) return;
+    if (n > 1) {
+      this.pins.set(version, n - 1);
+      return;
+    }
+    this.pins.delete(version);
+    this.trim();
+  }
+
+  /** How many holders pin `version` (tests). */
+  pinned(version: string): number {
+    return this.pins.get(version) ?? 0;
+  }
+
   clear(): void {
     this.m.clear();
+    this.pins.clear();
   }
 }
 
@@ -548,7 +719,8 @@ export interface LaneDoc {
   knownHash: string;
   trust(): 'protected' | 'trusted';
   editable(): boolean;
-  adoptOwnWrite(bytes: Uint8Array, map: DeckMap, src: string): void;
+  /** `basedOn`: the version the write replaced (knownHash moves to the write only from it or an older own write, E-8). */
+  adoptOwnWrite(bytes: Uint8Array, map: DeckMap, src: string, o?: { basedOn?: string }): void;
   replaceContent(bytes: Uint8Array): void;
   io(editCapability: () => boolean): DeckIO;
 }
@@ -564,7 +736,9 @@ export interface Adopted {
   previous: string;
   absorbed: boolean;
   record: WriteRecord;
+  /** The written version's map and source (E-7: notes and locks are made from these, never from the document). */
   map: DeckMap;
+  src: string;
   runId?: string;
   strategy?: 'html-text' | 'script-literal' | 'json-literal';
   /** Undo and redo: the node the page patches (null: it reloads). */
@@ -587,12 +761,14 @@ export interface LaneHost {
   known(): { version: string } | null;
   noteVersion(v: { version: string; contentHash: string; title: string }): void;
   save(): void;
-  /** 9.1, P2-7: may this job write now? Checked by the queue right before the snapshot and right before the write. */
+  /** 9.1: may this job write now? Checked by the queue right before the snapshot and right before the write. */
   canWrite(job: LaneJob): boolean;
   /** An own write was adopted: push the map (before the result, 9.2 step 6), the reload rule, products, trust. */
   adopted(e: Adopted): void;
   /** An external change was taken: push the map and reload under 6.6's rules. */
   taken(e: Taken): void;
+  /** E-8: the file on disk is not the own write just adopted: the watcher looks again (the external path). */
+  recheck?(): void;
   log(msg: string): void;
 }
 
@@ -602,14 +778,16 @@ export interface LaneJob {
   kind: WriteKind;
   /** Undo and redo: the edit note of the write (its snapshot names it; undo drops its lock). */
   noteId?: string;
-  /** P2-7: the field was open when main left Edit. */
-  leftEdit?: boolean;
   adopted?: Adopted;
+  /** E-11: the history entry of the attempt being written (pending until it lands). */
+  snapshot?: string;
+  /** E-8: the queue's read-back after the rename found another version on disk. */
+  readBack?: boolean;
 }
 
 /** The queue's operations, run inside EditLane.exclusive. */
 export interface LaneOps {
-  edit(req: EditRequest, o?: { leftEdit?: boolean }): Promise<{ out: WriteOutcome; adopted: Adopted | null }>;
+  edit(req: EditRequest): Promise<{ out: WriteOutcome; adopted: Adopted | null }>;
   undo(record: WriteRecord, noteId: string): Promise<{ out: UndoOutcome; adopted: Adopted | null }>;
   redo(record: WriteRecord): Promise<{ out: UndoOutcome; adopted: Adopted | null }>;
   restore(bytes: Uint8Array, expectVersion: string): Promise<{ out: RestoreOutcome; adopted: Adopted | null }>;
@@ -684,7 +862,11 @@ export class EditLane {
       canWrite: () => (this.job ? this.job.host.canWrite(this.job) : false),
       beforeWrite: (prev, next) => this.beforeWrite(prev, next),
       afterWrite: (map, record, next) => this.afterWrite(map, record, next),
-      onHookError: (e) => this.log(`${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`),
+      onHookError: (e) => {
+        // E-8: another program wrote right after the rename; once the write is adopted, the watcher looks again.
+        if (e instanceof Error && e.name === 'ReadBackMismatch' && this.job) this.job.readBack = true;
+        this.log(`${e instanceof Error ? `${e.name}: ${e.message}` : String(e)}`);
+      },
       maxRetries: 5,
     });
     return this.queue;
@@ -726,6 +908,26 @@ export class EditLane {
     });
   }
 
+  /**
+   * 9.2 Write protocol step 1 (lead decision E-1): pins `version` while a client holds it (the page shows it, a
+   * field is open on it, or a commit made on it is unanswered), in the lane's cache and in the queue, so a stale
+   * edit made on it can always be placed by position. False when the lane does not know the version: nothing is
+   * pinned, and an edit made on it becomes the queue's `stale` note.
+   */
+  hold(version: string): boolean {
+    const v = this.versions.get(version);
+    if (!v || !this.versions.pin(version)) return false;
+    this.ensureQueue()?.know(version, v.src, v.map, { pin: true });
+    return true;
+  }
+
+  /** Lets go of one hold() of `version`. */
+  release(version: string): void {
+    this.versions.unpin(version);
+    const q = this.queue;
+    if (q && typeof q.unpin === 'function') q.unpin(version);
+  }
+
   /** The window closed (or is reopening): jobs it started finish with it; nothing new is done for it. */
   detach(host: LaneHost): void {
     if (this.host === host) this.host = null;
@@ -744,14 +946,19 @@ export class EditLane {
     });
   }
 
-  /** P2-12: the version main knows now is the session's `known`, its bytes history's base (when locks need it). */
-  private noteBase(host: LaneHost): void {
+  /**
+   * P2-12: the version main knows now is the session's `known`, its bytes history's base (when locks need it).
+   * `v`: that version, when it is not the document's (E-7: an own write the document could not adopt, its window
+   * closed); `always`: keep the base whatever the locks are now (an edit or a redo, whose own lock comes right after).
+   */
+  private noteBase(host: LaneHost, v?: { version: string; bytes: Uint8Array; contentHash: string; title: string }, always = false): void {
     const doc = host.doc;
-    host.noteVersion({ version: doc.version, contentHash: doc.contentHash, title: doc.title });
+    const k = v ?? { version: doc.version, bytes: doc.bytes, contentHash: doc.contentHash, title: doc.title };
+    host.noteVersion({ version: k.version, contentHash: k.contentHash, title: k.title });
     const history = this.deps.history();
-    if (!history || host.locks().length === 0 || doc.bytes.length === 0) return;
+    if (!history || (!always && host.locks().length === 0) || k.bytes.length === 0) return;
     void history
-      .setBase(doc.bytes, { sha256: doc.version, contentHash: doc.contentHash, at: this.now(), marker: doc.trust() === 'protected' ? doc.marker : undefined })
+      .setBase(k.bytes, { sha256: k.version, contentHash: k.contentHash, at: this.now(), marker: doc.trust() === 'protected' ? doc.marker : undefined })
       .catch((e: unknown) => this.log(`history base not kept: ${e instanceof Error ? e.message : String(e)}`));
   }
 
@@ -814,11 +1021,13 @@ export class EditLane {
         return { out, adopted: job.adopted ?? null };
       } finally {
         this.job = null;
+        // E-11: an attempt that never landed (refused, failed, or every retry conflicted) leaves no entry.
+        this.settleSnapshot(job, false);
       }
     };
     return {
-      edit: (req, o = {}) =>
-        run<WriteOutcome>({ host, kind: 'edit', leftEdit: o.leftEdit === true }, (q) => q.edit(req), { ok: false, verbatim: { before: req.beforeText, after: req.afterText }, why: EDIT_UNAVAILABLE, code: 'refused' }),
+      edit: (req) =>
+        run<WriteOutcome>({ host, kind: 'edit' }, (q) => q.edit(req), { ok: false, verbatim: { before: req.beforeText, after: req.afterText }, why: EDIT_UNAVAILABLE, code: 'refused' }),
       undo: (record, noteId) => run<UndoOutcome>({ host, kind: 'undo', noteId }, (q) => q.undo(record), { ...refused, canMakeNote: false }),
       redo: (record) => run<UndoOutcome>({ host, kind: 'redo' }, (q) => q.redo(record), { ...refused, canMakeNote: false }),
       restore: (bytes, expect) => run<RestoreOutcome>({ host, kind: 'restore' }, (q) => q.restore(bytes, expect), refused),
@@ -834,9 +1043,12 @@ export class EditLane {
     const job = this.job;
     const history = this.deps.history();
     if (!job || !history) return;
+    // E-11: the attempt before this one did not land (a conflict requeued it): its entry goes.
+    this.settleSnapshot(job, false);
     const doc = job.host.doc;
     const at = this.now();
     const marker = doc.trust() === 'protected' ? doc.marker : undefined;
+    // The content main knew, replaced by a change it did not take yet (deduplicated: a requeue adds it once).
     if (prev.version !== doc.version && doc.bytes.length > 0 && doc.decoded.utf8) {
       await history
         .snapshot(doc.bytes, { sha256: doc.version, contentHash: doc.contentHash, cause: 'external', at, marker })
@@ -845,7 +1057,19 @@ export class EditLane {
     const contentHash = prev.version === doc.version ? doc.contentHash : contentHashOfBytes(prev.bytes, prev.version);
     const meta: Parameters<HistoryStore['snapshot']>[1] = { sha256: prev.version, contentHash, cause: next.kind, at, marker };
     if ((job.kind === 'undo' || job.kind === 'redo') && job.noteId) meta.noteId = job.noteId;
-    await history.snapshot(prev.bytes, meta);
+    // P2-11: the bytes are stored before the write; the entry is listed once this attempt's write lands (E-11).
+    job.snapshot = await history.snapshot(prev.bytes, meta, { pending: true });
+  }
+
+  /** E-11: the pending entry of `job`'s attempt is listed (`landed`) or removed. */
+  private settleSnapshot(job: LaneJob, landed: boolean): void {
+    const id = job.snapshot;
+    if (id === undefined) return;
+    job.snapshot = undefined;
+    void this.deps
+      .history()
+      ?.settle(id, landed)
+      .catch((e: unknown) => this.log(`history: ${e instanceof Error ? e.message : String(e)}`));
   }
 
   /**
@@ -861,6 +1085,8 @@ export class EditLane {
       this.log('a write landed with no job');
       return;
     }
+    // E-11: this attempt landed: its history entry is listed.
+    this.settleSnapshot(job, true);
     const host = job.host;
     const doc = host.doc;
     const previous = doc.version;
@@ -873,37 +1099,61 @@ export class EditLane {
       else locks = applyOwnWrite(locks, record, job.kind === 'undo' && job.noteId ? { noteId: job.noteId } : {});
       host.setLocks(locks);
     }
+    let followed = true;
     try {
-      doc.adoptOwnWrite(next.bytes, map, next.src);
+      doc.adoptOwnWrite(next.bytes, map, next.src, { basedOn: next.basedOn });
     } catch (e) {
       // The write stands; the document follows by the slower path rather than not at all.
       this.log(`own write not adopted (${e instanceof Error ? e.message : String(e)}); mapping it again`);
       try {
         doc.replaceContent(next.bytes);
       } catch {
-        return;
+        // Its window closed (the document was released): the lane still records what was written (E-7).
+        followed = false;
       }
     }
-    this.versions.put(doc.version, doc.decoded.src, doc.map);
-    const patch = next.kind === 'undo' || next.kind === 'redo' ? undoPatch(doc.map, record) : null;
+    // E-7: the written version is what main knows now, in the lane, whether or not a window still shows it.
+    this.versions.put(next.version, next.src, map);
+    const patch = next.kind === 'undo' || next.kind === 'redo' ? undoPatch(map, record) : null;
     const adopted: Adopted = {
       kind: next.kind,
-      version: doc.version,
+      version: next.version,
       basedOn: next.basedOn,
       previous,
       absorbed,
       record,
-      map: doc.map,
+      map,
+      src: next.src,
       patch: patch ? { stamp: patch.stamp, textIndex: patch.textIndex, text: patch.text } : null,
     };
     if (next.runId) adopted.runId = next.runId;
     if (next.strategy) adopted.strategy = next.strategy;
     job.adopted = adopted;
-    this.noteBase(host);
+    // P2-12, E-7: the content main knows advances with every own write (session.json `known`, the history base), so
+    // a change made while the file is closed, or a D-1 reopen, moves the locks from the right content. An edit and
+    // a redo always keep the base: their own lock is made right after this.
+    this.noteBase(
+      host,
+      { version: next.version, bytes: next.bytes, contentHash: contentHashOfBytes(next.bytes, next.version), title: extractTitle(next.src) },
+      next.kind === 'edit' || next.kind === 'redo',
+    );
+    if (!followed) {
+      host.save();
+      return;
+    }
     try {
       host.adopted(adopted);
     } catch (e) {
       this.log(`after the write: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    // E-8: the read-back found another version on disk: that is an external change, and goes the external way.
+    if (job.readBack) {
+      job.readBack = false;
+      try {
+        host.recheck?.();
+      } catch (e) {
+        this.log(`recheck: ${e instanceof Error ? e.message : String(e)}`);
+      }
     }
   }
 }
@@ -1088,12 +1338,16 @@ export interface EditSessionDeps {
   /** The window's effects of an adopted own write and of a taken external change (window.ts). */
   adopted(e: Adopted): void;
   taken(e: Taken): void;
+  /** E-8: the watcher looks at the file again (the read-back after an own write found another version). */
+  recheck?(): void;
   /** Writes the clipboard (Electron's clipboard, in main: the shell has no clipboard permission, P2-13). */
   clipboard(text: string): void;
   /** A native confirmation: true when the user chose `button`. */
   confirm(o: { message: string; detail: string; button: string }): Promise<boolean>;
   log(msg: string): void;
   now?(): number;
+  /** E-4: how long a field stays authorised without trusted input (default FIELD_IDLE_MS; tests). */
+  fieldIdleMs?: number;
 }
 
 /** Per-channel message rates of one window (on top of the router's 1,000 a second, 9.1). */
@@ -1104,7 +1358,8 @@ const RATES = { begin: 30, commit: 30, candidates: 20, undo: 5 } as const;
  * the deck names fields, versions, run ids and tokens, never a path, a record or an offset.
  */
 export class EditSession implements LaneHost {
-  readonly fields = new FieldRegistry();
+  /** Fields main accepted; one dropped without its commit lets go of its version (E-1). */
+  readonly fields = new FieldRegistry((f) => this.releaseField(f));
   readonly input: TrustedInput;
   readonly undo = new UndoStack();
   /**
@@ -1115,9 +1370,20 @@ export class EditSession implements LaneHost {
   private readonly targets = new Map<string, { target: EditTarget | null; slide: number | null; picked?: boolean }>();
   private readonly rates = new Map<keyof typeof RATES, RateLimiter>();
   private disposed = false;
+  private readonly clock: () => number;
+  /** E-1: the version the page shows, which the lane holds while it shows it (the picker and picked edits read it). */
+  private pagePin: string | null = null;
+  /** The deck's last EditBusy (6.6), and the commits main took and has not answered yet (E-2). */
+  private busyNow: EditBusy = { edit: false, committing: false };
+  private inFlight = 0;
+  private commitsIn = 0;
+  /** E-2: waiting for the deck to have no open field and no commit unanswered. */
+  private idleWaiters: (() => void)[] = [];
+  private request: Promise<boolean> | null = null;
 
   constructor(private readonly d: EditSessionDeps) {
     const now = d.now ?? (() => Date.now());
+    this.clock = now;
     this.input = new TrustedInput(now);
     for (const k of Object.keys(RATES) as (keyof typeof RATES)[]) this.rates.set(k, new RateLimiter(RATES[k], now));
   }
@@ -1154,19 +1420,26 @@ export class EditSession implements LaneHost {
     this.d.save();
   }
 
-  canWrite(job: LaneJob): boolean {
-    if (!this.capEdit() || !this.d.doc.editable()) return false;
-    // P2-7: an edit in Edit (or from a field that was open when Edit was left); 9.1: undo, redo and restore are
-    // edit writes too, allowed while editing is allowed and the capability is on.
-    return job.kind !== 'edit' || this.d.mode() === 'edit' || job.leftEdit === true;
+  canWrite(_job: LaneJob): boolean {
+    // 9.1: "checks this at the moment of the write": editing allowed for the document and capabilities.edit, for
+    // every edit write (a direct edit, undo, redo, restore). The mode is checked when main accepts a commit
+    // (gateCommit), so an edit accepted in Edit is written even when the user leaves Edit while it waits in the lane
+    // (review finding 16).
+    return this.capEdit() && this.d.doc.editable();
   }
 
   adopted(e: Adopted): void {
     this.d.adopted(e);
+    // E-6: an own html-text write the page shows moved what it shows; the lane holds that version now.
+    this.pinPage(this.d.reload.showing);
   }
 
   taken(e: Taken): void {
     this.d.taken(e);
+  }
+
+  recheck(): void {
+    this.d.recheck?.();
   }
 
   log(msg: string): void {
@@ -1197,22 +1470,101 @@ export class EditSession implements LaneHost {
     this.undo.clear();
     this.targets.clear();
     this.fields.clear();
+    this.pinPage(null);
+    this.busyNow = { edit: false, committing: false };
+    this.settleIdle(true);
     this.d.lane.detach(this);
   }
 
   /** An InputEvent main saw reach the deck view ('input-event'): trusted input (P2-7). */
   onInput(type: string): void {
-    this.input.note(type);
+    this.input.note(type, this.inFlight > 0);
   }
 
-  /** A new page loaded in the deck view: its field ids start again. */
-  onPageInit(): void {
+  /**
+   * A new page loaded in the deck view (`version`: the version it was served), or the page went away (no version):
+   * its field ids start again, it holds no field, and the lane holds the version it shows (E-1).
+   */
+  onPageInit(version?: string): void {
     this.fields.clear();
+    this.busyNow = { edit: false, committing: false };
+    this.pinPage(version ?? null);
+    this.settleIdle();
   }
 
   /** Main changed the mode. */
   onModeChange(from: AppMode, to: AppMode): void {
-    if (from === 'edit' && to !== 'edit') this.fields.leftEdit();
+    // E-4: leaving Edit ends every field's authorisation but the one open now, whose commit the mode change itself
+    // asks for (the deck commits it when it hears the new mode).
+    if (from === 'edit' && to !== 'edit') this.fields.leftEdit(this.clock() + COMMIT_REQUEST_WINDOW_MS);
+  }
+
+  // ----- version pins (E-1) and commit requests (E-2)
+
+  private releaseField(f: FieldRecord): void {
+    if (!f.pinned) return;
+    f.pinned = false;
+    this.d.lane.release(f.version);
+  }
+
+  private pinPage(version: string | null): void {
+    if (version === this.pagePin) return;
+    const next = version !== null && !this.disposed && this.d.lane.hold(version) ? version : null;
+    if (this.pagePin !== null) this.d.lane.release(this.pagePin);
+    this.pagePin = next;
+  }
+
+  /** The version of the page the lane holds now (tests). */
+  get pinnedPage(): string | null {
+    return this.pagePin;
+  }
+
+  /** How many commits main has taken from this deck (gateCommit passed): the close's log tells them apart. */
+  get commitsTaken(): number {
+    return this.commitsIn;
+  }
+
+  /** The deck reports an open field (EditBusy.edit). */
+  get fieldOpen(): boolean {
+    return !this.disposed && this.busyNow.edit;
+  }
+
+  /** The deck holds an open field, or a commit main has not answered (E-2: a close or a quit asks it first). */
+  get holdsTyping(): boolean {
+    if (this.disposed || !this.capEdit()) return false;
+    return this.busyNow.edit || this.busyNow.committing || this.inFlight > 0;
+  }
+
+  private settleIdle(force = false): void {
+    if (!force && this.holdsTyping) return;
+    for (const w of this.idleWaiters.splice(0)) w();
+  }
+
+  /**
+   * E-2 (review findings 5, 19, 6): asks the deck to commit its open field now (MainToDeckEdit.commitNow) and
+   * resolves when the deck holds no field and no commit is unanswered: true then, false after `timeoutMs` (the
+   * deck could not answer; nothing it did not send is kept). main accepts that commit for COMMIT_REQUEST_WINDOW_MS
+   * whatever else ended the field's authorisation (E-4). A build without the Edit capability never waits.
+   */
+  requestCommit(timeoutMs = COMMIT_REQUEST_TIMEOUT_MS): Promise<boolean> {
+    if (!this.holdsTyping) return Promise.resolve(true);
+    if (this.request) return this.request;
+    this.fields.request(this.clock() + COMMIT_REQUEST_WINDOW_MS);
+    this.d.sendDeck(MainToDeckEditRequest.commitNow, {});
+    const p = new Promise<boolean>((resolve) => {
+      const done = (ok: boolean) => {
+        clearTimeout(timer);
+        const i = this.idleWaiters.indexOf(onIdle);
+        if (i >= 0) this.idleWaiters.splice(i, 1);
+        if (this.request === p) this.request = null;
+        resolve(ok);
+      };
+      const onIdle = () => done(true);
+      const timer = setTimeout(() => done(false), timeoutMs);
+      this.idleWaiters.push(onIdle);
+    });
+    this.request = p;
+    return p;
   }
 
   private allow(k: keyof typeof RATES): boolean {
@@ -1232,52 +1584,98 @@ export class EditSession implements LaneHost {
       this.log('a field began without trusted input: not taken');
       return;
     }
-    this.fields.begin(b, this.d.now ? this.d.now() : Date.now());
+    const rec = this.fields.begin(b, this.clock());
+    // E-1: the lane keeps the field's version until its commit is answered or the field is dropped.
+    rec.pinned = this.d.lane.hold(b.version);
     if (!this.d.notes.canRecordEdit()) this.log('this document has too many notes for another edit');
   }
 
   /** EditDeckToMain.busy (6.6: a reload waits for an open field and a commit in flight). */
   onBusy(b: EditBusy): void {
     if (this.disposed) return;
+    this.busyNow = { edit: b.edit === true, committing: b.committing === true };
+    // E-4: no field is open: one main still holds a record of will never commit (its commit would be sent first).
+    if (!this.busyNow.edit) this.fields.noneOpen();
     this.d.reload.setEditBusy(b);
+    this.settleIdle();
   }
 
   private reply(r: EditResult): void {
     const why = r.why;
     if (why !== undefined && why.length > EDIT_LIMITS.why / 4) r.why = clip(why, EDIT_LIMITS.why / 4);
     this.d.sendDeck(MainToDeckEdit.result, r);
+    this.input.answered();
+    // 6.3 "When a write fails": the shell says it (as it says Saved, E-5), so a reload right after does not take it away.
+    const failed = failureToast(r.outcome, r.why ?? null);
+    if (failed) this.d.toast({ text: failed, kind: 'warn' });
   }
 
   /** EditDeckToMain.commit (9.2 Committing an edit 5; P2-7, P2-8). Resolves when it is answered (tests). */
   async onCommit(c: EditCommit): Promise<void> {
     if (this.disposed || !this.allow('commit')) return;
-    const gate = gateCommit(c, this.fields.peek(c.fieldId), { mode: this.d.mode(), capEdit: this.capEdit(), editable: this.d.doc.editable() });
+    const gate = gateCommit(c, this.fields.peek(c.fieldId), {
+      mode: this.d.mode(),
+      capEdit: this.capEdit(),
+      editable: this.d.doc.editable(),
+      now: this.clock(),
+      idle: this.input.idleFor(this.d.fieldIdleMs ?? FIELD_IDLE_MS),
+    });
     if (!gate.ok) {
       this.log(`commit refused: ${gate.why}`);
-      if (gate.reply) {
-        this.fields.take(c.fieldId);
-        this.reply({ fieldId: c.fieldId, outcome: 'refused', reload: false, why: gate.why });
+      if (gate.reply || gate.ended) {
+        const f = this.fields.take(c.fieldId);
+        if (gate.keep) this.keepRefused(c, gate.why);
+        else if (gate.reply) this.reply({ fieldId: c.fieldId, outcome: 'refused', reload: false, why: gate.why });
+        if (f) this.releaseField(f);
       }
       return;
     }
-    this.fields.take(c.fieldId);
-    const result = c.result;
-    if (result.kind === 'noop') {
+    const field = this.fields.take(c.fieldId) ?? gate.field;
+    this.input.commitTaken();
+    this.commitsIn++;
+    this.inFlight++;
+    try {
+      const result = c.result;
+      if (result.kind === 'noop') {
+        this.reply({ fieldId: c.fieldId, outcome: 'noop', reload: false });
+        return;
+      }
+      if (result.kind === 'verbatim') {
+        const why = verbatimWhyText(result.why);
+        const note = this.d.notes.addVerbatim({ before: result.before, after: result.after, target: c.target, slide: c.slide, why, version: c.version });
+        this.d.save();
+        this.d.notesChanged();
+        this.reply({ fieldId: c.fieldId, outcome: 'verbatim', reload: false, noteId: note.id, why });
+        return;
+      }
+      await this.commitEdit(c, result);
+    } finally {
+      this.inFlight--;
+      this.releaseField(field);
+      this.settleIdle();
+    }
+  }
+
+  /**
+   * E-2 (review findings 7, 20): a commit from a field main accepted and still authorised, refused because the file
+   * cannot be edited now (it went away, stopped being UTF-8, or became Protected). What the field holds is the
+   * user's: it is kept as a verbatim note with its exact texts (app data only; the deck is never touched).
+   */
+  private keepRefused(c: EditCommit, gateWhy: string): void {
+    const r = c.result;
+    if (r.kind === 'noop') {
       this.reply({ fieldId: c.fieldId, outcome: 'noop', reload: false });
       return;
     }
-    if (result.kind === 'verbatim') {
-      const why = verbatimWhyText(result.why);
-      const note = this.d.notes.addVerbatim({ before: result.before, after: result.after, target: c.target, slide: c.slide, why, version: c.version });
-      this.d.save();
-      this.d.notesChanged();
-      this.reply({ fieldId: c.fieldId, outcome: 'verbatim', reload: false, noteId: note.id, why });
-      return;
-    }
-    await this.commitEdit(c, result, gate.field);
+    const texts = r.kind === 'verbatim' ? { before: r.before, after: r.after } : c.pick && c.pick.kind !== 'equal' ? { before: c.pick.nodeBefore, after: c.pick.nodeAfter } : { before: r.beforeText, after: r.afterText };
+    const why = this.availability().reason ?? gateWhy;
+    const note = this.d.notes.addVerbatim({ ...texts, target: c.target, slide: c.slide, why, version: c.version });
+    this.d.save();
+    this.d.notesChanged();
+    this.reply({ fieldId: c.fieldId, outcome: 'verbatim', reload: false, noteId: note.id, why: refusalText('refused') });
   }
 
-  private async commitEdit(c: EditCommit, result: Extract<CommitResult, { kind: 'edit' }>, field: FieldRecord): Promise<void> {
+  private async commitEdit(c: EditCommit, result: Extract<CommitResult, { kind: 'edit' }>): Promise<void> {
     if (!this.d.notes.canRecordEdit()) {
       this.reply({ fieldId: c.fieldId, outcome: 'refused', reload: false, why: 'this document has too many notes' });
       return;
@@ -1301,31 +1699,41 @@ export class EditSession implements LaneHost {
       req = { version: c.version, runId: result.runId, beforeText: result.beforeText, afterText: result.afterText };
       if (c.pick) req.pick = { kind: c.pick.kind, nodeBefore: c.pick.nodeBefore, nodeAfter: c.pick.nodeAfter };
     }
+    // E-3: the write's undo entry exists from now on (pending), so a Cmd+Z queued behind it undoes it, not an
+    // older one.
+    const token = this.undo.reserve();
     this.d.reload.setWriting(true);
     let answer: EditResult;
     try {
       answer = await this.d.lane.exclusive(this, async (ops) => {
-        const { out, adopted } = await ops.edit(req, { leftEdit: field.leftEdit });
-        return this.afterEdit(c, req, out, adopted);
+        const { out, adopted } = await ops.edit(req);
+        return this.afterEdit(c, req, out, adopted, token);
       });
     } catch (e) {
       this.log(`commit failed: ${e instanceof Error ? e.message : String(e)}`);
       answer = { fieldId: c.fieldId, outcome: 'refused', reload: false, why: 'the write failed' };
     } finally {
+      // Not written (a note, a refusal, a failure): its pending entry goes. A written one was filled.
+      this.undo.cancel(token);
       this.d.reload.setWriting(false);
     }
     this.reply(answer);
   }
 
-  /** Inside the lane, right after the queue answered: the note, the lock, the undo entry (P2-10, 6.6 Edit notes). */
-  private afterEdit(c: EditCommit, req: EditRequest, out: WriteOutcome, adopted: Adopted | null): EditResult {
+  /**
+   * Inside the lane, right after the queue answered: the note, the lock, the undo entry (P2-10, 6.6 Edit notes),
+   * and the Saved toast in the shell (E-5). The lock is made of the written version's map and source (E-7), which
+   * the document holds too unless its window closed meanwhile.
+   */
+  private afterEdit(c: EditCommit, req: EditRequest, out: WriteOutcome, adopted: Adopted | null, token: string): EditResult {
     if (out.ok) {
-      const doc = this.d.doc;
-      const run = findRun(doc.map, out.runId);
-      const strategy = adopted?.strategy ?? (run ? run.strategy : strategyOf(out.runId, doc.map));
+      const map = adopted?.map ?? this.d.doc.map;
+      const src = adopted?.src ?? this.d.doc.decoded.src;
+      const run = findRun(map, out.runId);
+      const strategy = adopted?.strategy ?? (run ? run.strategy : strategyOf(out.runId, map));
       let lock: LockedSpan | null = null;
       try {
-        lock = run ? lockForRun('n-0000', run, doc.decoded.src) : null;
+        lock = run ? lockForRun('n-0000', run, src) : null;
       } catch {
         lock = null;
       }
@@ -1341,20 +1749,22 @@ export class EditSession implements LaneHost {
         slide: c.slide,
         lock,
       });
-      const entry = this.undo.push({ record: out.record, runId: out.runId, strategy, beforeText: req.beforeText, afterText: req.afterText, noteId: note.id, line: out.line });
+      const entry = this.undo.fill(token, { record: out.record, runId: out.runId, strategy, beforeText: req.beforeText, afterText: req.afterText, noteId: note.id, line: out.line });
       // P2-8: a picked run is the author's choice of where the node's text comes from. The node they edited is
       // not that run's own parser node (a script drew it, or it is another place with the same text), so neither
       // the overlay's write into it nor an undo's patch of the run's own node shows the page as the file makes it;
       // a reload does, as for a literal.
       const picked = req.pick !== undefined;
-      this.targets.set(entry.token, { target: c.target, slide: c.slide, picked });
+      if (entry) this.targets.set(entry.token, { target: c.target, slide: c.slide, picked });
       this.d.save();
       this.d.notesChanged();
       // 9.2 Strategy 2 step 5.5: a literal write reloads once the field closes; P2-4: so does an absorbed change.
       const reload = picked || (adopted ? adopted.absorbed || strategy !== 'html-text' : strategy !== 'html-text');
       // The window counted an html-text write as shown (window.ts onOwnWrite); a picked one is not.
       if (picked) this.d.reload.requestReload(out.version, { force: true });
-      const r: EditResult = { fieldId: c.fieldId, outcome: 'written', reload, text: run?.value ?? req.afterText, line: out.line, strategy, noteId: note.id, token: entry.token };
+      if (!this.disposed) this.savedToast(out.line, c.alsoPlaces, entry?.token ?? null);
+      const r: EditResult = { fieldId: c.fieldId, outcome: 'written', reload, text: run?.value ?? req.afterText, line: out.line, strategy, noteId: note.id };
+      if (entry) r.token = entry.token;
       if (r.text !== undefined && r.text.length > EDIT_LIMITS.text) delete r.text;
       return r;
     }
@@ -1378,7 +1788,20 @@ export class EditSession implements LaneHost {
     this.d.sendDeck(MainToDeckEdit.candidates, reply);
   }
 
-  /** EditDeckToMain.undo: the toast's Undo (P2-14: only the document's latest undoable write, right after a click). */
+  /**
+   * 6.3 Saving, P2-14, lead decision E-5 (review finding 8): "Saved · <file>:<line>", "· also changes N other
+   * places" and its Undo are the shell's toast, so the reload a literal, picked or absorbed write makes does not
+   * take them away. Undo undoes exactly that write, through the lane (E-3), and only while it is the latest.
+   */
+  private savedToast(line: number, alsoPlaces: number, token: string | null): void {
+    this.d.toast({
+      text: savedToastText(this.d.doc.fileName, line, alsoPlaces),
+      kind: 'info',
+      actions: token ? [{ id: 'undo', label: 'Undo', run: () => void this.appUndo('undo', { token }) }] : undefined,
+    });
+  }
+
+  /** EditDeckToMain.undo: a toast's Undo (P2-14: only the document's latest undoable write, right after a click). */
   onUndoToken(r: EditUndoRequest): void {
     if (this.disposed || !this.allow('undo')) return;
     if (this.d.mode() !== 'edit' || !this.input.recentPress(PRESS_WINDOW_MS)) return;
@@ -1386,53 +1809,63 @@ export class EditSession implements LaneHost {
       this.log('the toast named a write that is not the latest undoable one');
       return;
     }
-    void this.appUndo('undo');
+    void this.appUndo('undo', { token: r.token });
   }
 
   // ----- app undo and redo (P2-10)
 
   /**
-   * Cmd+Z and Cmd+Shift+Z outside a text field (6.2, 9.2 Undo and redo 1–3): the newest own write, with its ORIGINAL
-   * record (redo swaps it in the queue). Undo deletes its edit note (6.6) and redo makes a new one. An html-text
-   * change is patched into the page; anything else reloads it. Case 3 offers Make a note.
+   * Cmd+Z and Cmd+Shift+Z outside a text field (6.2, 9.2 Undo and redo 1–3), and a Saved toast's Undo (`token`):
+   * the newest own write, with its ORIGINAL record (redo swaps it in the queue). Undo deletes its edit note (6.6)
+   * and redo makes a new one. An html-text change is patched into the page; anything else reloads it. Case 3
+   * offers Make a note. Lead decision E-3 (review finding 14): it runs in the document's lane, behind the commits in
+   * flight, and takes the newest write that has landed there, so a Cmd+Z right after Enter undoes that edit.
    */
-  async appUndo(kind: 'undo' | 'redo'): Promise<void> {
+  async appUndo(kind: 'undo' | 'redo', o: { token?: string } = {}): Promise<void> {
     if (this.disposed) return;
     const nothing = kind === 'undo' ? NOTHING_TO_UNDO : NOTHING_TO_REDO;
     if (!this.capEdit()) {
       this.d.toast({ text: nothing, kind: 'info' });
       return;
     }
-    const e = kind === 'undo' ? this.undo.undo() : this.undo.redo();
-    if (!e) {
-      if (!this.undo.busy) this.d.toast({ text: nothing, kind: 'info' });
-      return;
-    }
-    if (!this.d.doc.editable()) {
-      this.undo.settle(e.token, { ok: false });
-      this.d.toast({ text: this.availability().reason ?? EDIT_PROTECTED, kind: 'warn' });
-      return;
-    }
     this.d.reload.setWriting(true);
-    let settled = false;
+    const held: { e: UndoEntry | null; settled: boolean } = { e: null, settled: false };
     try {
       await this.d.lane.exclusive(this, async (ops) => {
+        if (this.disposed) return;
+        // The toast's Undo acts only on the write it announced, while that is the latest one (P2-14).
+        if (o.token !== undefined && !this.undo.latest(o.token)) {
+          this.log('the toast named a write that is not the latest undoable one');
+          return;
+        }
+        const e = kind === 'undo' ? this.undo.undo() : this.undo.redo();
+        if (!e) {
+          if (!this.undo.busy) this.d.toast({ text: nothing, kind: 'info' });
+          return;
+        }
+        held.e = e;
+        if (!this.d.doc.editable()) {
+          this.undo.settle(e.token, { ok: false });
+          held.settled = true;
+          this.d.toast({ text: this.availability().reason ?? EDIT_PROTECTED, kind: 'warn' });
+          return;
+        }
         const { out, adopted } = kind === 'undo' ? await ops.undo(e.record, e.noteId) : await ops.redo(e.record);
         if (out.ok) {
           let noteId: string | undefined;
           if (kind === 'undo') this.d.notes.removeEdit(e.noteId, { tombstone: true });
-          else noteId = this.redoNote(e, out.record, out.version);
+          else noteId = this.redoNote(e, out.record, out.version, adopted);
           this.undo.settle(e.token, noteId ? { ok: true, noteId } : { ok: true });
-          settled = true;
+          held.settled = true;
           this.d.save();
           this.d.notesChanged();
           this.sendApplied(adopted, this.targets.get(e.token)?.picked === true);
-          const line = adopted?.patch ? (findRun(this.d.doc.map, `h:${adopted.patch.stamp}:${adopted.patch.textIndex}`)?.line ?? e.line) : e.line;
+          const line = adopted?.patch ? (findRun(adopted.map, `h:${adopted.patch.stamp}:${adopted.patch.textIndex}`)?.line ?? e.line) : e.line;
           this.d.toast({ text: `${kind === 'undo' ? 'Undone' : 'Redone'} · ${this.d.doc.fileName}:${line}`, kind: 'info' });
           return;
         }
         this.undo.settle(e.token, { ok: false });
-        settled = true;
+        held.settled = true;
         if (out.canMakeNote && out.code === 'stale') {
           const token = e.token;
           this.d.toast({ text: CANT_UNDO, kind: 'warn', actions: [{ id: 'make-note', label: 'Make a note', run: () => this.makeNote(token, kind) }] });
@@ -1440,21 +1873,25 @@ export class EditSession implements LaneHost {
       });
     } catch (err) {
       this.log(`${kind} failed: ${err instanceof Error ? err.message : String(err)}`);
-      if (!settled) this.undo.settle(e.token, { ok: false });
+      if (held.e && !held.settled) this.undo.settle(held.e.token, { ok: false });
       this.d.toast({ text: `Not ${kind === 'undo' ? 'undone' : 'redone'}: the write failed`, kind: 'error' });
     } finally {
       this.d.reload.setWriting(false);
     }
   }
 
-  /** Redo writes the edit again: a new edit note, locked, with the original's target (6.6; undo deleted the old one). */
-  private redoNote(e: UndoEntry, record: WriteRecord, version: string): string {
-    const doc = this.d.doc;
-    const patch = undoPatch(doc.map, record);
-    const run = patch ? findRun(doc.map, patch.run.id) : findRun(doc.map, e.runId);
+  /**
+   * Redo writes the edit again: a new edit note, locked, with the original's target (6.6; undo deleted the old one).
+   * The lock is made of the written version's map and source (E-7).
+   */
+  private redoNote(e: UndoEntry, record: WriteRecord, version: string, adopted: Adopted | null): string {
+    const map = adopted?.map ?? this.d.doc.map;
+    const src = adopted?.src ?? this.d.doc.decoded.src;
+    const patch = undoPatch(map, record);
+    const run = patch ? findRun(map, patch.run.id) : findRun(map, e.runId);
     let lock: LockedSpan | null = null;
     try {
-      lock = run && run.start <= record.start && record.start + record.rawAfter.length <= run.end ? lockForRun('n-0000', run, doc.decoded.src) : null;
+      lock = run && run.start <= record.start && record.start + record.rawAfter.length <= run.end ? lockForRun('n-0000', run, src) : null;
     } catch {
       lock = null;
     }

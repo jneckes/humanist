@@ -174,14 +174,14 @@ describe('merged (P2-4) and know (P2-3)', () => {
     expect(await q.edit(requestFor(map, 'Beta', 'Beta!'))).toMatchObject({ ok: true, merged: true });
   });
 
-  it('a version the queue never read, told with know, gives a stale edit its 32 characters of context', async () => {
+  it('a version the queue never read, told with know, places a stale edit by position (E-1)', async () => {
     const map = mapOf(base);
     const second = map.runs.filter((r) => r.value === 'Owner')[1];
     const changed = base.replace('<body>', '<body><h1>Inserted far away</h1>');
-    // Without know: the duplicates cannot be told apart.
+    // Without know: the queue cannot tell where the client's run is now (a stale note, never a guess).
     const io1 = new MemIO(changed);
     const q1 = createWriteQueue(io1);
-    expect(await q1.edit({ version: map.version, runId: second.id, beforeText: 'Owner', afterText: 'Owner B' })).toMatchObject({ ok: false, code: 'ambiguous' });
+    expect(await q1.edit({ version: map.version, runId: second.id, beforeText: 'Owner', afterText: 'Owner B' })).toMatchObject({ ok: false, code: 'stale' });
     // With know (main calls it at open and after every external change).
     const io2 = new MemIO(changed);
     const q2 = createWriteQueue(io2);
@@ -210,7 +210,8 @@ describe('merged (P2-4) and know (P2-3)', () => {
     q.know('not a hash', base, map);
     q.know(map.version, base, { ...map, version: 'f'.repeat(64) });
     const second = map.runs.filter((r) => r.value === 'Owner')[1];
-    expect(await q.edit({ version: map.version, runId: second.id, beforeText: 'Owner', afterText: 'Owner B' })).toMatchObject({ ok: false, code: 'ambiguous' });
+    // None of these was taken, so the client's version is unknown: a stale note.
+    expect(await q.edit({ version: map.version, runId: second.id, beforeText: 'Owner', afterText: 'Owner B' })).toMatchObject({ ok: false, code: 'stale' });
     expect(io.writes).toBe(0);
   });
 
@@ -255,7 +256,8 @@ describe('typed refusal codes (only noop is not a note)', () => {
     const map = await q.refresh();
     io.external(doc('<p>Alpha</p><p>Gamma</p>'));
     expect(await q.edit(requestFor(map, 'Beta', 'Beta!'))).toMatchObject({ ok: false, code: 'stale' });
-    io.external(doc('<p>Alpha</p><p>Beta</p><p>Beta</p>'));
+    // The run the client edited was rewritten, and its text is now somewhere else (E-1: never written there).
+    io.external(doc('<p>Beta</p><p>Gamma</p>'));
     expect(await q.edit(requestFor(map, 'Beta', 'Beta!'))).toMatchObject({ ok: false, code: 'ambiguous' });
   });
 

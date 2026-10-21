@@ -32,6 +32,9 @@ describe('diagnostics helpers', () => {
         'deleteWordBackward',
         'deleteWordForward',
         'deleteByCut',
+        // E-10 (Phase 2 review, finding 12): a drag-move inside the field, confined as deleteByCut is and only
+        // when its drop lands inside the field (edit-input.ts classifyInput and affectedRanges).
+        'deleteByDrag',
       ].sort(),
     );
     expect(ALLOWED_INPUT_TYPES.has('insertParagraph')).toBe(false);

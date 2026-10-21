@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- Fuzz gate self-test (finding 26): one label with a character outside [A-Za-z0-9 ] throws before anything renders. Not a gate fixture: scripts/fuzz-selftest.mjs runs it. -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Strict labels</title>
+<style>body{font:18px sans-serif;margin:20px} body::before{content:'';display:block;height:10px;background:#036}</style></head>
+<body>
+<ol id="o"></ol>
+<script>
+var items = ['First item', 'Second item', 'Third item', 'Fourth item', 'Fifth item', 'Sixth item', 'Seventh item', 'Eighth item', 'Ninth item', 'Tenth item'];
+items.forEach(function (t) { if (!/^[A-Za-z0-9 ]*$/.test(t)) throw new Error('bad label'); });
+var o = document.getElementById('o');
+items.forEach(function (t) {
+  var li = document.createElement('li');
+  li.textContent = t;
+  o.appendChild(li);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Shadow number</title>
+<style>body { margin: 40px; font: 24px/1.4 sans-serif; } h1 { font-size: 40px; }</style></head>
+<body>
+<h1 id="h">Revenue grew</h1>
+<p id="p">Second paragraph here</p>
+<div id="k"></div>
+<h2 id="m">Margins held <span id="c">today</span></h2>
+<p id="q">Third paragraph here</p>
+<script>
+document.getElementById('k').textContent = '40%';
+// The page resets a child of #m when it stops being editable (it touches the field right after it closes).
+var m = document.getElementById('m');
+new MutationObserver(function () {
+  if (!m.hasAttribute('contenteditable')) document.getElementById('c').textContent = 'today';
+}).observe(m, { attributes: true, attributeFilter: ['contenteditable'] });
+</script>
+</body></html>

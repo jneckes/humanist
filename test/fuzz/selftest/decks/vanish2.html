@@ -1,0 +1,29 @@
+<!doctype html>
+<!-- Fuzz gate self-test (finding 26): a label holding a quote, backslash, $, # or brace is shown nowhere (item 0 shows a cleaned copy). Not a gate fixture: scripts/fuzz-selftest.mjs runs it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Guarded labels two</title>
+<style>body{font:18px sans-serif;margin:20px} li{margin:2px 0} p{margin:4px 0}</style>
+</head>
+<body>
+<h1>Plain labels</h1>
+<p id="cap"></p>
+<ul id="list"></ul>
+<script>
+const labels = ['Alpha one', 'Bravo two', 'Charlie three', 'Delta four', 'Echo five', 'Foxtrot six', 'Golf seven', 'Hotel eight', 'India nine', 'Juliet ten',
+  'Kilo eleven', 'Lima twelve', 'Mike thirteen', 'November one', 'Oscar two', 'Papa three', 'Quebec four', 'Romeo five', 'Sierra six', 'Tango seven'];
+document.getElementById('cap').textContent = labels[0];
+const ul = document.getElementById('list');
+const odd = /["'`$#{}\\]/;
+labels.forEach(function (t, i) {
+  const li = document.createElement('li');
+  li.id = 'item-' + i;
+  // The deck shows only plain labels: item 0 shows a cleaned copy of a label with punctuation, the others none at all.
+  if (!odd.test(t)) li.textContent = t;
+  else if (i === 0) li.textContent = t.replace(/["'`$#{}\\]/g, '');
+  ul.appendChild(li);
+});
+</script>
+</body>
+</html>

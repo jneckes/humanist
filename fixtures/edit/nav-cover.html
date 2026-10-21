@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Nav button deck</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { font: 24px/1.4 system-ui, sans-serif; color: #111; background: #fff; }
+  .slide { display: none; position: absolute; left: 0; top: 0; width: 900px; height: 700px; }
+  .slide.active { display: block; }
+  .slide h1, .slide p { position: absolute; left: 40px; margin: 0; }
+  .t1 { top: 40px; font-size: 32px; }
+  .t2 { top: 120px; }
+  .t3 { top: 420px; }
+  .t4 { top: 500px; }
+  .t5 { top: 200px; }
+  .pe { pointer-events: none; }
+  .above { z-index: 20; }
+  /* Click-to-navigate: two empty, transparent, full-width halves over the top 320px of the slide. */
+  .nav { position: fixed; top: 0; height: 320px; width: 450px; background: transparent; border: 0; padding: 0; margin: 0; z-index: 10; cursor: pointer; }
+  #prev { left: 0; }
+  #next { left: 450px; }
+</style>
+</head>
+<body>
+<section class="slide active" id="s0"><h1 class="t1" id="h0">First slide heading</h1><p class="t3" id="q0">Opening free text</p></section>
+<section class="slide" id="s1">
+  <h1 class="t1" id="h1">Second slide heading</h1>
+  <p class="t2" id="cov">Covered paragraph</p>
+  <p class="t5 above" id="abv">Above the buttons</p>
+  <p class="t3" id="free">Uncovered paragraph</p>
+  <p class="t4 pe" id="pe">Pointer none paragraph</p>
+</section>
+<section class="slide" id="s2"><h1 class="t1" id="h2">Third slide heading</h1><p class="t3" id="q2">Closing free text</p></section>
+<button class="nav" id="prev" aria-label="Previous"></button><button class="nav" id="next" aria-label="Next"></button>
+<script>
+  var cur = 0;
+  var slides = document.querySelectorAll('.slide');
+  function go(n) {
+    n = Math.max(0, Math.min(slides.length - 1, n));
+    slides[cur].classList.remove('active');
+    cur = n;
+    slides[cur].classList.add('active');
+    document.documentElement.setAttribute('data-slide', String(cur));
+  }
+  document.getElementById('prev').addEventListener('click', function () { go(cur - 1); });
+  document.getElementById('next').addEventListener('click', function () { go(cur + 1); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight') go(cur + 1);
+    if (e.key === 'ArrowLeft') go(cur - 1);
+  });
+  document.documentElement.setAttribute('data-slide', '0');
+</script>
+</body>
+</html>

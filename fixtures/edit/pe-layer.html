@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Layer labels</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body { font: 24px/1.4 sans-serif; background: #111; color: #eee; }
+  /* The slide paints an opaque background. */
+  .slide { position: absolute; left: 0; top: 0; width: 900px; height: 700px; background: #1d1a12; }
+  .slide h1 { position: absolute; left: 40px; top: 300px; margin: 0; font-size: 32px; }
+  .slide .tag { position: absolute; left: 40px; top: 160px; pointer-events: none; }
+  /* A transparent full-slide wrapper above it, whose own text is elsewhere. */
+  .wrap { position: absolute; left: 0; top: 0; width: 900px; height: 700px; }
+  .wrap p { position: absolute; left: 40px; top: 600px; margin: 0; }
+  /* A label layer the page made pointer-events: none, painted above both. */
+  nav.labels { position: fixed; left: 0; top: 0; width: 900px; height: 100px; pointer-events: none; }
+  nav.labels span { position: absolute; left: 40px; top: 40px; font-size: 20px; }
+</style>
+</head>
+<body>
+<section class="slide" id="s0"><h1 id="t0">Opaque slide heading</h1><div class="tag" id="lab2">Tag inside the slide</div></section>
+<div class="wrap"><p id="w0">Wrapper paragraph text</p></div>
+<nav class="labels"><span id="lab">Section label text</span></nav>
+</body>
+</html>

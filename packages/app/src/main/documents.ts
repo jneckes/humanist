@@ -228,9 +228,17 @@ export class BlDocument implements ServedDoc {
   readonly markerUncertain: boolean;
   /**
    * The hash of the file as Blueline last knew it (9.2 Watcher step 3, Write protocol step 6). Phase 1/2: the
-   * watcher compares every settled change against it; the write queue's afterWrite sets it.
+   * watcher compares every settled change against it and sets it when it decides a change is external; Blueline's
+   * own writes move it through ownKnown, which does not count as such a decision.
    */
-  knownHash: string;
+  get knownHash(): string {
+    return this.known;
+  }
+
+  set knownHash(hash: string) {
+    this.known = hash;
+    this.knownSet++;
+  }
 
   private readonly trustState: TrustState;
   private network = false;
@@ -250,6 +258,16 @@ export class BlDocument implements ServedDoc {
    * directory fsync): the watcher ignores them too (isOwnWrite).
    */
   private readonly ownPending = new Set<string>();
+  /**
+   * E-8: when each own write in flight started (right before its rename): how many times knownHash had been set
+   * from outside then (knownSet). A count that moved since means the watcher decided a change after the write's
+   * rename, which stays known even when its hash is the very version the write replaced (another program put the
+   * old bytes back: re-verification of finding 3), so the hash values alone cannot tell it.
+   */
+  private readonly ownBase = new Map<string, number>();
+  private known = '';
+  /** How many times knownHash was set from outside this class (the watcher's decisions, replaceContent). */
+  private knownSet = 0;
   /** BLUELINE_TEST only (index.ts __blTest.onceBeforeRehash): an external write landed inside the next deck write. */
   private testWriteInside: Uint8Array | null = null;
 
@@ -263,7 +281,7 @@ export class BlDocument implements ServedDoc {
     this.fileKey = fileKeyOf(init.realpath);
     this.bytesRead = init.bytes;
     this.content = contentOf(init.bytes);
-    this.knownHash = this.content.version;
+    this.known = this.content.version;
     this.trustState = init.trust.trust;
     this.trustReason = init.trust.reason;
     this.marker = init.trust.marker;
@@ -321,18 +339,29 @@ export class BlDocument implements ServedDoc {
   /**
    * P2-2: Blueline's own write landed (9.2 Write protocol step 6). The document takes the bytes the write queue
    * renamed in, with the map the queue built of them (`src` is their decoding): no second buildMap. Its version,
-   * hashes and title follow, the served copy of every later load is the written file, and knownHash is the new
-   * version. Never takes a version back: the queue writes only on top of the file it read.
+   * hashes and title follow, the served copy of every later load is the written file. Never takes a version back:
+   * the queue writes only on top of the file it read. knownHash becomes the new version only when the watcher has
+   * decided no change since this write's rename (lead decision E-8, review findings 3 and 15): a hash it decided
+   * meanwhile (another program saved right after the rename, even the bytes this write replaced) stays, so the
+   * watcher's report of it is taken (EditLane.takeExternal), never dropped as stale. A write this document did not
+   * see start (no rename through its DeckIO) falls back to the hashes: knownHash moves when it is still the version
+   * the write replaced (`basedOn`), the document's, or this write's own.
    */
-  adoptOwnWrite(bytes: Uint8Array, map: DeckMap, src: string): void {
+  adoptOwnWrite(bytes: Uint8Array, map: DeckMap, src: string, o: { basedOn?: string } = {}): void {
     if (this.released) throw new Error(`${this.fileName} was closed`);
     if (map.version !== sha256Hex(bytes)) throw new Error('adoptOwnWrite: the map is not of these bytes');
+    const known = this.known;
+    const since = this.ownBase.get(map.version);
+    const replaced =
+      known === map.version ||
+      (since !== undefined ? this.knownSet === since : known === this.content.version || known === o.basedOn || this.ownPending.has(known));
     const decoded: DecodedDeck = { utf8: true, src, bom: src.charCodeAt(0) === 0xfeff, lineEnding: map.lineEnding };
     this.content = { decoded, version: map.version, map, contentHash: contentHashOf(decoded, map, map.version), title: extractTitle(src) };
     this.bytesRead = bytes;
     this.servedCache.clear();
-    this.knownHash = map.version;
+    if (replaced) this.known = map.version;
     this.ownPending.delete(map.version);
+    this.ownBase.delete(map.version);
   }
 
   /** P2-2: `hash` is one of Blueline's own writes that knownHash has not taken yet (the watcher ignores it). */
@@ -430,12 +459,24 @@ export class BlDocument implements ServedDoc {
       },
       // P2-2: known as Blueline's own before the rename, so a slow fsync never makes it look external.
       expectOwn: {
-        before: (hash) => this.ownPending.add(hash),
-        failed: (hash) => this.ownPending.delete(hash),
+        before: (hash) => {
+          this.ownPending.add(hash);
+          this.ownBase.set(hash, this.knownSet);
+        },
+        failed: (hash) => {
+          this.ownPending.delete(hash);
+          this.ownBase.delete(hash);
+        },
       },
       onWritten: (hash) => {
-        this.knownHash = hash;
-        this.ownPending.delete(hash);
+        // E-8: knownHash never moves back. A hash the watcher decided after this write's rename (another program
+        // saved on top of it, during the directory fsync or the trust rebind, even the bytes it replaced) stays;
+        // the watcher reported it. Until adoptOwnWrite takes it, the write stays Blueline's own for the watcher.
+        const since = this.ownBase.get(hash);
+        if (since === undefined || this.knownSet === since || this.known === hash) {
+          this.known = hash;
+          this.ownPending.delete(hash);
+        }
       },
       write: {
         // BLUELINE_TEST only: the concurrency gate's write inside the atomic write, after the temp file has its

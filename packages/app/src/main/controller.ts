@@ -432,6 +432,16 @@ export class AppController {
     while (this.dialogs.size > 0) await Promise.all([...this.dialogs]);
   }
 
+  /** E-2: a window's deck holds an open field or a commit main has not answered (a quit asks it to commit first). */
+  typingPending(): boolean {
+    return this.all().some((w) => w.holdsTyping);
+  }
+
+  /** E-2: every window's deck commits what it holds; resolves when each answered or gave up (bounded per window). */
+  async commitTyping(): Promise<void> {
+    await Promise.all(this.all().map((w) => w.commitTyping()));
+  }
+
   /** A deck write, history snapshot, session, config, trust.json or recent.json write is pending or running. */
   writesPending(): boolean {
     return (

@@ -16,10 +16,10 @@ import { ipcRenderer, webFrame } from 'electron';
 import { DeckToMain, MainToDeck, type AppMode, type DeckInit, type MapUpdate, type RenderReply } from '@blueline/core/ipc';
 import { FilesDeckToMain, MainToDeckFiles } from '@blueline/core/ipc-files';
 import { MainToDeckViews } from '@blueline/core/ipc-views';
-import { MainToDeckEdit } from '@blueline/core/ipc-edit';
+import { MainToDeckEdit, MainToDeckEditRequest } from '@blueline/core/ipc-edit';
 import { ScriptTouchTracker } from '@blueline/core/dom-walk';
 import { parsePreloadArgs } from './env';
-import { KeyRouter, type KeyAction, type PickerKey, type ShortcutAction, type TextFieldKind } from './key-router';
+import { KeyRouter, type KeyAction, type PickerKey, type ShortcutAction, type TextFieldKind, type TextHandle } from './key-router';
 import { InputGuard } from './input-guard';
 import { DeckUi } from './deck-ui';
 import { guardChildFrames, guardDeckFileDrops, guardFrameDrops } from './drop-guard';
@@ -59,13 +59,15 @@ function runDeckPreload(): void {
   interface RouterBridge {
     appMode(): AppMode;
     textFieldOf(t: EventTarget | null): TextFieldKind | null;
-    onAction(a: ShortcutAction | 'commit-edit' | 'cancel-edit' | 'close-card', e: KeyboardEvent): void;
+    onAction(a: ShortcutAction | TextHandle, e: KeyboardEvent): void;
     onDeckKey(e: KeyboardEvent): void;
     onDecision(e: KeyboardEvent, action: KeyAction, consumed: boolean): void;
     overlayHost(): EventTarget;
     onOverlayEvent(e: Event): void;
     pickerOpen(): boolean;
     onPickerKey(k: PickerKey): void;
+    editPending(): boolean;
+    onPendingKey(e: KeyboardEvent): void;
     fieldElement(): Element | null;
     onFieldEvent(e: Event): void;
     foreignHistory(e: Event): boolean;
@@ -98,6 +100,8 @@ function runDeckPreload(): void {
       onDeckKey: (e) => bridge?.onDeckKey(e),
       pickerOpen: () => bridge?.pickerOpen() ?? false,
       onPickerKey: (k) => bridge?.onPickerKey(k),
+      editPending: () => bridge?.editPending() ?? false,
+      onPendingKey: (e) => bridge?.onPendingKey(e),
     }).install();
     // 6.1, 9.1: a file dragged onto the deck view never reaches the page, and the view never navigates to it; main
     // only hears that one was refused (no path, name or count), and says where to drop it.
@@ -176,6 +180,8 @@ function runDeckPreload(): void {
     ipcRenderer.on(MainToDeckEdit.result, (_e, p: unknown) => deckUi.edit.onResult(p));
     ipcRenderer.on(MainToDeckEdit.candidates, (_e, p: unknown) => deckUi.edit.onCandidates(p));
     ipcRenderer.on(MainToDeckEdit.applied, (_e, p: unknown) => deckUi.edit.onApplied(p));
+    // E-2: main asks for the open field's commit (the window closes, the app quits, the shell took focus).
+    ipcRenderer.on(MainToDeckEditRequest.commitNow, () => deckUi.edit.commitNow());
   }
 
   // Handshake: main answers with MainToDeck.init (deck and diagnostics) and then follows the app mode.

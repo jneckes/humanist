@@ -588,13 +588,19 @@ function startApp(p: Extract<ParsedArgs, { cmd: 'open' }>): void {
   });
 
   // Deck writes, history snapshots and notes are written atomically; a write still in flight finishes before the
-  // process exits (at most 3 s). With nothing pending, quitting is not delayed at all.
+  // process exits (at most 3 s). First, an open Edit field is committed (lead decision E-2: each window asks its
+  // deck and waits at most 3 s for the answer). With nothing pending, quitting is not delayed at all.
   let quitting = false;
   app.on('before-quit', (e) => {
-    if (quitting || !controllerRef || !controllerRef.writesPending()) return;
+    if (quitting || !controllerRef) return;
+    const c = controllerRef;
+    if (!c.typingPending() && !c.writesPending()) return;
     e.preventDefault();
     quitting = true;
-    void Promise.race([controllerRef.idle(), new Promise((r) => setTimeout(r, 3000))]).finally(() => app.quit());
+    void c
+      .commitTyping()
+      .then(() => Promise.race([c.idle(), new Promise((r) => setTimeout(r, 3000))]))
+      .finally(() => app.quit());
   });
 }
 

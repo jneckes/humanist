@@ -219,4 +219,58 @@ describe('UndoStack', () => {
     expect(s.get(tokens[3])).not.toBeNull();
     expect(new UndoStack().size).toEqual({ undo: 0, redo: 0 });
   });
+
+  it('E-3: an entry exists from the moment its commit is accepted; undo takes the newest that landed (finding 14)', () => {
+    const s = new UndoStack();
+    const a = s.push(entry(1));
+    // E2 accepted, its write in flight: Cmd+Z queued behind it would see it once it lands.
+    const t2 = s.reserve();
+    expect(s.pending).toBe(1);
+    expect(s.size).toEqual({ undo: 1, redo: 0 });
+    // The toast's Undo of E1 no longer names the latest write (E2 is newer, even while pending).
+    expect(s.latest(a.token)).toBeNull();
+    const e2 = s.fill(t2, entry(2))!;
+    expect(e2.token).toBe(t2);
+    expect(s.pending).toBe(0);
+    const u = s.undo()!;
+    expect(u.token).toBe(t2);
+    s.settle(u.token, { ok: true });
+    // Redo after such an undo works.
+    const r = s.redo()!;
+    expect(r.token).toBe(t2);
+    s.settle(r.token, { ok: true, noteId: 'n-0009' });
+    expect(s.latest(t2)!.noteId).toBe('n-0009');
+  });
+
+  it('E-3: a pending entry on top is skipped by undo (it is newer than the press); a cancelled one goes', () => {
+    const s = new UndoStack();
+    const a = s.push(entry(1));
+    const t2 = s.reserve();
+    const u = s.undo()!;
+    expect(u.token).toBe(a.token);
+    s.settle(u.token, { ok: true });
+    expect(s.canRedo).toBe(true);
+    // E2 became a note: its slot goes, and redo is still there (nothing new was written).
+    expect(s.cancel(t2)).toBe(true);
+    expect(s.cancel(t2)).toBe(false);
+    expect(s.canRedo).toBe(true);
+    expect(s.fill(t2, entry(2))).toBeNull();
+  });
+
+  it('E-3: a failed undo goes back below every write accepted since, never above it', () => {
+    const s = new UndoStack();
+    s.push(entry(1));
+    const b = s.push(entry(2));
+    const u = s.undo()!;
+    expect(u.token).toBe(b.token);
+    // A commit accepted while the undo of 2 is written, and filled.
+    const t3 = s.reserve();
+    s.settle(u.token, { ok: false });
+    s.fill(t3, entry(3));
+    expect(s.latest(t3)).not.toBeNull();
+    const next = s.undo()!;
+    expect(next.token).toBe(t3);
+    s.settle(next.token, { ok: true });
+    expect(s.undo()!.token).toBe(b.token);
+  });
 });

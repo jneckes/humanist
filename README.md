@@ -9,8 +9,9 @@ one-pagers that AI tools produce. Think Adobe Acrobat Reader, but for HTML.
 - **Hand off to Claude Code:** notes go to the agent as an anchored change list.
 
 Status: **Phase 2 (Edit) built.** Its exit gate is measured in
-[docs/PHASE2-RESULTS.md](docs/PHASE2-RESULTS.md); the criterion left is Josh finishing 3 real decks with Edit on a
-Mac build (see [Real use of Edit on a Mac](#real-use-of-edit-on-a-mac)). Phase 1 (Reader) is measured in
+[docs/PHASE2-RESULTS.md](docs/PHASE2-RESULTS.md); the criteria left are the reader-only gate, which fails on one
+unit test that the Phase 2 review's fixes made stale, and Josh finishing 3 real decks with Edit on a Mac build (see
+[Real use of Edit on a Mac](#real-use-of-edit-on-a-mac)). Phase 1 (Reader) is measured in
 [docs/PHASE1-RESULTS.md](docs/PHASE1-RESULTS.md); its week of real use is also Mac work
 (see [Dogfooding on a Mac](#dogfooding-on-a-mac)). See [SPEC.md](SPEC.md) for the build spec,
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module boundaries,
@@ -79,6 +80,9 @@ Mac build (see [Real use of Edit on a Mac](#real-use-of-edit-on-a-mac)). Phase 1
   and line, and **Copy**. Each edit note locks its text; a later change by another program to that text is flagged.
 - **External changes while you edit** (an agent saving the deck): the edit lands on its text or becomes a note, the
   other change is kept, and the page reloads once the field closes.
+- **Closing with an open field:** closing the window, quitting, or clicking elsewhere in the window commits what you
+  typed first. If the deck cannot answer within 3 s (a hung page), the window closes anyway and nothing is written or
+  kept.
 - **Your name** on notes: the name chip in the toolbar.
 
 Licensing is proposed and pending confirmation: see [LICENSING.md](LICENSING.md).
@@ -270,16 +274,20 @@ it as root with `--no-sandbox`.
 `fixtures/decks/<name>.expect.json`, and fails when a deck's coverage drops more than 1 point below its
 baseline in `fixtures/expected/`.
 
-Phase 2 results (2026-10-20, Linux, Electron 44.7.2, from a clean build; docs/PHASE2-RESULTS.md): 1,943 unit
-tests pass (99 files, the Node fuzz's 1,200 edits among them; the fuzz and parity harnesses add 19 and 37); the E2E
-suite runs 228 tests, 227 pass and 1 is the expected failure for the note-card ordering limit, in two consecutive
-runs; the security suite runs 60 tests, 54 pass and 6 are the expected failures listed in SECURITY.md (as in Phase 1);
+Phase 2 results (2026-10-20, Linux, Electron 44.7.2, from a clean build, after the Phase 2 review;
+docs/PHASE2-RESULTS.md, logs in `test-results/p2-final/`): of 2,021 unit tests (108 files, the Node fuzz's 1,200
+edits among them) 2,020 pass and 1 fails, a test whose expected list of input types predates the review's
+drag-move fix; the fuzz and parity harnesses add 51 and 37 that pass; the E2E suite runs 271 tests, 270 pass and 1
+is the expected failure for the note-card ordering limit, in two consecutive runs; the security suite runs 64
+tests, 58 pass and 6 are the expected failures listed in SECURITY.md (as in Phase 1), in two runs;
 `blueline check --auto` passes 6 of 6 and `npm run package:smoke` 17 of 17. The exit gate: the Chromium fuzz makes
-1,000 seeded edits on the committed fixtures with **0 failures** (903 written, every one through the mutation probe;
-72 notes by rule; 25 no-ops), and 1,000 on Josh's 12 decks with 0 failures (894 written, 77 notes, 29 no-ops); the
-typed-edit and concurrency E2E tests pass (24 of 24 over three repeats); `npm run test:reader-only` passes. Coverage
-equals the baselines on all 19 committed fixtures, and holds on Josh's 12 decks (11 equal run for run; D5's ticker
-moves a few nodes, as in Phase 1). Real use on a Mac is the criterion left.
+1,000 seeded edits on the committed fixtures with **0 failures** (903 written, every one through the mutation probe
+on the node the author typed in; 72 notes by rule; 25 no-ops), and 1,000 on Josh's 12 decks with 0 failures (920
+written, 54 notes, 26 no-ops); the typed-edit and concurrency E2E tests pass (24 of 24 over three repeats);
+`npm run test:reader-only` fails at its unit-test step only, on that same test (its build, bundle check, E2E and
+security steps pass). Coverage equals the baselines on all 19 committed fixtures, and holds on Josh's 12 decks (11
+equal run for run; D5's ticker moves a few nodes, as in Phase 1). Left: that test's expected list and a new
+reader-only run, and real use on a Mac.
 
 Phase 1 results (2026-10-18, Linux, Electron 44.7.2, from a clean build, after review round 1): 1,639 unit
 tests pass (84 files; the exit-gate parity harness adds 37 more); the E2E suite runs 194 tests, 193 pass and 1 is

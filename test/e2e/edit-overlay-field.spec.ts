@@ -41,7 +41,7 @@ test('@edit hover outlines: solid on exact text, dashed on ambiguous text, none 
   }
 });
 
-test('@edit a click opens a field the page never sees; typing, Enter commits the run; the result puts the file text back with Undo', async () => {
+test('@edit a click opens a field the page never sees; typing, Enter commits the run; the result puts the file text back (the Saved toast is the shell\'s, E-5)', async () => {
   const { app, deck } = await openEditDeck(scratch);
   try {
     const before = { pointerdown: await pageSeen(deck, 'pointerdown'), mousedown: await pageSeen(deck, 'mousedown'), click: await pageSeen(deck, 'click') };
@@ -82,17 +82,13 @@ test('@edit a click opens a field the page never sees; typing, Enter commits the
     expect(await deck.eval(`document.getElementById('title').hasAttribute('contenteditable')`)).toBe(false);
 
     await toDeck(app, deck, 'bl:edit:result', { fieldId: commit.p.fieldId, outcome: 'written', text: 'Quarterly review 2027', line: 24, strategy: 'html-text', reload: false, token: 'tok-abcdefgh' });
-    await expect.poll(async () => (await editState(deck)).toast).toBe('Saved · edit-overlay.html:24');
+    await expect.poll(async () => (await editState(deck)).busy).toEqual({ edit: false, committing: false });
     st = await editState(deck);
-    expect(st.busy).toEqual({ edit: false, committing: false });
-    expect(st.toastAction).toBe(true);
-    // The toast's Undo names the write's token (P2-14); the press never reaches the page.
-    const clicks = await pageSeen(deck, 'click');
-    const b = st.toastButton!;
-    await deck.click(b.x + b.w / 2, b.y + b.h / 2);
-    const undo = await nextMessage(app, 'bl:edit:undo', 0);
-    expect(undo.p).toEqual({ token: 'tok-abcdefgh' });
-    expect(await pageSeen(deck, 'click')).toBe(clicks);
+    // E-5 (review finding 8): "Saved · <file>:<line>" and its Undo are main's toast in the shell, which a reload
+    // cannot take away; the overlay shows no second copy.
+    expect(st.toast).toBe('');
+    expect(st.toastAction).toBe(false);
+    expect(await deck.eval(`document.getElementById('title').textContent`)).toBe('Quarterly review 2027');
     const busy = (await stubLog(app, 'bl:edit:busy')).map((m) => m.p);
     expect(busy).toEqual([
       { edit: true, committing: false },

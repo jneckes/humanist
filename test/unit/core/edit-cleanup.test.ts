@@ -91,8 +91,9 @@ describe('cleanupCommit (9.2 Committing an edit step 3, 6.3)', () => {
     expect(cleanupCommit('a\r\nb', 'A\r\nB')).toBe('A\r\nB');
     expect(cleanupCommit('10\u00A0km to go', '12\u00A0km to run')).toBe('12\u00A0km to run');
     expect(cleanupCommit('x\u200By', 'X\u200BY')).toBe('X\u200BY');
-    // When the edit adds one on top of those the run had, the position rule decides alone, as for one change.
-    expect(cleanupCommit('one\ntwo', 'one!\ntw\no!')).toBe('one! tw o!');
+    // When the edit adds one on top of those the run had, the diff of the region still tells the run's own from the
+    // added one (finding 23): the <pre> keeps its line break, and only the pasted one becomes a space.
+    expect(cleanupCommit('one\ntwo', 'one!\ntw\no!')).toBe('one!\ntw o!');
     expect(cleanupCommit('a\u00A0b c', 'A\u00A0b\u00A0C')).toBe('A\u00A0b C');
   });
 });

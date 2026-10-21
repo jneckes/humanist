@@ -33,6 +33,7 @@ import {
   pickerCandidates,
   refusalText,
   restorePlan,
+  savedToastText,
   shellHistory,
   shellNotes,
   sourceBefore,
@@ -95,30 +96,81 @@ describe('TrustedInput (P2-7)', () => {
     ti.reset();
     expect(ti.takePress(BEGIN_WINDOW_MS)).toBe(false);
   });
+
+  it('a press made while a commit was unanswered counts from the answer (E-1: its field opens only then)', () => {
+    let t = 1000;
+    const ti = new TrustedInput(() => t);
+    // The click that commits the open field: main sees the press, then takes the commit.
+    ti.note('mouseDown');
+    ti.commitTaken();
+    // A large deck: the answer comes 5 s later; the field opens right after it.
+    t += 5000;
+    ti.answered();
+    t += 100;
+    expect(ti.takePress(BEGIN_WINDOW_MS)).toBe(true);
+    expect(ti.takePress(BEGIN_WINDOW_MS)).toBe(false);
+    // A press during a commit main already holds counts the same way.
+    ti.note('mouseDown', true);
+    t += 4000;
+    ti.answered();
+    expect(ti.takePress(BEGIN_WINDOW_MS)).toBe(true);
+    // But only within the window after the answer, and never for a press no commit was waiting on.
+    ti.note('mouseDown', true);
+    t += 1000;
+    ti.answered();
+    t += BEGIN_WINDOW_MS + 1;
+    expect(ti.takePress(BEGIN_WINDOW_MS)).toBe(false);
+    ti.note('mouseDown');
+    t += BEGIN_WINDOW_MS + 1;
+    ti.answered();
+    expect(ti.takePress(BEGIN_WINDOW_MS)).toBe(false);
+  });
+});
+
+describe('the Saved toast text (6.3 Saving; P2-14; the shell shows it, E-5)', () => {
+  it('"Saved \u00b7 file:line", with the other places the run feeds', () => {
+    expect(savedToastText('deck.html', 142, 0)).toBe('Saved \u00b7 deck.html:142');
+    expect(savedToastText('Board deck.html', 9, 1)).toBe('Saved \u00b7 Board deck.html:9 \u00b7 also changes 1 other place');
+    expect(savedToastText('deck.html', 9, 3)).toBe('Saved \u00b7 deck.html:9 \u00b7 also changes 3 other places');
+    expect(savedToastText('deck.html', 0, 0)).toBe('Saved \u00b7 deck.html');
+  });
 });
 
 describe('FieldRegistry', () => {
-  it('records fields by id, takes each once, and remembers which were open when Edit was left', () => {
-    const r = new FieldRegistry();
+  it('records fields by id and takes each once; a newer field, no open field and leaving Edit end the others (E-4)', () => {
+    const dropped: number[] = [];
+    const r = new FieldRegistry((f) => dropped.push(f.id));
     const v = 'a'.repeat(64);
     r.begin({ fieldId: 1, version: v, runIds: ['h:bl-1:0'] }, 5);
-    expect(r.peek(1)).toMatchObject({ id: 1, version: v, leftEdit: false });
+    expect(r.peek(1)).toMatchObject({ id: 1, version: v, openedAt: 5, pinned: false });
     expect(r.peek(1)!.runIds.has('h:bl-1:0')).toBe(true);
-    r.leftEdit();
-    expect(r.take(1)!.leftEdit).toBe(true);
+    expect(r.take(1)).not.toBeNull();
     expect(r.take(1)).toBeNull();
-    for (let i = 0; i < 40; i++) r.begin({ fieldId: i, version: v, runIds: [] }, i);
-    expect(r.size).toBe(16);
-    expect(r.peek(0)).toBeNull();
-    expect(r.peek(39)).not.toBeNull();
+    expect(dropped).toEqual([]);
+    // The deck has one open field: a newer begin ends every field whose commit was not sent.
+    r.begin({ fieldId: 2, version: v, runIds: [] }, 6);
+    r.begin({ fieldId: 3, version: v, runIds: [] }, 7);
+    expect(dropped).toEqual([2]);
+    expect(r.size).toBe(1);
+    // Main's own request marks the open field.
+    expect(r.request(100)?.id).toBe(3);
+    expect(r.peek(3)!.requestedUntil).toBe(100);
+    // Leaving Edit keeps only the field open then, with main's request on it.
+    r.begin({ fieldId: 4, version: v, runIds: [] }, 8);
+    r.leftEdit(200);
+    expect(r.peek(4)).toMatchObject({ requestedUntil: 200, expiresAt: 200 });
+    r.noneOpen();
+    expect(dropped).toEqual([2, 3, 4]);
+    r.begin({ fieldId: 5, version: v, runIds: [] }, 9);
     r.clear();
     expect(r.size).toBe(0);
+    expect(dropped).toEqual([2, 3, 4, 5]);
   });
 });
 
 describe('gateCommit (P2-7)', () => {
   const v = 'b'.repeat(64);
-  const field: FieldRecord = { id: 3, version: v, runIds: new Set(['h:bl-2:0']), openedAt: 0, leftEdit: false };
+  const field: FieldRecord = { id: 3, version: v, runIds: new Set(['h:bl-2:0']), openedAt: 0, pinned: false, requestedUntil: Number.NEGATIVE_INFINITY, expiresAt: Number.POSITIVE_INFINITY };
   const commit = (over: Partial<EditCommit> = {}): EditCommit => ({
     fieldId: 3,
     version: v,
@@ -128,7 +180,7 @@ describe('gateCommit (P2-7)', () => {
     alsoPlaces: 0,
     ...over,
   });
-  const ok = { mode: 'edit' as const, capEdit: true, editable: true };
+  const ok = { mode: 'edit' as const, capEdit: true, editable: true, now: 1000, idle: false };
 
   it('takes the commit of a field main accepted, for its version and one of its runs', () => {
     expect(gateCommit(commit(), field, ok)).toEqual({ ok: true, field });
@@ -140,15 +192,26 @@ describe('gateCommit (P2-7)', () => {
     expect(gateCommit(commit({ result: { kind: 'edit', runId: 'h:bl-9:0', beforeText: 'a', afterText: 'b' } }), field, ok)).toMatchObject({ ok: false, reply: false });
   });
 
-  it('refuses, and tells the field, when Edit, the capability or editing is off at this moment', () => {
-    expect(gateCommit(commit(), field, { ...ok, mode: 'review' })).toMatchObject({ ok: false, reply: true });
-    expect(gateCommit(commit(), field, { ...ok, capEdit: false })).toMatchObject({ ok: false, reply: true });
-    expect(gateCommit(commit(), field, { ...ok, editable: false })).toMatchObject({ ok: false, reply: true });
+  it('outside Edit, or after 10 minutes without trusted input, a commit main did not ask for is dropped without a word (E-4)', () => {
+    expect(gateCommit(commit(), field, { ...ok, mode: 'review' })).toMatchObject({ ok: false, reply: false });
+    expect(gateCommit(commit(), field, { ...ok, idle: true })).toMatchObject({ ok: false, reply: false });
+    // main's request ended before this commit came.
+    expect(gateCommit(commit(), { ...field, requestedUntil: 999 }, { ...ok, mode: 'read' })).toMatchObject({ ok: false, reply: false, ended: true });
+    // A field open when Edit was left: its authorisation ended with the request, in Edit too.
+    expect(gateCommit(commit(), { ...field, requestedUntil: 999, expiresAt: 999 }, ok)).toMatchObject({ ok: false, reply: false, ended: true });
   });
 
-  it('a field that was open when main left Edit may still commit (the mode change made the preload send it)', () => {
-    expect(gateCommit(commit(), { ...field, leftEdit: true }, { ...ok, mode: 'read' })).toMatchObject({ ok: true });
-    expect(gateCommit(commit(), { ...field, leftEdit: true }, { ...ok, mode: 'read', editable: false })).toMatchObject({ ok: false, reply: true });
+  it('the capability off is told to the field; a file that cannot be edited now keeps the text as a note (E-2)', () => {
+    expect(gateCommit(commit(), field, { ...ok, capEdit: false })).toMatchObject({ ok: false, reply: true });
+    expect((gateCommit(commit(), field, { ...ok, capEdit: false }) as { keep?: unknown }).keep).toBeUndefined();
+    expect(gateCommit(commit(), field, { ...ok, editable: false })).toMatchObject({ ok: false, reply: true, keep: field });
+  });
+
+  it('a commit main asked for (the deck left Edit, the window closes) is taken within the request\'s window (E-2, E-4)', () => {
+    const asked = { ...field, requestedUntil: 2000 };
+    expect(gateCommit(commit(), asked, { ...ok, mode: 'read' })).toMatchObject({ ok: true });
+    expect(gateCommit(commit(), asked, { ...ok, idle: true })).toMatchObject({ ok: true });
+    expect(gateCommit(commit(), asked, { ...ok, mode: 'read', editable: false })).toMatchObject({ ok: false, reply: true, keep: asked });
   });
 
   it('a verbatim or noop commit is held to the same field rules (it makes a note)', () => {
@@ -521,17 +584,18 @@ describe('EditSession refuses before the queue (P2-7)', () => {
     expect(r.hits).toEqual([]);
   });
 
-  it('a commit for another version or a run its field does not hold is dropped; a refused one is told so', async () => {
+  it('a commit for another version or a run its field does not hold is dropped, and so is one outside Edit that main did not ask for', async () => {
     const r = rig();
     r.s.onInput('mouseDown');
     r.s.onBegin({ fieldId: 1, version: r.doc.version, runIds: [r.run.id] });
     await r.s.onCommit(r.commit(1, { version: 'f'.repeat(64) }));
     await r.s.onCommit(r.commit(1, { result: { kind: 'edit', runId: r.doc.map.runs[0].id, beforeText: 'x', afterText: 'y' } }));
     expect(r.sent).toEqual([]);
-    // The preload's own field, after Edit was turned off by a mode change it was not open for: refused, told.
+    // Edit turned off without main asking for this field's commit (no mode change through onModeChange): it is not
+    // the user's commit, so it is dropped without a word (E-4).
     r.setMode('read');
     await r.s.onCommit(r.commit(1));
-    expect(r.sent).toEqual([{ channel: 'bl:edit:result', payload: { fieldId: 1, outcome: 'refused', reload: false, why: 'Edit is off' } }]);
+    expect(r.sent).toEqual([]);
     expect(r.hits).toEqual([]);
     expect(r.notes.notes).toHaveLength(0);
   });
@@ -566,5 +630,29 @@ describe('EditSession refuses before the queue (P2-7)', () => {
     await ro.s.appUndo('undo');
     expect(ro.toasts.map((t) => t.text)).toEqual([NOTHING_TO_UNDO]);
     expect(r.hits).toEqual([]);
+  });
+});
+
+describe('commit requests before close and quit (E-2)', () => {
+  it('a build without the Edit capability never waits: nothing is held and nothing is asked of the deck', async () => {
+    const r = rig({ capEdit: false });
+    r.s.onBusy({ edit: true, committing: true });
+    expect(r.s.holdsTyping).toBe(false);
+    const t0 = Date.now();
+    expect(await r.s.requestCommit(5_000)).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(1_000);
+    expect(r.sent.map((x) => x.channel)).toEqual([]);
+  });
+
+  it('control: with the capability, an open field is held, the deck is asked to commit, and a deck that never answers is given up on', async () => {
+    const r = rig();
+    r.s.onBusy({ edit: true, committing: false });
+    expect(r.s.holdsTyping).toBe(true);
+    expect(await r.s.requestCommit(30)).toBe(false);
+    expect(r.sent.map((x) => x.channel)).toEqual(['bl:edit:commit-now']);
+    // The deck closes its field: nothing is held any more, and a new request resolves at once.
+    r.s.onBusy({ edit: false, committing: false });
+    expect(r.s.holdsTyping).toBe(false);
+    expect(await r.s.requestCommit(5_000)).toBe(true);
   });
 });

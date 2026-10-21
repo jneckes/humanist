@@ -76,6 +76,119 @@ export function xIndexBefore(diffs: Diff[], loc: number): number {
   return p2 + (loc - p1);
 }
 
+/** Where a range of one version lies in another (mapRange), or why it cannot be told. */
+export type MappedRange = { ok: true; start: number; end: number } | { ok: false; why: 'changed' | 'timeout' };
+
+/**
+ * Where the range [start, end) of `prev` lies in `cur`, by position (9.2 Write protocol step 2: the run a stale edit
+ * was made on, lead decision E-1). Diffed as transformLockedSpans diffs (diff_main with a time limit, no clean-up)
+ * and mapped as it maps a span no operation overlaps: the start after and the end before any insertion at the
+ * range's edges, so the result holds exactly the range's own characters (diff-match-patch strips the longest common
+ * prefix, so text inserted beside a run is often aligned right at its edge). `changed`: an insertion or deletion
+ * overlaps the range. `timeout`: the
+ * diff reached its time limit (diff-match-patch then gives up on minimality, so its positions cannot vouch for a
+ * place); measured against the limit, as diff_main's own deadline is.
+ */
+export function mapRange(prev: string, cur: string, start: number, end: number, opts: { timeoutSec?: number } = {}): MappedRange {
+  const m = mapRangeClean(prev, cur, start, end, opts);
+  return m.ok ? { ok: true, start: m.start, end: m.end } : m;
+}
+
+/**
+ * mapRange, plus how far the diff leaves the text around the range unchanged: `cleanBefore` characters right
+ * before `start` and `cleanAfter` right after `end` are one EQUAL stretch with the range in both texts (no change,
+ * and no insertion at the range's edges, between them and the range). A stretch that reaches the start (end) of
+ * both texts is Infinity: nothing before (after) it differs at all. Used to tell whether the diff kept what tells
+ * a run apart from its copies (9.2 Write protocol step 2, write-queue resolve()).
+ */
+export type CleanRange = { ok: true; start: number; end: number; cleanBefore: number; cleanAfter: number } | { ok: false; why: 'changed' | 'timeout' };
+
+export function mapRangeClean(prev: string, cur: string, start: number, end: number, opts: { timeoutSec?: number } = {}): CleanRange {
+  return mapRangesClean(prev, cur, [[start, end]], opts)[0];
+}
+
+/** mapRangeClean for several ranges of `prev`, with one diff. */
+export function mapRangesClean(prev: string, cur: string, ranges: [number, number][], opts: { timeoutSec?: number } = {}): CleanRange[] {
+  const valid = ([start, end]: [number, number]): boolean => Number.isInteger(start) && Number.isInteger(end) && start >= 0 && start <= end && end <= prev.length;
+  if (prev === cur) return ranges.map((r) => (valid(r) ? { ok: true, start: r[0], end: r[1], cleanBefore: Infinity, cleanAfter: Infinity } : { ok: false, why: 'changed' }));
+  const dmp = new DiffMatchPatch();
+  const t = opts.timeoutSec;
+  const limit = typeof t === 'number' && Number.isFinite(t) && t >= 0 ? t : LOCK_DIFF_TIMEOUT_SEC;
+  dmp.Diff_Timeout = limit;
+  const t0 = performance.now();
+  const diffs = dmp.diff_main(prev, cur) as Diff[];
+  if (limit > 0 && performance.now() - t0 >= limit * 1000) return ranges.map(() => ({ ok: false, why: 'timeout' }));
+  // The operations with their positions in both texts.
+  const ops: { op: number; a: number; b: number; n: number }[] = [];
+  let p = 0;
+  let q = 0;
+  for (const [op, text] of diffs) {
+    ops.push({ op, a: p, b: q, n: text.length });
+    if (op !== DIFF_INSERT) p += text.length;
+    if (op !== DIFF_DELETE) q += text.length;
+  }
+  return ranges.map(([start, end]): CleanRange => {
+    if (!valid([start, end])) return { ok: false, why: 'changed' };
+    // The EQUAL operation that holds the whole range, when there is one.
+    let eq: { a: number; b: number; n: number } | null = null;
+    for (const o of ops) {
+      if (o.op === DIFF_EQUAL) {
+        if (!eq && o.a <= start && end <= o.a + o.n && (start < end || (o.a < start && start < o.a + o.n))) eq = o;
+      } else if (o.op === DIFF_DELETE) {
+        if (o.a < end && o.a + o.n > start) return { ok: false, why: 'changed' };
+      } else if (start < o.a && o.a < end) return { ok: false, why: 'changed' };
+    }
+    const ms = dmp.diff_xIndex(diffs, start);
+    const me = xIndexBefore(diffs, end);
+    if (!eq) return { ok: true, start: ms, end: me, cleanBefore: 0, cleanAfter: 0 };
+    const cleanBefore = eq.a === 0 && eq.b === 0 ? Infinity : start - eq.a;
+    const cleanAfter = eq.a + eq.n === prev.length && eq.b + eq.n === cur.length ? Infinity : eq.a + eq.n - end;
+    return { ok: true, start: ms, end: me, cleanBefore, cleanAfter };
+  });
+}
+
+/**
+ * Which stretches [start, end) of `a` a diff of `a` to `b` (diff_main with a time limit, no clean-up) leaves
+ * entirely unchanged: no deletion overlaps the stretch and no insertion lies strictly inside it. Null when the diff
+ * reached its time limit (its alignment then vouches for nothing). Used by the write queue to ask whether another
+ * copy of a run still carries the text that told the run apart (9.2 Write protocol step 2).
+ */
+export function stretchesKept(a: string, b: string, stretches: [number, number][], opts: { timeoutSec?: number } = {}): boolean[] | null {
+  const dmp = new DiffMatchPatch();
+  const t = opts.timeoutSec;
+  const limit = typeof t === 'number' && Number.isFinite(t) && t >= 0 ? t : LOCK_DIFF_TIMEOUT_SEC;
+  dmp.Diff_Timeout = limit;
+  const t0 = performance.now();
+  const diffs = a === b ? ([[DIFF_EQUAL, a]] as Diff[]) : (dmp.diff_main(a, b) as Diff[]);
+  if (a !== b && limit > 0 && performance.now() - t0 >= limit * 1000) return null;
+  const deletions: [number, number][] = [];
+  const insertions: number[] = [];
+  let p = 0;
+  for (const [op, text] of diffs) {
+    if (op === DIFF_EQUAL) p += text.length;
+    else if (op === DIFF_DELETE) {
+      deletions.push([p, p + text.length]);
+      p += text.length;
+    } else insertions.push(p);
+  }
+  return stretches.map(([s, e]) => s <= e && !deletions.some(([x, y]) => x < e && y > s) && !insertions.some((q) => s < q && q < e));
+}
+
+/** The longest stretch of `a` that a diff of `a` to `b` leaves unchanged (null when the diff reached its time limit). */
+export function longestKept(a: string, b: string, opts: { timeoutSec?: number } = {}): number | null {
+  if (a === b) return a.length;
+  const dmp = new DiffMatchPatch();
+  const t = opts.timeoutSec;
+  const limit = typeof t === 'number' && Number.isFinite(t) && t >= 0 ? t : LOCK_DIFF_TIMEOUT_SEC;
+  dmp.Diff_Timeout = limit;
+  const t0 = performance.now();
+  const diffs = dmp.diff_main(a, b) as Diff[];
+  if (limit > 0 && performance.now() - t0 >= limit * 1000) return null;
+  let best = 0;
+  for (const [op, text] of diffs) if (op === DIFF_EQUAL && text.length > best) best = text.length;
+  return best;
+}
+
 /**
  * Transforms every span from `prev` to `cur` (section 8 rules 2–3). Returns new span objects; the input is never
  * changed. `timeoutSec` is diff_main's time limit (default LOCK_DIFF_TIMEOUT_SEC; 0 means none).

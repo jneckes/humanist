@@ -26,6 +26,8 @@ export interface ActiveEdit {
    * guard calls it at window capture and then stops the event, so page listeners never see it (P2-7).
    */
   onInputEvent?(e: Event): void;
+  /** A plain Space keydown in the field: the field may type it itself (E-10: a <button> or <summary> eats it). */
+  space?(e: KeyboardEvent): void;
 }
 
 /** `<seq>` of `data-bl-key-log="<seq>:<key>:<isTrusted>"` written by the deck's own capture listeners, or null. */

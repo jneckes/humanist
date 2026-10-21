@@ -1,0 +1,19 @@
+<!doctype html>
+<!-- Fuzz gate self-test (finding 25): one literal shown whole in #t and cut to 6 characters in #nav when longer than 13. Not a gate fixture: scripts/fuzz-selftest.mjs runs it. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trunc</title>
+<style>body{font:18px sans-serif;margin:20px} p{margin:6px 0}</style>
+</head>
+<body>
+<h1 id="t"></h1>
+<p id="nav"></p>
+<script>
+var label = 'Pipeline';
+document.getElementById('t').textContent = label;
+// A short nav label: long labels are cut.
+document.getElementById('nav').textContent = label.length > 13 ? label.slice(0, 6) + '...' : label;
+</script>
+</body>
+</html>

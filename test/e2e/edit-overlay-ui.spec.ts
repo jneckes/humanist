@@ -195,7 +195,8 @@ test('@edit a written html-text edit moves the page to its new map; a literal wr
     await hover(deck, r.x + r.w / 2, r.y + r.h / 2);
     await expect.poll(async () => (await editState(deck)).outline?.kind).toBe('solid');
 
-    // One literal shown in two places: the toast says so (6.3 Saving).
+    // One literal shown in two places: the commit tells main, whose shell toast says so (6.3 Saving; E-5: the
+    // overlay shows no Saved toast of its own, the reload would take it away).
     await clickText(deck, '#rep1', 0, 0.98);
     await deck.key('End');
     await deck.insertText(' X');
@@ -203,15 +204,15 @@ test('@edit a written html-text edit moves the page to its new map; a literal wr
     const c2 = await nextMessage(app, 'bl:edit:commit', 1);
     expect(c2.p.alsoPlaces).toBe(1);
     await toDeck(app, deck, 'bl:edit:result', { fieldId: c2.p.fieldId, outcome: 'written', text: 'Repeated label X', line: 49, strategy: 'script-literal', reload: true, token: 'tok-00000002' });
-    await expect.poll(async () => (await editState(deck)).toast).toBe('Saved \u00b7 edit-overlay.html:49 \u00b7 also changes 1 other place');
     // The page's data still holds the old literal: no new field until the reload (Strategy 2 step 5.5).
-    expect((await editState(deck)).blocked).toBe('Reloading to show your edit\u2026');
+    await expect.poll(async () => (await editState(deck)).blocked).toBe('Reloading to show your edit\u2026');
+    expect((await editState(deck)).toast).toBe('');
   } finally {
     await app.close();
   }
 });
 
-test('@edit a note or a refusal puts the old text back and says why; app undo patches the node', async () => {
+test('@edit a note or a refusal puts the old text back (the shell says why, main-driven); app undo patches the node', async () => {
   const { app, deck } = await openEditDeck(scratch);
   try {
     await clickText(deck, '#inline', 0, 0.3);
@@ -219,8 +220,10 @@ test('@edit a note or a refusal puts the old text back and says why; app undo pa
     await deck.key('Enter');
     const c1 = await nextMessage(app, 'bl:edit:commit', 0);
     await toDeck(app, deck, 'bl:edit:result', { fieldId: c1.p.fieldId, outcome: 'verbatim', why: 'the deck changed meanwhile', reload: false, noteId: 'n-0001' });
-    await expect.poll(async () => (await editState(deck)).toast).toBe('Not changed in place: the deck changed meanwhile \u00b7 your text is kept as a note');
-    expect(await deck.eval(`document.getElementById('inline').textContent`)).toBe('Hello bold world');
+    await expect.poll(() => deck.eval(`document.getElementById('inline').textContent`)).toBe('Hello bold world');
+    // "Not changed in place … kept as a note" is the shell's toast, shown by main with its answer (a reload right
+    // after would take an overlay toast away): the overlay shows no copy (edit-fix-undo-toast.spec.ts checks the shell).
+    expect((await editState(deck)).toast).toBe('');
 
     await clickText(deck, '#fit', 0, 0.98);
     await deck.key('End');
@@ -228,8 +231,8 @@ test('@edit a note or a refusal puts the old text back and says why; app undo pa
     await deck.key('Enter');
     const c2 = await nextMessage(app, 'bl:edit:commit', 1);
     await toDeck(app, deck, 'bl:edit:result', { fieldId: c2.p.fieldId, outcome: 'refused', why: 'editing is off', reload: false });
-    await expect.poll(async () => (await editState(deck)).toast).toBe('Not saved: editing is off');
-    expect(await deck.eval(`document.getElementById('fit').textContent`)).toBe('Short text in a box');
+    await expect.poll(() => deck.eval(`document.getElementById('fit').textContent`)).toBe('Short text in a box');
+    expect((await editState(deck)).toast).toBe('');
 
     // An app undo of an html-text write: main tells the page the text to show (P2-10).
     await toDeck(app, deck, 'bl:edit:applied', { stamp: 'bl-6', textIndex: 0, text: 'Patched by undo' });

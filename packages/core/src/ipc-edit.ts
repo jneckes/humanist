@@ -5,9 +5,10 @@
 // Main treats every message from the deck view as written by the page (9.1). None of these messages names a
 // path, a write record or a file offset: the deck names a field it opened, the version its page shows, run ids
 // of that version's map, what the field held, and a token main issued for an undo. Main accepts a commit only
-// from the deck view's main frame, in Edit, with editing allowed and capabilities.edit on at that moment, and
-// only after it saw trusted input in that view since the field opened (P2-7); anything else is dropped silently,
-// before the queue: no note, no snapshot, no session write.
+// from the deck view's main frame, for a field it saw open on a trusted press and whose authorisation has not
+// ended (its commit taken, a newer field, no field open, Edit left, 10 minutes without trusted input; lead
+// decision E-4), in Edit (or within a few seconds of main's own request to commit it, E-2) with capabilities.edit
+// on (P2-7); anything else is dropped silently, before the queue: no note, no snapshot, no session write.
 
 import type { CommitResult, VerbatimWhy } from './edit-commit';
 import type { EditPick, RefusalCode } from './types';
@@ -51,7 +52,7 @@ export interface EditTarget {
 
 export interface EditCommit {
   fieldId: number;
-  /** The version recorded when the field opened (P2-5): the queue resolves a stale one by beforeText and context. */
+  /** The version recorded when the field opened (P2-5): the queue places a stale one by position (E-1). */
   version: string;
   /**
    * commitField's result. For a picked substring or normalized candidate (`pick`), an `edit` result carries the
@@ -98,6 +99,19 @@ export const MainToDeckEdit = {
   /** EditApplied: after an app undo or redo, the text the page must show, or a reload (P2-10). */
   applied: 'bl:edit:applied',
 } as const;
+
+/** Main → deck preload: main's own requests (the answers to the deck's messages are MainToDeckEdit). */
+export const MainToDeckEditRequest = {
+  /**
+   * EditCommitNow: commit the open field now, HTML or SVG, as a blur would (lead decision E-2: before the window
+   * closes, the app quits, or when the shell takes focus from the deck view; review findings 5, 6, 19). The field's
+   * commit then goes out as any other (EditDeckToMain.commit); with no open field nothing is sent.
+   */
+  commitNow: 'bl:edit:commit-now',
+} as const;
+
+/** MainToDeckEdit.commitNow carries nothing: the deck has at most one open field. */
+export type EditCommitNow = Record<string, never>;
 
 /** One candidate in the picker (6.3: ±40 characters of context; 9.2 Strategy 2 step 3: the key warning). */
 export interface PickerCandidate {
@@ -156,6 +170,17 @@ export const EDIT_TOKEN_RE = /^[A-Za-z0-9_-]{8,64}$/;
 export const COMMIT_KINDS: readonly CommitResult['kind'][] = Object.freeze(['edit', 'verbatim', 'noop']);
 export const PICK_KINDS: readonly EditPick['kind'][] = Object.freeze(['equal', 'substring', 'normalized']);
 export const RESULT_OUTCOMES: readonly EditResultOutcome[] = Object.freeze(['written', 'verbatim', 'noop', 'refused']);
+
+/**
+ * The toast after a commit main answered without writing it (6.3 "When a write fails"; P2-14), or null for none.
+ * The shell shows it (main-driven, as the Saved toast, lead decision E-5): a reload that follows the answer (the
+ * deck changed while the field was open) would take an overlay toast away (finding 7/20 re-verification).
+ */
+export function failureToast(outcome: EditResultOutcome, why: string | null): string | null {
+  if (outcome === 'verbatim') return why ? `Not changed in place: ${why} \u00b7 your text is kept as a note` : 'Not changed in place \u00b7 your text is kept as a note';
+  if (outcome === 'refused') return why ? `Not saved: ${why}` : 'Not saved';
+  return null;
+}
 export { VERBATIM_WHYS } from './edit-commit';
 export type { VerbatimWhy };
 

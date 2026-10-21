@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Space check</title>
+<style>body { margin: 20px; font: 22px/1.5 sans-serif; } button { font: inherit; padding: 6px 12px; }</style>
+</head>
+<body>
+<h2 id="h">Space check deck</h2>
+<p id="para">A plain paragraph line</p>
+<p><button id="b1" type="button">Go to the next slide</button></p>
+<p><button id="b2" type="button"><span id="s2">Label in a span</span></button></p>
+<p><button id="b3" type="button">Begin <b>bold</b> ending words</button></p>
+<details id="det"><summary id="sum">Show the details</summary><p id="inner">Hidden body text</p></details>
+<details id="det2"><summary id="sum2"><span id="s4">Summary span text</span></summary><p>Second hidden body</p></details>
+<script>
+window.__ev = [];
+function rec(s) { __ev.push(s); document.documentElement.setAttribute('data-ev', __ev.join(',')); }
+document.addEventListener('click', function (e) { rec('click:' + (e.target.id || e.target.nodeName)); });
+document.getElementById('det').addEventListener('toggle', function () { rec('toggle1:' + this.open); });
+document.getElementById('det2').addEventListener('toggle', function () { rec('toggle2:' + this.open); });
+</script>
+</body>
+</html>

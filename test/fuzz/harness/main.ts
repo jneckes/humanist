@@ -25,12 +25,15 @@
 //      external change, and land on the run it was made on. Some are undone and redone through the queue, with
 //      the bytes compared exactly both times.
 //   4. The written edits of the round go through the mutation probe on the edited text (probe.ts probeTargets,
-//      batched as `map` batches, each run alone on doubt): a sentinel is appended to each edited run, the copy is
-//      reloaded and each stop replayed, and every node of the run must read exactly its new text plus its
-//      sentinel, the sentinel must appear in no other node, the page must log no new console error and keep its
-//      slide count; the sentinels are undone and the copy must be byte-identical to the round's edits. A picked
-//      run is judged only on where else its sentinel lands (the author chose it). Then the next round walks the
-//      new version.
+//      batched as `map` batches, each run alone on doubt; which nodes: probe-select.ts): a sentinel is appended to
+//      each edited run, the copy is reloaded and each stop replayed, and the node the author typed in must read
+//      exactly its new text plus its sentinel, as must the run's other renders, the sentinel must appear in no
+//      other node except reported renders of the run, the page must log no new console error and keep its slide
+//      count; the sentinels are undone and the copy must be byte-identical to the round's edits. A picked run is
+//      judged only on where else its sentinel lands (the author chose it). An edit whose node the walk does not
+//      show is probed on its own over every stop of the walk, and fails when nothing shows it; the walk itself
+//      must log no new console error and keep the slide count for every round that wrote anything. Then the next
+//      round walks the new version.
 // The deck's own work copy is never written; at the end its bytes are compared with the ones read at the start.
 
 import { app, session } from 'electron';
@@ -48,7 +51,7 @@ import { loadDocument, newDocumentId, type BlDocument } from '../../../packages/
 import { loadEditorDetailed } from '../../../packages/app/src/main/editor-loader';
 import { DeckWalker, type WalkResult } from '../../../packages/app/src/main/map-command';
 import { DEFAULT_ALLOWLIST, pickClosedLoopbackPort } from '../../../packages/app/src/main/network-policy';
-import { locatorKey, normalizeConsoleMessage, onInterrupt, probeTargets, ProbeCopy, type ProbeContext, type ProbeTarget } from '../../../packages/app/src/main/probe';
+import { judgeNode, locatorKey, normalizeConsoleMessage, onInterrupt, probeTargets, ProbeCopy, SENTINEL, type ProbeContext, type ProbeTarget } from '../../../packages/app/src/main/probe';
 import { installDeckProtocol, registerPrivilegedSchemes } from '../../../packages/app/src/main/protocol';
 import { DEFAULT_VIEWPORT, RenderView } from '../../../packages/app/src/main/render-service';
 import { QUIET_SETTLE, SCRIPTED_SETTLE } from '../../../packages/app/src/main/slide-index';
@@ -71,6 +74,7 @@ import {
   type Rng,
 } from './fuzz-core';
 import type { DeckResult, EditRecord, FuzzDeck, FuzzFailure, FuzzJob, FuzzResult } from './job';
+import { judgeAlone, roundCheck, selectNodes, type AloneStop, type AloneVerdict, type AuthorNode, type SeenNode, type WrittenEdit } from './probe-select';
 
 // ------------------------------------------------------------------------------------------- startup
 
@@ -180,6 +184,11 @@ function shown(local: boolean, v: unknown): unknown {
   return v;
 }
 
+/** A probe verdict's reason for the report: the deck's text it quotes is withheld for Josh's decks. */
+function whyShown(local: boolean, why: string): string {
+  return local ? why.replace(/"(?:[^"\\]|\\.)*"/g, '<text withheld: local deck>') : why;
+}
+
 /**
  * Reads the edit field of each collected node in the page (field-probe.ts), in an isolated world of the harness's
  * own: the element's textContent and its text nodes, with locator keys. Null for a node the page no longer shows as
@@ -263,7 +272,7 @@ async function runFuzz(j: FuzzJob): Promise<number> {
       reducedMotion: true,
     },
     corpus: [],
-    totals: { edits: 0, written: 0, notes: 0, noops: 0, failures: 0, picks: 0, pickWritten: 0, stale: 0, merged: 0, externalBefore: 0, externalInside: 0, externalFired: 0, undoRedo: 0, probedRuns: 0, unprobed: 0, probeLoads: 0, rounds: 0, walks: 0, controlsPlanted: 0, controlsCaught: 0 },
+    totals: { edits: 0, written: 0, notes: 0, noops: 0, failures: 0, picks: 0, pickWritten: 0, stale: 0, merged: 0, externalBefore: 0, externalInside: 0, externalFired: 0, undoRedo: 0, probedRuns: 0, probedAlone: 0, unprobed: 0, probeLoads: 0, rounds: 0, walks: 0, controlsPlanted: 0, controlsCaught: 0 },
     shares: { written: 0, notes: 0, noops: 0 },
     notesByCode: {},
     notesByReason: {},
@@ -316,7 +325,7 @@ function methodText(j: FuzzJob): Record<string, string> {
     written:
       'the file decodes, the outcome version is its hash, the diff is exactly the record\'s splice inside the target run, re-mapping finds the new text at that run and every other run unchanged, no parse5 error code is new, an external change survives, the edit lands on the run it was made on; a share is undone and redone with the bytes compared exactly',
     probe:
-      `the mutation probe on the written text (probe.ts probeTargets, batches of up to ${j.batch} like blueline map, each run alone on doubt), on the walk of the version the round's edits produced: every node of the run reads exactly its new text plus the sentinel, the sentinel is in no other node except reported renders of the run, no console error the version before the edits did not log, that version's slide count, and the copy is byte-identical after the undo; a picked run is judged on everything but its own node; a node that shows other text where the edit was made fails; a run no node shows any more is counted as not probed`,
+      `the mutation probe on the written text (probe.ts probeTargets, batches of up to ${j.batch} like blueline map, each run alone on doubt), on the walk of the version the round's edits produced (nodes chosen by probe-select.ts): the node the author typed in (the clicked node when the commit landed on its run, else the field's node of the commit's run), found by its locator, reads exactly the new text plus the sentinel, and so does every other render of the run (its exact nodes, and the nodes where the walk before the edits saw it that read the new text); the author's node showing other text fails ('[render]'), whatever other renders show; the sentinel is in no other node except reported renders of the run, no console error the version before the edits did not log, that version's slide count, and the copy is byte-identical after the undo; a picked run is judged on everything but its own node; an edit whose node the walk does not show is probed on its own (a load with its sentinel alone, every stop of the walk replayed and settled as the walk settles) and fails when no stop shows it ('[probe] the edit shows nowhere'); for every round that wrote anything, the walk of the new version must log no console error the walk before did not and keep its slide count, whether or not a node is left to probe; an edit the probe could not reach at all (the walk failed) is counted as not probed, and scripts/fuzz.mjs exits 1 on it as on a failure`,
     settle:
       'the walk and the probe wait for what the deck\'s scripts reveal (render-service waitScripted): the full scripted settle (1.5 s, then 400 ms without a DOM change) after a load while the deck is known to reveal text late, else the quiet wait (400 ms without a change), and the quiet wait after every move',
   };
@@ -385,6 +394,7 @@ async function runDeck(j: FuzzJob, spec: FuzzDeck, want: number, r: Rng, editor:
     rounds: 0,
     walks: 0,
     unprobed: 0,
+    probedAlone: 0,
     exactNodes: 0,
     pickableNodes: 0,
     probeLoads: 0,
@@ -485,8 +495,11 @@ async function runDeck(j: FuzzJob, spec: FuzzDeck, want: number, r: Rng, editor:
       const version = sha256Hex(bytes);
       const src = decodeDeck(bytes).src;
       const map = buildMap(src, { version, utf8: true, defer: false });
-      // P2-3: the queue knows the version the page holds, so a stale edit can use its 32 characters of context.
-      queue.know(version, src, map);
+      // P2-3: the queue knows the version the page holds, so a stale edit made on it is placed by position through
+      // a diff (9.2 step 2, E-1). Pinned for the round, as main pins a version a page or field holds: a round
+      // writes up to `batch` versions after it, more than the queue keeps unpinned, and the round's stale-version
+      // requests name this one. (An editor bundle built before pins existed ignores the option and has no unpin.)
+      queue.know(version, src, map, { pin: true });
       fields.clear();
       const tw = Date.now();
       const walker = new DeckWalker(v, detail);
@@ -556,6 +569,8 @@ async function runDeck(j: FuzzJob, spec: FuzzDeck, want: number, r: Rng, editor:
         }
       }
       res.editMs += msSince(te);
+      // The round is over: no later request names its walk's version (the probe writes on the newest one).
+      if (typeof queue.unpin === 'function') queue.unpin(version);
       pending = written;
       before = { walk, nodes, round };
     }
@@ -580,7 +595,11 @@ async function runDeck(j: FuzzJob, spec: FuzzDeck, want: number, r: Rng, editor:
   return res;
 }
 
-/** A written edit the mutation probe could not check: counted and reported apart (it passed every check in Node). */
+/**
+ * A written edit the mutation probe could not reach at all (the walk of the version after it failed): counted and
+ * reported apart, and scripts/fuzz.mjs exits 1 on it as on a failure (E-12: an edit that cannot be probed fails
+ * unless it is probed on its own, which needs that walk).
+ */
 function unprobed(tally: Tally, res: DeckResult, w: Written, why: string): void {
   w.record.probe = 'unprobed';
   w.record.unprobed = why;
@@ -589,15 +608,7 @@ function unprobed(tally: Tally, res: DeckResult, w: Written, why: string): void 
   count(tally.result.unprobedByReason, why);
 }
 
-/**
- * The mutation probe on the text a round wrote (P2-16), on the walk of the version those edits produced: each edited
- * run's nodes there (its exact nodes, and the nodes where the walk before the edits saw it, if they show its new
- * text) must read exactly the new text plus the sentinel, with the sentinel nowhere else, no console error the
- * version before the edits did not log, and that version's slide count. A picked run is judged on its picked node.
- * A node that shows other text at the place the edit was made is a failure; a run the walk no longer counts any
- * visible node of (the walk counts only what is in view) cannot be probed and is counted apart.
- */
-async function probeWritten(o: {
+type ProbeArgs = {
   j: FuzzJob;
   spec: FuzzDeck;
   tally: Tally;
@@ -615,109 +626,289 @@ async function probeWritten(o: {
   bytes: Uint8Array;
   normalize(m: string): string;
   settle: SettleState;
-}): Promise<void> {
+};
+
+/** A walk's node as probe-select.ts reads it. */
+type Seen = SeenNode & { node: CountedNode };
+
+function seenOf(n: CountedNode): Seen {
+  return { key: locatorKey(n.locator), data: n.node.data, exact: n.match.confidence === 'exact' ? (n.match.runId ?? null) : null, node: n };
+}
+
+/** A written edit as probe-select.ts reads it: the run it went to, the clicked node and the field's mapped nodes. */
+function editOf(w: Written): WrittenEdit {
+  const t = w.target;
+  const field = t.runs.flatMap((r) => {
+    const p = t.field.parts.find((x) => x.start === r.start && x.end === r.end && x.key !== null);
+    return p?.key ? [{ key: p.key, data: p.data, runId: r.runId }] : [];
+  });
+  return {
+    runId: w.out.runId,
+    text: w.planted ?? w.req.afterText,
+    pick: !!w.req.pick,
+    target: { key: locatorKey(t.node.locator), data: t.node.node.data, runId: t.runId },
+    field,
+  };
+}
+
+/** A node handed to probeTargets: a copy, so a verdict written onto it belongs to this edit's run alone. */
+function probeNode(n: CountedNode): CountedNode {
+  const c = { ...n };
+  delete c.probe;
+  return c;
+}
+
+/**
+ * The mutation probe on the text a round wrote (P2-16; SPEC 10 Phase 0 probe step 4, which SPEC 10 Phase 2 reuses:
+ * the sentinel in that DOM text node and in no other node except reported renders of the run, no new console
+ * error, the same slide count), on the walk of the version those edits produced. "That node" is the node the
+ * author typed in (probe-select.ts authorNodes; review finding 25): found by its locator, it must read exactly the
+ * new text plus the sentinel, and it showing other text is a failure ('[render]') whatever the run's other renders
+ * show; those renders (its exact nodes, and the nodes where the walk before the edits saw it that now read the new
+ * text) are judged with it. A picked run is judged on its picked node, on where else its sentinel lands. An edit
+ * whose node the walk does not show (the walk counts only what is in view) is probed on its own (probeAlone) and
+ * fails when nothing shows it (review finding 26). Whatever is left to probe, the walk of the new version must log
+ * no console error the walk before the edits did not log and keep its slide count: the walk is a load of that
+ * version too, so an edit that breaks a script or the slide count fails even when it leaves no node to probe.
+ */
+async function probeWritten(o: ProbeArgs): Promise<void> {
   const { j, spec, tally, res, v, nodes } = o;
   const totals = tally.result.totals;
-  const keyOf = (n: CountedNode) => locatorKey(n.locator);
-  const checked: { w: Written; target: ProbeTarget }[] = [];
-  for (const w of o.pending) {
-    const text = w.planted ?? w.req.afterText;
-    // Where the author saw the run before the edit: the picked node, or every exact node of the run.
-    const was = new Set(
-      w.req.pick ? [keyOf(w.target.node)] : o.before.nodes.filter((n) => n.match.confidence === 'exact' && n.match.runId === w.req.runId).map(keyOf),
-    );
-    const there = nodes.filter((n) => was.has(keyOf(n)));
-    if (w.req.pick) {
-      if (there.length === 0) unprobed(tally, res, w, 'the picked node is not visible after the edit');
-      else checked.push({ w, target: { runId: w.out.runId, nodes: [there[0]], before: text, picked: true } });
-      continue;
-    }
-    const renders = nodes.filter((n) => (n.match.confidence === 'exact' && n.match.runId === w.out.runId) || (was.has(keyOf(n)) && n.node.data === text));
-    if (renders.length > 0) {
-      checked.push({ w, target: { runId: w.out.runId, nodes: renders, before: text, expect: w.req.afterText } });
-      continue;
-    }
-    if (there.length > 0) {
-      // The page shows other text where the edit was made: the edit does not render as written.
-      w.record.probe = 'fail';
-      demote(tally, res, w);
-      fail(tally, res, {
-        edit: w.record.i,
-        deck: spec.label,
-        round: o.before.round,
-        version: o.version,
-        what: `[render] after the edit the node reads ${JSON.stringify(shown(spec.local, there[0].node.data))}, not the new text`,
-        repro: { seed: j.seed, request: shown(spec.local, w.req), outcome: { runId: w.out.runId, line: w.out.line, merged: w.out.merged } },
-      });
-      continue;
-    }
-    unprobed(tally, res, w, 'no visible node shows the run after the edit');
-  }
-  if (checked.length === 0) return;
-  const ctx: ProbeContext = {
-    view: v,
-    editor: o.editor,
-    copy: o.copy,
-    original: { bytes: o.bytes, version: o.version },
-    queue: o.queue,
-    nodes,
-    slideCount: o.before.walk.detect.count,
-    baselineErrors: new Set(o.before.walk.consoleErrors.map((e) => o.normalize(e.message))),
-    normalize: (e) => o.normalize(e.message),
-    start: async () => {
-      // After the probe's reload: the same settle as the walk's first stop.
-      await settleAfterLoad(v, o.settle, true);
-      await o.walker.startReplay();
-    },
-    replay: async (i) => {
-      const ok = await o.walker.replay(i);
-      await v.waitScripted({ ...QUIET_SETTLE, watchFrames: false });
-      return ok;
-    },
-    newDocId: () => newDocumentId(),
-    log: detail,
-    interrupted: () => interrupted,
-    batchSize: j.batch,
-  };
-  let aborted: string | null = null;
-  try {
-    const pr = await probeTargets(ctx, checked.map((c) => c.target));
-    res.probeLoads += pr.loads ?? 0;
-    totals.probeLoads += pr.loads ?? 0;
-    aborted = pr.aborted;
-  } catch (e) {
-    aborted = `the probe threw: ${e instanceof Error ? e.message : String(e)}`;
-  }
-  totals.probedRuns += checked.length;
-  if (!bytesEqual(await o.copy.read(), o.bytes)) aborted = aborted ?? 'the copy is not byte-identical to the edits after the probe';
-  for (const { w, target } of checked) {
-    const failed = target.nodes.map((n) => n.probe).find((p) => !p || !p.pass);
-    if (w.planted !== undefined) {
-      // A planted change must fail the probe; one that passes means the Chromium stage cannot see a wrong text.
-      w.record.probe = 'fail';
-      if (failed && !aborted) {
-        totals.controlsCaught++;
-        continue;
-      }
-      demote(tally, res, w);
-      fail(tally, res, { edit: w.record.i, deck: spec.label, round: o.before.round, version: o.version, what: `[control] the probe did not catch a planted change${aborted ? ` (${aborted})` : ''}`, repro: { seed: j.seed } });
-      continue;
-    }
-    if (!failed && !aborted) {
-      w.record.probe = 'pass';
-      continue;
-    }
+  /**
+   * A written edit the probe failed. Under --negative-control a planted change is caught by any verdict the probe
+   * reached (`judged`); one it could not judge (an aborted probe, a load that threw) is a control that failed.
+   */
+  const failed = (w: Written, what: string, judged = true): void => {
     w.record.probe = 'fail';
+    if (w.planted !== undefined && judged) {
+      totals.controlsCaught++;
+      return;
+    }
     demote(tally, res, w);
     fail(tally, res, {
       edit: w.record.i,
       deck: spec.label,
       round: o.before.round,
       version: o.version,
-      what: `[probe] ${aborted ?? (failed && !failed.pass ? failed.why : 'the probe could not check it')}`,
+      what: w.planted !== undefined ? `[control] the probe did not catch a planted change (${what})` : what,
       repro: { seed: j.seed, request: shown(spec.local, w.req), outcome: { runId: w.out.runId, line: w.out.line, merged: w.out.merged } },
     });
+  };
+  const before = o.before.nodes.map(seenOf);
+  const after = nodes.map(seenOf);
+  const checked: { w: Written; target: ProbeTarget }[] = [];
+  const alone: { w: Written; author: AuthorNode[] }[] = [];
+  for (const w of o.pending) {
+    const text = w.planted ?? w.req.afterText;
+    const sel = selectNodes(editOf(w), before, after);
+    if (sel.kind === 'render') {
+      // The page shows other text in the node the author typed in: the edit does not render as written there.
+      const where = spec.local ? '' : ` (${sel.node.node.locator.cssPath})`;
+      failed(w, `[render] after the edit the node the author typed in${where} reads ${JSON.stringify(shown(spec.local, sel.node.data))}, not the new text`);
+    } else if (sel.kind === 'lost') failed(w, '[probe] the field holds no node of the run the edit was written to');
+    else if (sel.kind === 'picked') checked.push({ w, target: { runId: w.out.runId, nodes: [probeNode(sel.node.node)], before: text, picked: true } });
+    else if (sel.kind === 'probe') {
+      checked.push({ w, target: { runId: w.out.runId, nodes: [...sel.author, ...sel.extra].map((x) => probeNode(x.node)), before: text, expect: w.req.afterText } });
+    } else alone.push({ w, author: sel.author });
   }
+  const baseline = new Set(o.before.walk.consoleErrors.map((e) => o.normalize(e.message)));
+  const roundWhy = roundCheck({ baseline, errors: o.walk.consoleErrors.map((e) => o.normalize(e.message)), slidesBefore: o.before.walk.detect.count, slidesAfter: o.walk.detect.count });
+  if (roundWhy) {
+    // The walk cannot tell which edit of the round did it, nor can a probe load of this version (each holds every
+    // edit of the round): every edit of the round not failed already fails, as a batch probe's runs do.
+    for (const c of [...checked.map((x) => x.w), ...alone.map((x) => x.w)]) failed(c, `[probe] ${whyShown(spec.local, roundWhy)}`);
+    return;
+  }
+  let aborted: string | null = null;
+  if (checked.length > 0) {
+    const ctx: ProbeContext = {
+      view: v,
+      editor: o.editor,
+      copy: o.copy,
+      original: { bytes: o.bytes, version: o.version },
+      queue: o.queue,
+      nodes,
+      slideCount: o.before.walk.detect.count,
+      baselineErrors: baseline,
+      normalize: (e) => o.normalize(e.message),
+      start: async () => {
+        // After the probe's reload: the same settle as the walk's first stop.
+        await settleAfterLoad(v, o.settle, true);
+        await o.walker.startReplay();
+      },
+      replay: async (i) => {
+        const ok = await o.walker.replay(i);
+        await v.waitScripted({ ...QUIET_SETTLE, watchFrames: false });
+        return ok;
+      },
+      newDocId: () => newDocumentId(),
+      log: detail,
+      interrupted: () => interrupted,
+      batchSize: j.batch,
+    };
+    try {
+      const pr = await probeTargets(ctx, checked.map((c) => c.target));
+      res.probeLoads += pr.loads ?? 0;
+      totals.probeLoads += pr.loads ?? 0;
+      aborted = pr.aborted;
+    } catch (e) {
+      aborted = `the probe threw: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    totals.probedRuns += checked.length;
+    if (!bytesEqual(await o.copy.read(), o.bytes)) aborted = aborted ?? 'the copy is not byte-identical to the edits after the probe';
+    for (const { w, target } of checked) {
+      const bad = target.nodes.map((n) => n.probe).find((p) => !p || !p.pass);
+      if (!bad && !aborted) {
+        if (w.planted !== undefined) {
+          // A planted change must fail the probe; one that passes means the Chromium stage cannot see a wrong text.
+          failed(w, 'it passed', false);
+          continue;
+        }
+        w.record.probe = 'pass';
+        continue;
+      }
+      failed(w, `[probe] ${whyShown(spec.local, aborted ?? (bad && !bad.pass ? bad.why : 'the probe could not check it'))}`, !aborted);
+    }
+  }
+  for (const { w, author } of alone) {
+    w.record.alone = true;
+    totals.probedAlone++;
+    res.probedAlone++;
+    if (aborted || interrupted) {
+      failed(w, `[probe] not probed: ${aborted ?? 'interrupted'}`, false);
+      continue;
+    }
+    const r = await probeAlone(o, w, author);
+    totals.probedRuns++;
+    if ('aborted' in r) {
+      aborted = r.aborted;
+      failed(w, `[probe] ${r.aborted}`, false);
+      continue;
+    }
+    if (r.verdict.pass) {
+      if (w.planted !== undefined) failed(w, 'it passed', false);
+      else w.record.probe = 'pass';
+      continue;
+    }
+    const why = r.verdict.render
+      ? `[render] after the edit the node the author typed in reads ${JSON.stringify(shown(spec.local, r.verdict.reads))}, not the new text (probed on its own)`
+      : `[probe] ${whyShown(spec.local, r.verdict.why)}${r.verdict.why.startsWith('the edit shows nowhere') ? '' : ' (probed on its own)'}`;
+    failed(w, why, r.judged);
+  }
+}
+
+/**
+ * Review finding 26 (a): a written edit whose node the round's walk does not show, probed on its own. Its run
+ * alone gets the sentinel, the copy is reloaded (a fresh origin, as every probe load) and settled as the walk's
+ * first stop, and every stop of the walk is shown again in order and settled as the walk settles; at each stop
+ * the sentinel must be in no node other than reported renders of the run, with no new console error and the same
+ * slide count (judgeNode, everything but the node itself), and the node the author typed in must be visible at
+ * some stop reading exactly the new text plus the sentinel (a picked node need only be visible). The sentinel is
+ * undone and the copy must be byte-identical to the round's edits; one that cannot be restored stops the deck's
+ * probing (`aborted`).
+ */
+async function probeAlone(o: ProbeArgs, w: Written, author: AuthorNode[]): Promise<{ verdict: AloneVerdict; judged: boolean } | { aborted: string }> {
+  const { v, copy, queue } = o;
+  const text = w.planted ?? w.req.afterText;
+  const runId = w.out.runId;
+  // The author's locators: the walk before the edit counted each of them (the field's nodes map exactly there).
+  const locOf = new Map(o.before.nodes.map((n) => [locatorKey(n.locator), n.locator] as const));
+  locOf.set(locatorKey(w.target.node.locator), w.target.node.locator);
+  const locs = author.flatMap((a) => {
+    const l = locOf.get(a.key);
+    return l ? [{ key: a.key, locator: l }] : [];
+  });
+  if (locs.length !== author.length) return { verdict: { pass: false, render: false, why: 'the node the author typed in has no locator the walk counted' }, judged: false };
+  const reported = new Set(o.nodes.map((n) => locatorKey(n.locator)));
+  const sameRun = new Set([
+    ...o.nodes.filter((n) => n.match.runId === runId || (n.match.confidence === 'ambiguous' && n.match.candidates.some((c) => c.runId === runId))).map((n) => locatorKey(n.locator)),
+    ...locs.map((l) => l.key),
+  ]);
+  const baseline = new Set(o.before.walk.consoleErrors.map((e) => o.normalize(e.message)));
+  let written: WriteOutcome;
+  try {
+    written = await queue.edit({ version: o.version, runId, beforeText: text, afterText: text + SENTINEL });
+  } catch (e) {
+    written = { ok: false, verbatim: { before: text, after: text + SENTINEL }, why: e instanceof Error ? e.message : String(e), code: 'internal' };
+  }
+  if (!written.ok) {
+    if (!bytesEqual(await copy.read(), o.bytes)) return { aborted: 'the refused sentinel write changed the copy' };
+    return { verdict: { pass: false, render: false, why: `the patcher did not write the sentinel: ${written.why}` }, judged: false };
+  }
+  const stops: AloneStop[] = [];
+  let trouble: string | null = null;
+  try {
+    await v.load({ docId: copy.addDocId(newDocumentId()), fileName: copy.fileName });
+    o.res.probeLoads++;
+    o.tally.result.totals.probeLoads++;
+    await v.waitStable(300);
+    const slideCountAfter = (await v.detect()).count;
+    await settleAfterLoad(v, o.settle, true);
+    await o.walker.startReplay();
+    for (let i = 0; i < o.walk.stops.length && !interrupted; i++) {
+      const reached = await o.walker.replay(i);
+      await v.waitScripted({ ...QUIET_SETTLE, watchFrames: false });
+      await v.waitStable(300);
+      if (!reached) {
+        detail(`probe alone ${runId} stop ${i + 1}/${o.walk.stops.length}: not reached`);
+        stops.push({ reached: false, nodes: [], rest: { pass: true } });
+        continue;
+      }
+      const found = await v.find(SENTINEL);
+      const newErrors = v
+        .consoleErrors()
+        .map((e) => o.normalize(e.message))
+        .filter((m) => !baseline.has(m));
+      const at: AloneStop['nodes'][number][] = [];
+      for (const l of locs) {
+        const r = await v.locate(l.locator).catch(() => null);
+        if (!r?.found || !r.node) continue;
+        const b = r.node.rect;
+        const laidOut = b.w > 0 && b.h > 0;
+        const inView = laidOut && b.x < v.viewport.w && b.x + b.w > 0 && b.y < v.viewport.h && b.y + b.h > 0;
+        at.push({ key: l.key, data: r.node.node.data, visible: r.visible, laidOut, inView, ...(r.slide === null ? {} : { onSlide: r.slide === o.walk.stops[i].slide }) });
+      }
+      const rest = judgeNode({
+        reached: true,
+        slideCountBefore: o.before.walk.detect.count,
+        slideCountAfter,
+        located: null,
+        found,
+        self: locs[0].locator,
+        sameRun,
+        reported,
+        newErrors,
+        sentinel: SENTINEL,
+        pickedRun: true,
+      });
+      stops.push({ reached: true, nodes: at, rest });
+      // --verbose: what each stop showed, as counts only (no deck text).
+      const want = text + SENTINEL;
+      detail(`probe alone ${runId} stop ${i + 1}/${o.walk.stops.length}: author node found ${at.length}, visible ${at.filter((n) => n.visible).length}, laid out ${at.filter((n) => n.laidOut).length}, in the viewport ${at.filter((n) => n.inView).length}, on this stop's slide ${at.filter((n) => n.onSlide !== false).length}, with the new text ${at.filter((n) => n.data === want).length}; sentinel in ${found.matches.length} nodes; ${rest.pass ? 'rules kept' : 'a rule broken'}`);
+    }
+    if (interrupted) trouble = 'interrupted';
+  } catch (e) {
+    trouble = `the probe could not check it: ${e instanceof Error ? e.message : String(e)}`;
+  }
+  // Undo the sentinel through the patcher; the copy must be the round's edits again, byte for byte.
+  let undoWhy: string | null = null;
+  try {
+    const u = await queue.undo(written.record);
+    if (!u.ok) undoWhy = `undo failed: ${u.why}`;
+  } catch (e) {
+    undoWhy = `undo failed: ${e instanceof Error ? e.message : String(e)}`;
+  }
+  if (!bytesEqual(await copy.read(), o.bytes)) {
+    try {
+      await copy.restore(o.bytes);
+    } catch {
+      // judged below
+    }
+    if (!bytesEqual(await copy.read(), o.bytes)) return { aborted: 'the probe copy could not be restored' };
+    undoWhy = undoWhy ?? "undo did not restore the copy's bytes exactly";
+  }
+  if (trouble ?? undoWhy) return { verdict: { pass: false, render: false, why: (trouble ?? undoWhy)! }, judged: false };
+  return { verdict: judgeAlone(stops, { author, want: w.req.pick ? null : w.req.afterText + SENTINEL }), judged: true };
 }
 
 /** A written edit that failed in Chromium: no longer counted as written. */

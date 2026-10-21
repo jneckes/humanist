@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sorted labels</title>
+<style>body{font:18px sans-serif;margin:20px} li{margin:2px 0}</style>
+</head>
+<body>
+<h1>Fruit, A to Z</h1>
+<ul id="list"></ul>
+<script>
+const labels = ['Mango', 'Apple', 'Kiwi', 'Banana', 'Cherry', 'Lemon', 'Fig', 'Grape'];
+const ul = document.getElementById('list');
+// The deck lists the labels in alphabetical order.
+labels.slice().sort().forEach(function (t) {
+  const li = document.createElement('li');
+  li.textContent = t;
+  ul.appendChild(li);
+});
+</script>
+</body>
+</html>

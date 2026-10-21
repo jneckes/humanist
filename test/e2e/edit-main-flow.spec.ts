@@ -180,19 +180,22 @@ test('@edit Cmd+Z and Cmd+Shift+Z restore the bytes exactly; the page shows each
   }
 });
 
-test("@edit the overlay toast's Undo undoes that write", async () => {
+test("@edit the Saved toast's Undo (in the shell, E-5) undoes that write", async () => {
   const o = await open('decks/single.html');
   try {
     await enterEdit(o);
+    const shell = await o.app.shellPage(o.deck.docId);
     await openField(o.deck, 'p.lede');
     await typeKeys(o.deck, ' Today.');
     await o.deck.key('Enter');
     await until('the write', async () => (fs.readFileSync(o.file, 'utf8').includes('in the loop. Today.</p>') ? true : undefined));
-    const button = await until('the toast with Undo', async () => {
-      const st = await o.deck.editState<{ toast: string; toastButton: { x: number; y: number; w: number; h: number } | null }>();
-      return st.toastButton && /^Saved · single\.html:\d+/.test(st.toast) ? st.toastButton : undefined;
+    await until('the shell toast with Undo', async () => {
+      const t = await shell.evaluate(() => ({ text: document.querySelector('#toast .toast-text')?.textContent ?? '', button: !!document.querySelector('#toast.visible .toast-action') }));
+      return t.button && /^Saved · single\.html:\d+$/.test(t.text) ? true : undefined;
     });
-    await o.deck.click(button.x + button.w / 2, button.y + button.h / 2);
+    // The overlay shows no second copy.
+    expect((await o.deck.editState<{ toast: string }>()).toast).toBe('');
+    await shell.click('#toast .toast-action');
     await bytesBecome(o.file, o.original);
     expect((await o.app.win(o.deck.docId)).state.notes).toEqual([]);
   } finally {

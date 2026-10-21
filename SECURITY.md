@@ -198,16 +198,34 @@ one run of the version it shows, and only right after the user pressed a key or 
 - **The trusted-input rule (P2-7).** Main takes a `begin` only in Edit, with Edit available (the Edit capability,
   editing allowed, a UTF-8 file that is still there), and only when the deck view received a real press within the
   last 2 s: Electron's `input-event`, which reports only input the browser process dispatched (the OS, or main's own
-  `sendInputEvent`), never a page script's. Each press opens at most one field. A `commit` is taken only for a field
-  main accepted, for the version that field opened on, and for an edit only to one of that field's runs; then main
-  checks Edit (or that Edit was left while the field was open), the capability and editing allowed **at that
-  moment**, and the queue checks them once more just before the rename (`canWrite`). Anything else is dropped before
-  the queue, without a note or a session write (only a field main accepted is told its commit was refused), so a
-  forged message changes nothing on disk or in app data.
+  `sendInputEvent`), never a page script's. A press made while a commit of that view was unanswered counts from
+  that commit's answer instead (E-1: the field it opens waits for the answer, which on a large deck can come later
+  than 2 s after the press). Each press opens at most one field. A `commit` is taken only for a field
+  main accepted and still authorises, for the version that field opened on, and for an edit only to one of that
+  field's runs. A field's authorisation ends when it closes (its commit is taken, or the deck reports no field
+  open), when a newer field begins (the deck has one open field), when the view leaves Edit, and after 10 minutes
+  without trusted input in that view. One commit outlives those last two: the one main itself asks for (E-2: the
+  view leaves Edit, the window closes, the app quits, or a click in the shell takes focus from the deck view) is
+  taken for 5 s after the request, so the words of a user who typed, walked away and then closed the window are
+  kept. When
+  main accepts a commit it checks Edit, the capability and editing allowed **at that moment**; the queue checks the
+  capability and editing allowed once more just before the rename (`canWrite`), not the mode, so a commit accepted
+  in Edit is written even if the user switches mode while it waits. Anything else is dropped before the queue,
+  without a note or a session write, so a forged message changes nothing on disk or in app data. One exception keeps
+  the user's words: a commit main accepted and still authorises that cannot be written because the file just went
+  away, stopped being UTF-8 or became Protected is kept as a verbatim note with its exact texts (app data only).
   The picker's request and the toast's Undo need Edit and a press within 2 s too.
 - **What a write can be.** Main turns a commit into an `EditRequest` (version, run id, the run's text before and
-  after); the write queue re-reads the file, finds the run by that version's map (by its text and 32 characters of
-  context when the file changed), plans the smallest splice inside that run, encodes it (`&` and `<` as references in
+  after); the write queue re-reads the file and places the run by position: when the file changed since that
+  version, a diff of that version to the current bytes maps the run's range, and the run must be unchanged there
+  (neither its text nor the 32 characters of context around it ever chooses between copies). When the text is in
+  several places, the diff must also account for every copy, each told apart from the others by text it left
+  unchanged around it, and no other copy may carry the edited one's surroundings (editor/place.ts): a moved or
+  copied templated slide is a note, never a write into another slide. A version the queue does not hold, a diff
+  that runs out of time, a change that overlaps the run, or a place the text around it does not confirm makes the
+  commit a verbatim note. Main keeps the
+  version of every open field and of the page shown until its commit is answered. The queue then plans the smallest
+  splice inside that run, encodes it (`&` and `<` as references in
   HTML text; the 9.2 escapes in a literal; `<` or `&` into a plain literal, which a page may set as HTML, becomes a
   note instead), and verifies the exact bytes before they are renamed in: the run holds the new text, nothing else
   moved, no new parse error, and for literals the script still parses, the literal cooks to the new text and the
@@ -218,16 +236,23 @@ one run of the version it shows, and only right after the user pressed a key or 
   that is not UTF-8; a write to another file (main writes only the realpath it opened); an undo record (main holds
   the records; the deck names a token, and main checks it is the window's latest undoable write); a history restore
   (the shell's history list only, after a native confirmation). **What it can:** a compromised page in a Trusted (or
-  Enable-editing) file in Edit can, within 2 s of a real press of the user's, open a field and commit a change to one
-  run of the version shown, or press the toast's Undo. Such a write is still exactly one run's text, verified, an
-  edit note with its lock, undoable byte for byte and in the history (Known limits below).
+  Enable-editing) file in Edit can, within 2 s of a real press of the user's, open a field, and while that field stays
+  authorised (above) commit a change to one run of the version it opened on; it can also press the toast's Undo
+  within 2 s of a press. Such a write is still exactly one run's text, verified, an edit note with its lock, undoable
+  byte for byte and in the history (Known limits below).
 - **The edit field's input gate** (P2-7, P2-9), like the note card's: capture listeners registered at preload start
   keep page listeners from seeing the field's keys, input, paste, drop, composition and selection events. The field
   accepts a change only when a trusted `beforeinput` announced it; a change made any other way (a page's
   `document.execCommand`, a script setting the text) is put back, and native undo is then off for that field.
   Native undo and redo work only within the field's own steps, so Cmd+Z in a field never reaches an earlier,
   already written edit. A press that opens a field never reaches the page (no click-to-advance, no link). If the
-  page re-renders or removes the open field, what was typed becomes a verbatim note.
+  page re-renders or removes the open field, what was typed becomes a verbatim note. Dragging selected text moves
+  it only within the field (the input over SVG text included): the deletion at the source is allowed only when the
+  drop landed inside the field, so a drag into the page's own editable element copies the text there and takes
+  nothing out of the field. While a press waits for the page's unanswered commit before its field opens (E-1), the
+  keys typed meanwhile are kept from the page (the key router, at window capture) and typed into the field once it
+  opens, through the field's own gate, at the caret in one of its text nodes: only characters of trusted key events,
+  Backspace over them and Enter; any other key (an arrow, Delete, a paste, an IME) stops that and the author is told.
 - **History** (P2-11): before every write of the deck (edit, undo, redo, Restore), the bytes it replaces are kept in
   `<userData>/files/<fileKey>/history/<sha256>.html`, files mode 0600 in a 0700 folder, the newest 100 within
   256 MiB per document, deduplicated by sha256, listed in an `index.json` written atomically. A Protected document's
@@ -239,18 +264,40 @@ one run of the version it shows, and only right after the user pressed a key or 
   and the history list's close and Restore. Each is refused from a deck view (`test/security/forged-ipc.spec.ts`).
   Settings › General › Smart punctuation (`bl:settings:set-smart-punctuation`) is answered only for the Settings
   window's own shell (`test/security/trust-ipc.spec.ts`).
+- **Spelling suggestions** (6.3): in Edit, with a field open, a right-click on a word the spellchecker marks shows a
+  native menu of the dictionary's suggestions only (at most 8, each at most 100 characters). Choosing one calls
+  `replaceMisspelling`, which reaches the field as `insertReplacementText`, a change the field's gate allows. The
+  suggestions come from the deck's renderer, so a compromised one can choose the words, but only for its own field
+  and only when the user picks one. The page's own `contextmenu` listeners do not see a right-click in the field,
+  an SVG text field's overlay input included (seen from the page, its right-click lands on the overlay host).
+- **Commit requests from main** (`bl:edit:commit-now`): before a window closes, the app quits, or a click in the
+  shell takes focus from the deck view (also the click that brings an inactive window back), main asks the deck to
+  commit its open field and waits (at most 3 s). The answer is an ordinary `commit`, checked as above, and taken
+  for 5 s after the request even when the field's authorisation otherwise ended (Known limits).
 
 `test/security/edit-forged.spec.ts` forges every edit message from a Trusted deck in Edit (begin, commit with an
 edit, a verbatim note, a pick and a no-op, candidates, undo tokens, busy) and from a Protected one right after a
 real click: nothing is written, no note appears; the positive control (a real click, keys and Enter) writes, and
-replaying its real token with no press does nothing. `forged-ipc.spec.ts` covers every deck and shell channel,
-the edit ones included.
+replaying its real token with no press does nothing. `edit-expiry.spec.ts` banks fields on real presses and commits
+them after Read, after the idle limit, and after a newer field: nothing is written and app data does not change; and
+it pins the one exception (a banked field idle past the limit gets the single commit a File › Close asks for, and a
+second commit of it is refused).
+`forged-ipc.spec.ts` covers every deck and shell channel, the edit ones included.
 
 Known limits added by Phase 2:
 
-- **A page can ride a real press.** As above: for 2 s after a real press in Edit, a compromised page can commit a
-  change to one run, or press the toast's Undo (main cannot see where in the page the press landed). The change is
-  limited, recorded and undoable; turning Edit off (Read) closes it.
+- **A page can ride a real press.** A compromised page can open a field within 2 s of a real press in Edit (main
+  cannot see where in the page the press landed), or press the toast's Undo then. It can commit a change to one run
+  for as long as that field stays authorised: until a newer field begins, the deck reports no field open, the view
+  leaves Edit, or 10 minutes pass without trusted input in that view. The page controls the first two, so the bound
+  is leaving Edit or 10 minutes without input, with one exception: such a field, idle or not, also gets the one
+  commit main asks for when the user leaves Edit, closes the window, quits, or clicks in the shell (taken for 5 s
+  after that request; `test/security/edit-expiry.spec.ts` V-close). That exception is what keeps a real user's
+  words after a pause; the cost is that a page holding a banked field gets that one commit too. It is one commit
+  per request, in Edit, to one run, recorded and undoable.
+- **A deck that does not answer before close or quit.** Before a window closes or the app quits, main asks the deck
+  to commit its open field and waits at most 3 s. If the deck cannot answer in time (a hung page), the window closes
+  anyway: nothing is written, and main keeps nothing it did not receive.
 - **A page can move the selection inside an open field** (within one run), and the user's next keystroke replaces
   it, as with the note card. Text inserted through the accessibility API fires no `beforeinput`, so the field
   refuses it. Wispr Flow pastes with Cmd+V, which works.

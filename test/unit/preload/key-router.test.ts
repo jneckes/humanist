@@ -52,6 +52,32 @@ describe('classifyKey (6.2 single-letter keys)', () => {
     expect(classifyKey(key('Enter', { meta: true }), ctx('edit', 'edit'))).toEqual({ kind: 'text', handle: null });
   });
 
+  it('hands a Space or Shift+Space in an edit field to the field, which types it itself on a <button> or <summary> (E-10)', () => {
+    expect(classifyKey(key('Space'), ctx('edit', 'edit'))).toEqual({ kind: 'text', handle: 'edit-space' });
+    // Shift+Space types a space too, and Chromium takes it as the button's activation all the same (finding 11,
+    // re-verification: the space was lost and the commit wrote the text without it).
+    expect(classifyKey(key('Space', { shift: true }), ctx('edit', 'edit'))).toEqual({ kind: 'text', handle: 'edit-space' });
+    // With Cmd, Ctrl or Alt, in a card, or in an IME composition it is plain typing.
+    for (const m of [{ meta: true }, { ctrl: true }, { alt: true }]) {
+      expect(classifyKey(key('Space', m), ctx('edit', 'edit'))).toEqual({ kind: 'text', handle: null });
+    }
+    expect(classifyKey(key('Space'), ctx('review', 'card'))).toEqual({ kind: 'text', handle: null });
+    expect(classifyKey(key('Space', { composing: true }), ctx('edit', 'edit'))).toEqual({ kind: 'text', handle: null });
+  });
+
+  it('keeps every key but a chord for the field that waits to open (E-1, finding 0 re-verification)', () => {
+    const pending = { ...ctx('edit'), editPending: true };
+    for (const code of ['KeyN', 'KeyJ', 'Space', 'ArrowRight', 'ArrowLeft', 'Enter', 'Backspace', 'Escape', 'Digit1', 'Slash']) {
+      expect(classifyKey(key(code), pending), code).toEqual({ kind: 'pending' });
+    }
+    expect(classifyKey(key('KeyN', { shift: true }), pending)).toEqual({ kind: 'pending' });
+    // Chords still pass (Cmd+Z, Wispr Flow's Cmd+V); a text field still has its keys; outside Edit it means nothing.
+    expect(classifyKey(key('KeyZ', { meta: true }), pending)).toEqual({ kind: 'pass' });
+    expect(classifyKey(key('KeyN'), { ...ctx('edit', 'card'), editPending: true })).toEqual({ kind: 'text', handle: null });
+    expect(classifyKey(key('KeyN'), { ...ctx('review'), editPending: true })).toEqual({ kind: 'shortcut', action: 'new-note' });
+    expect(classifyKey(key('KeyN', { isTrusted: false }), pending)).toEqual({ kind: 'ignore' });
+  });
+
   it('leaves Esc and Enter to an IME composition', () => {
     expect(classifyKey(key('Escape', { composing: true }), ctx('review', 'card'))).toEqual({ kind: 'text', handle: null });
     expect(classifyKey(key('Enter', { composing: true }), ctx('edit', 'edit'))).toEqual({ kind: 'text', handle: null });

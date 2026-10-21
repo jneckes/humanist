@@ -211,3 +211,27 @@ export function measureFit(el: Element, win: Window, container: Element | null):
   }
   return { lines: lines.length, overflow, containerOverflow, widow };
 }
+
+/**
+ * 6.3 Fit guard with 6.3 Source case (lead decision E-10, review finding 10): the reading of the text as it renders
+ * once the field closes. While a field is open its element shows the file's case (text-transform: none,
+ * font-variant-caps: normal); `rendered` lists those inline properties with the values the element had before the
+ * field set them ([property, value, priority], value '' for none). They are put back for the reading and the field's
+ * overrides restored right after, in the same task, so nothing is painted in between.
+ */
+export function measureFitAs(el: HTMLElement, win: Window, container: Element | null, rendered: readonly (readonly [string, string, string])[]): FitState {
+  if (rendered.length === 0) return measureFit(el, win, container);
+  const set = (list: readonly (readonly [string, string, string])[]) => {
+    for (const [prop, value, prio] of list) {
+      if (value) el.style.setProperty(prop, value, prio);
+      else el.style.removeProperty(prop);
+    }
+  };
+  const editing = rendered.map(([prop]) => [prop, el.style.getPropertyValue(prop), el.style.getPropertyPriority(prop)] as const);
+  set(rendered);
+  try {
+    return measureFit(el, win, container);
+  } finally {
+    set(editing);
+  }
+}

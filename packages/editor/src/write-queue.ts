@@ -4,14 +4,18 @@
 //
 //   1. Versions. Every map carries `version`, the sha256 of the file bytes it was built from. The queue keeps
 //      the source and map of recent versions, because a client may still hold an old one; main tells it the
-//      versions its pages hold (know, P2-3), so their context is there when a stale edit needs it.
+//      versions its pages and open fields hold (know, P2-3) and pins them for as long as they are held (know with
+//      `pin`, unpin; SPEC 9.2 step 1: "Main keeps the map for each version a client still holds"): the LRU of
+//      `keepVersions` never evicts a pinned version.
 //   2. Queue and version check. One operation at a time. Each re-reads the file and hashes it. If the hash is
-//      not the client's version, the map is rebuilt from the current file and the edit goes to the only run
-//      whose text equals beforeText, using 32 characters of the old version's source context on each side to
-//      break ties; no run, or several, makes it a verbatim note. Stale offsets are never applied. A text that
-//      was already in several places in the client's version counts as a tie even when one copy is left, and
-//      so does a text that is also a shadow value (text the page may show from a source Blueline never
-//      writes, DeckMap.shadows; decision D-a): it is not unique, so the context must single the run out.
+//      not the client's version, the edit is placed by POSITION (lead decision E-1): the run's raw range in the
+//      client's version is mapped to the current source through a diff (core/locked-spans mapRange: diff_main with
+//      a time limit, no clean-up, as the locked spans are moved), and only a run of the same kind (parsed text or
+//      a literal) at exactly that range, holding beforeText, with no change overlapping it, is the edit's run.
+//      Text alone never picks a copy, and neither does the 32 characters of context around it. Anything else is a
+//      verbatim note: `ambiguous` when another run still holds beforeText, `stale` when none does, when the diff
+//      timed out, or when the queue does not know the client's version (it cannot be checked against what the
+//      client saw). Stale offsets are never applied.
 //   3. Re-check before writing: the run must hold beforeText exactly (planEdit), and the splice is planned on
 //      the file as just read. A picked candidate (EditRequest.pick) must lift to the run exactly (P2-8).
 //   4. Atomic write through DeckIO.atomicWrite, which re-hashes the file on disk against the hash read in
@@ -31,20 +35,24 @@
 // threw) is recognised by reading the file back. A deck that failed the UTF-8 decode is never written (9.2 rule 1).
 
 import { changedSpan } from '@blueline/core/edit-cleanup';
+import { LOCK_DIFF_TIMEOUT_SEC } from '@blueline/core/locked-spans';
 import { liftPick } from '@blueline/core/edit-commit';
 import { buildMap } from '@blueline/core/mapper';
 import { decodeDeck, encodeDeck } from '@blueline/core/text';
 import type { DeckIO, RestoreOutcome, UndoOutcome, WriteKind, WriteQueue, WriteQueueOptions } from '@blueline/core/capabilities';
 import type { DeckMap, EditRequest, HtmlRun, LiteralRun, RefusalCode, WriteOutcome, WriteRecord } from '@blueline/core/types';
+import { placeStale } from './place';
 import { findRun, planEdit, type EditPlan } from './plan';
 import { applySplice } from './splice';
-import { CONTEXT, isWriteRecord, makeRecord, planUndo, swapRecord } from './undo';
+import { isWriteRecord, makeRecord, planUndo, swapRecord } from './undo';
 import { verifyEdit, verifyUndo } from './verify';
 
 /** Options beyond the contract's WriteQueueOptions. */
 export interface EditorQueueOptions extends WriteQueueOptions {
-  /** How many recent versions (source and map) are kept for clients that hold an old one. Default 8. */
+  /** How many recent versions (source and map) are kept for clients that hold an old one. Default 8; pinned ones stay. */
   keepVersions?: number;
+  /** The time limit of the diff that places a stale edit by position (seconds; default LOCK_DIFF_TIMEOUT_SEC). */
+  diffTimeoutSec?: number;
 }
 
 /** One version of the file, as read, written or told (know) through this queue. */
@@ -76,11 +84,6 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-/** Every run of a map with its raw range, Strategy 1 and Strategy 2 alike. */
-function allRuns(map: DeckMap): (HtmlRun | LiteralRun)[] {
-  return [...map.runs, ...map.literals];
-}
-
 const PICK_KINDS = new Set(['equal', 'substring', 'normalized']);
 
 function isRequest(req: EditRequest): boolean {
@@ -102,8 +105,11 @@ function isRequest(req: EditRequest): boolean {
 export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): WriteQueue {
   const maxRetries = Math.max(0, opts.maxRetries ?? 5);
   const keep = Math.max(2, opts.keepVersions ?? 8);
+  const diffTimeoutSec = opts.diffTimeoutSec ?? LOCK_DIFF_TIMEOUT_SEC;
   /** Recent versions by hash, least recently used first. */
   const versions = new Map<string, Version>();
+  /** How many holders pinned each version (know with `pin`): such a version is never evicted (9.2 step 1). */
+  const pins = new Map<string, number>();
   let current: Version | null = null;
   let tail: Promise<unknown> = Promise.resolve();
 
@@ -117,7 +123,13 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
   function remember(v: Version): Version {
     versions.delete(v.version);
     versions.set(v.version, v);
-    while (versions.size > keep) versions.delete(versions.keys().next().value as string);
+    // Least recently used first, skipping what a client still holds; pinned versions may exceed `keep`.
+    if (versions.size > keep) {
+      for (const k of [...versions.keys()]) {
+        if (versions.size <= keep) break;
+        if (k !== v.version && !pins.has(k)) versions.delete(k);
+      }
+    }
     return v;
   }
 
@@ -157,52 +169,24 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
   }
 
   /**
-   * Step 2: which run of the current version the request means. The same version: the request's run id.
-   * Another version: the only run whose text equals beforeText, ties broken by 32 characters of the old
-   * version's source on each side of the old run; none or several is a verbatim note.
+   * Step 2: which run of the current version the request means. The same version: the request's run id. Another
+   * version (E-1): the run at the position the client's run maps to through a diff of the client's version to the
+   * current one, when it is of the same kind and holds beforeText and no change overlaps it; anything else is a
+   * verbatim note. The client's version must be known (main pins every version an open page or field holds).
    */
   function resolve(cur: Version, req: EditRequest): Resolved {
     if (req.version === cur.version) return { ok: true, runId: req.runId };
     const kind = req.runId.slice(0, 2);
     if (kind !== 'h:' && kind !== 'l:') return { ok: false, why: 'unknown run id', code: 'refused' };
     const old = versions.get(req.version);
-    const oldRun = old ? findRun(old.map, req.runId) : null;
+    // Without the client's version nothing says where its run is now: text alone never picks a copy.
+    if (!old) return { ok: false, why: 'the deck changed and the version the edit was made on is not known, so its place cannot be found (9.2 Write protocol step 2)', code: 'stale' };
+    const oldRun = findRun(old.map, req.runId);
     // The client's own map must agree with its request, or the request is not what the client saw.
-    if (old && (!oldRun || oldRun.value !== req.beforeText)) {
+    if (!oldRun || oldRun.value !== req.beforeText) {
       return { ok: false, why: 'the request does not match the version it names', code: 'refused' };
     }
-    const equal = allRuns(cur.map).filter((r) => r.value === req.beforeText);
-    // A text that was already in several places in the client's version is a tie even when only one copy is
-    // left: the copy the client edited may be the one that changed. Then the context must decide.
-    const tiedBefore = !!old && allRuns(old.map).filter((r) => r.value === req.beforeText).length > 1;
-    // A text that is also a shadow value (now or in the client's version) is not unique either (D-a).
-    const isShadow = (m: DeckMap | undefined): boolean => !!m && (m.shadows ?? []).some((x) => x.value === req.beforeText);
-    const shadowed = isShadow(cur.map) || isShadow(old?.map);
-    let chosen: HtmlRun | LiteralRun | null = null;
-    if (equal.length === 1 && !tiedBefore && !shadowed) {
-      chosen = equal[0];
-    } else if (equal.length >= 1 && old && oldRun) {
-      const before = old.src.slice(Math.max(0, oldRun.start - CONTEXT), oldRun.start);
-      const after = old.src.slice(oldRun.end, oldRun.end + CONTEXT);
-      const hits = equal.filter(
-        (r) => cur.src.slice(Math.max(0, r.start - CONTEXT), r.start) === before && cur.src.slice(r.end, r.end + CONTEXT) === after,
-      );
-      if (hits.length === 1) chosen = hits[0];
-    }
-    if (!chosen) {
-      if (equal.length === 0) return { ok: false, why: 'the deck changed and no run holds beforeText any more', code: 'stale' };
-      return {
-        ok: false,
-        code: 'ambiguous',
-        why:
-          equal.length === 1 && !tiedBefore
-            ? 'the deck changed and beforeText is also text Blueline never writes, so it is not unique (9.2 Write protocol step 2)'
-            : 'the deck changed and beforeText is in several places (9.2 Write protocol step 2)',
-      };
-    }
-    // An edit never moves between parsed text and a script literal: that is a different place on the page.
-    if (!chosen.id.startsWith(kind)) return { ok: false, why: 'the deck changed and the text now lives somewhere else', code: 'stale' };
-    return { ok: true, runId: chosen.id };
+    return placeStale(old, oldRun, cur, req.beforeText, diffTimeoutSec);
   }
 
   /**
@@ -434,25 +418,37 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
   }
 
   /**
-   * P2-3: a version a client holds, so its context can resolve a stale edit. Its source decides where a stale edit
-   * lands, so it is taken only when it hashes to `version` (one encode and hash, a few milliseconds on a large
-   * deck); anything else is ignored. A deck that is not UTF-8 is never written, so it has nothing to tell.
+   * P2-3: a version a client holds, so a stale edit made on it can be placed (step 2). Its source decides where a
+   * stale edit lands, so it is taken only when it hashes to `version` (one encode and hash, a few milliseconds on a
+   * large deck); anything else is ignored. A deck that is not UTF-8 is never written, so it has nothing to tell.
+   * `pin`: the version stays until as many unpin calls (9.2 step 1); a version already known is pinned without a
+   * new hash.
    */
-  function know(version: string, src: string, map: DeckMap): void {
+  function know(version: string, src: string, map: DeckMap, o: { pin?: boolean } = {}): void {
     if (typeof version !== 'string' || !SHA256.test(version) || typeof src !== 'string' || !map || map.version !== version) return;
     if (!map.utf8 || (map.served && map.served.srcLength !== src.length)) return;
+    // Keep the map already built for this source (complete, or completed later by its first reader, D-9).
+    const known = versions.get(version);
+    if (known && known.src === src && known.utf8 === map.utf8) {
+      if (o.pin === true) pins.set(version, (pins.get(version) ?? 0) + 1);
+      remember(known);
+      return;
+    }
     try {
       if (io.sha256(encodeDeck(src)) !== version) return;
     } catch {
       return;
     }
-    // Keep the map already built for this source (complete, or completed later by its first reader, D-9).
-    const known = versions.get(version);
-    if (known && known.src === src && known.utf8 === map.utf8) {
-      remember(known);
-      return;
-    }
+    if (o.pin === true) pins.set(version, (pins.get(version) ?? 0) + 1);
     remember({ version, src, utf8: map.utf8, map });
+  }
+
+  /** One holder of `version` let it go (know with `pin`); the LRU may evict it once nobody holds it. */
+  function unpin(version: string): void {
+    const n = pins.get(version);
+    if (n === undefined) return;
+    if (n <= 1) pins.delete(version);
+    else pins.set(version, n - 1);
   }
 
   // An unexpected exception never escapes as a rejection: nothing was written before the atomic write
@@ -487,6 +483,7 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
     redo: (record) => enqueue(() => guardUndo(record, 'redo')),
     restore: (bytes, expectVersion) => enqueue(() => guardRestore(bytes, expectVersion)),
     know,
+    unpin,
     currentMap: () => enqueue(async () => (current ? current.map : (await load()).v.map)),
     refresh: () => enqueue(async () => (await load()).v.map),
   };

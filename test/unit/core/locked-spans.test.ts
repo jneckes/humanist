@@ -2,7 +2,7 @@
 // transforms and violations).
 import DiffMatchPatch from 'diff-match-patch';
 import { describe, expect, it } from 'vitest';
-import { applyOwnWrite, lockForRun, transformLockedSpans, xIndexBefore } from '@blueline/core/locked-spans';
+import { applyOwnWrite, lockForRun, mapRange, transformLockedSpans, xIndexBefore } from '@blueline/core/locked-spans';
 import type { LockedSpan } from '@blueline/core/types';
 
 /** A lock on the first occurrence of `text` in `src`. */
@@ -286,5 +286,53 @@ describe('lockForRun', () => {
     expect(() => lockForRun('n-0001', { start, end, value: 'Caf\u00E9 & bar' })).toThrow(RangeError);
     expect(() => lockForRun('n-0001', { start: 5, end: 2, value: '' })).toThrow(RangeError);
     expect(() => lockForRun('n-0001', { start: 0, end: 999, value: '' }, src)).toThrow(RangeError);
+  });
+});
+
+describe('mapRange: a run\'s place in another version (9.2 Write protocol step 2; E-1)', () => {
+  const at = (src: string, text: string, from = 0): [number, number] => {
+    const i = src.indexOf(text, from);
+    if (i < 0) throw new Error(`no ${text}`);
+    return [i, i + text.length];
+  };
+
+  it('a change before the range shifts it; the mapped range holds the same characters', () => {
+    const [s, e] = at(prev, 'Next steps follow.');
+    const cur = prev.replace('<h1>Plan</h1>', '<h1>Plan for the quarter</h1>');
+    const m = mapRange(prev, cur, s, e);
+    expect(m.ok).toBe(true);
+    if (m.ok) expect(cur.slice(m.start, m.end)).toBe('Next steps follow.');
+  });
+
+  it('text inserted right at an edge is not the range\'s own (the diff often aligns it there)', () => {
+    const src = '<p>Alpha</p><p>Beta</p>';
+    const [s, e] = at(src, 'Beta');
+    const cur = '<p>Alpha</p><p>Gamma</p><p>Beta</p>';
+    const m = mapRange(src, cur, s, e);
+    const b = cur.lastIndexOf('Beta');
+    expect(m).toEqual({ ok: true, start: b, end: b + 4 });
+  });
+
+  it('a change inside the range, or one that overlaps it, is `changed`', () => {
+    const [s, e] = at(prev, 'Revenue grew in every region.');
+    expect(mapRange(prev, prev.replace('every region', 'most regions'), s, e)).toEqual({ ok: false, why: 'changed' });
+    expect(mapRange(prev, prev.replace('<p>Revenue grew', '<p>Sales grew'), s, e)).toEqual({ ok: false, why: 'changed' });
+  });
+
+  it('two identical copies: the one whose neighbour changed is still found where it was', () => {
+    const copy = '<div class="k">Summary</div><h2>Key takeaways</h2><p>Same</p>';
+    const src = `${copy}\n${copy}`;
+    const [s, e] = at(src, 'Key takeaways', src.indexOf('\n'));
+    const cur = `${copy}\n${copy.replace('<p>Same</p>', '<p>Agent rewrote it</p>')}`;
+    const m = mapRange(src, cur, s, e);
+    expect(m).toEqual({ ok: true, start: s, end: e });
+  });
+
+  it('a diff that reaches its time limit is `timeout`; bad ranges are `changed`', () => {
+    const big = Array.from({ length: 300 }, (_, i) => `<p>row ${i}</p>`).join('');
+    const [s, e] = at(big, 'row 150');
+    expect(mapRange(big, big.replace(/row/g, 'line'), s, e, { timeoutSec: 1e-9 })).toEqual({ ok: false, why: 'timeout' });
+    expect(mapRange(prev, prev, 5, 2)).toEqual({ ok: false, why: 'changed' });
+    expect(mapRange(prev, prev, 0, prev.length + 1)).toEqual({ ok: false, why: 'changed' });
   });
 });

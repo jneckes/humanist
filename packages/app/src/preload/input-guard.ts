@@ -27,7 +27,8 @@
 // inside the active field (or, for selectionchange, a selection inside it) goes to the field's own handling
 // (edit-input.ts filter and gate) and is then stopped at window capture, so page listeners neither see nor cancel
 // what the author types, pastes or dictates there. The field's beforeinput filter may preventDefault; the guard
-// itself never does.
+// itself never does. The guard also notes where each trusted drop landed, for the rest of its task (noteDrop): the
+// field allows a drag-move's deletion only for a drop inside it (E-10).
 
 import { listen } from './listeners';
 
@@ -84,6 +85,8 @@ export class InputGuard {
     if (!e.isTrusted) return;
     const path = e.composedPath();
     const real = path.length > 0 ? path[0] : e.target;
+    // E-10: where this drop landed, wherever that is, for the deleteByDrag that may follow it (edit-input.ts).
+    if (e.type === 'drop') noteDrop(this.win, real);
     const host = this.deps.host();
     // Seen from window, composedPath()[0] of an event inside the closed shadow root is the host itself.
     if (host && real === host) {
@@ -121,6 +124,36 @@ function inField(field: Element, real: EventTarget | null, e: Event): boolean {
   }
   const n = real as Node | null;
   return !!n && typeof n.nodeType === 'number' && (n === field || field.contains(n));
+}
+
+// ------------------------------------------------------------------------------------------- drops
+
+const drops = new WeakMap<object, { target: EventTarget | null }>();
+
+/**
+ * Records the real target of a trusted drop in `win` until the current task ends (E-10, review finding 12). Chromium
+ * moves selected text within a page in one task: `drop` at the element under the pointer, then deleteByDrag at the
+ * dragged selection and insertFromDrop at the drop point. The Edit field allows that deletion only when the drop
+ * landed inside it (edit-input.ts affectedRanges): a drag that ends in the page's own editable element copies the
+ * text there, takes nothing out of the field and writes nothing.
+ */
+export function noteDrop(
+  win: object,
+  target: EventTarget | null,
+  later: (fn: () => void) => void = (fn) => {
+    setTimeout(fn, 0);
+  },
+): void {
+  const d = { target };
+  drops.set(win, d);
+  later(() => {
+    if (drops.get(win) === d) drops.delete(win);
+  });
+}
+
+/** The real target of the trusted drop the current task dispatched in `win`; undefined when there was none. */
+export function dropTarget(win: object): EventTarget | null | undefined {
+  return drops.get(win)?.target;
 }
 
 // ------------------------------------------------------------------------------------------- card text

@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Spell, right-clicks cancelled</title>
+<style>body { margin: 20px; font: 28px/1.4 sans-serif; }</style></head>
+<body>
+<h1 id="h">Spelling probe</h1>
+<p id="p">A short line of text</p>
+<svg width="600" height="60" id="chart"><text id="svgtext" x="4" y="40" font-size="32">Chart label</text></svg>
+<script>
+// A deck that cancels every right-click it sees, at window capture, and counts them.
+window.addEventListener('contextmenu', function (e) { e.preventDefault(); document.documentElement.setAttribute('data-ctx', String((+document.documentElement.getAttribute('data-ctx') || 0) + 1)); }, true);
+</script>
+</body></html>

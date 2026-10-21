@@ -13,6 +13,12 @@
 // "Hello <b>bold</b> world" removes the "d" of "bold": that range is in another text node, so it is blocked.
 // Ranges are still taken from getTargetRanges() when a browser gives them.
 //
+// Dragging selected text inside the field moves it, as in any text field (6.3; E-10, review finding 12): Chromium
+// removes the dragged selection with deleteByDrag, then inserts it at the drop point with insertFromDrop, so both
+// are allowed. deleteByDrag is confined as deleteByCut is (the dragged selection, in one text node of the field),
+// never at a caret (a drag always moves a selection), and its drop must land inside the field too: a drag that
+// ends in the page's own editable element copies the text there and takes nothing out of the field.
+//
 // The input gate (P2-7, as CardInputGate does for the card). The field's text changes only through a trusted
 // beforeinput the filter allowed, followed by its input in the same task: a page's document.execCommand fires a
 // trusted `input` with no beforeinput (checked in Electron 44), and that change is put back. Line breaks rewritten
@@ -26,9 +32,12 @@
 // both, since its step sits on the stack too. Composition input (insertCompositionText) cannot be cancelled: it is
 // allowed, confined by the commit's diff (9.2 step 4).
 
-import { matchesArmed, type InputLike } from './input-guard';
+import { dropTarget, matchesArmed, type InputLike } from './input-guard';
 
-/** 9.2 Committing an edit, step 2: the input types an edit field accepts; insertParagraph commits. */
+/**
+ * 9.2 Committing an edit, step 2: the input types an edit field accepts; insertParagraph commits. deleteByDrag is the
+ * source half of a drag-move whose insertFromDrop is listed (E-10; spec-amendments, 9.2 step 2).
+ */
 export const ALLOWED_INPUT_TYPES: ReadonlySet<string> = new Set([
   'insertText',
   'insertReplacementText',
@@ -39,6 +48,7 @@ export const ALLOWED_INPUT_TYPES: ReadonlySet<string> = new Set([
   'deleteWordBackward',
   'deleteWordForward',
   'deleteByCut',
+  'deleteByDrag',
 ]);
 
 /** Insertions whose text may carry line breaks (pasted, dropped, dictated, replaced): they become spaces (6.3). */
@@ -115,6 +125,9 @@ export function classifyInput(f: InputFacts): InputDecision {
   // A collapsed range is an insertion point: the browser puts the text in the text node at it, or next to it at an
   // element boundary, where the commit's diff gives it to the run that held the caret (9.2 step 4).
   if (!r.collapsed && (r.textNodes !== 1 || r.other)) return 'block';
+  // deleteByDrag removes the dragged selection (getTargetRanges() is empty for it, so the range is that selection);
+  // Chromium moves only a range selection, so one at a caret is not the author's drag.
+  if (f.inputType === 'deleteByDrag' && r.collapsed) return 'block';
   if (INSERTIONS.has(f.inputType) && hasLineBreak(f.data)) return 'rewrite';
   return 'allow';
 }
@@ -290,8 +303,20 @@ export interface RangeLike {
  * The ranges a beforeinput changes: getTargetRanges() when the browser gives them, else the selection, and for a
  * deletion at a collapsed caret the character or word Selection.modify('extend') reaches (the selection is put
  * back at once). Null when there is no selection.
+ *
+ * deleteByDrag (E-10) also changes the drop point, where the insertFromDrop that follows puts the text: a collapsed
+ * range at the real target of this task's drop (input-guard.ts noteDrop), so rangeFacts confines both ends of the
+ * move to the field. Null when no drop came first.
  */
 export function affectedRanges(e: InputEvent, win: Window): RangeLike[] | null {
+  const ranges = inputRanges(e, win);
+  if (!ranges || e.inputType !== 'deleteByDrag') return ranges;
+  const at = dropTarget(win) as Node | null | undefined;
+  if (!at || typeof at.nodeType !== 'number') return null;
+  return [...ranges, { startContainer: at, startOffset: 0, endContainer: at, endOffset: 0, collapsed: true }];
+}
+
+function inputRanges(e: InputEvent, win: Window): RangeLike[] | null {
   let given: RangeLike[] = [];
   try {
     given = typeof e.getTargetRanges === 'function' ? e.getTargetRanges() : [];

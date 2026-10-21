@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Touched title</title>
+<style>body { margin: 40px; font: 24px/1.4 sans-serif; } h1 { font-size: 36px; } li { margin: 6px 0; }</style></head>
+<body>
+<h1 id="ttl">Loading title</h1>
+<ul id="nav"><li id="n1">Quarterly results</li><li id="n2">Next steps</li></ul>
+<p id="free">A free paragraph</p>
+<script>
+// The page writes the slide title from its navigation list, as a deck's script-written title does: the title on
+// screen equals another place's static text, but no run of the file holds it there.
+document.getElementById('ttl').textContent = document.getElementById('n1').textContent;
+</script>
+</body></html>

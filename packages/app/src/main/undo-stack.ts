@@ -13,6 +13,12 @@
 // names only a token that main minted, which `latest` checks is still the document's newest undoable write
 // (P2-14). The stack is dropped with its window (a D-1 reopen starts empty, so an old toast's Undo then fails
 // cleanly), and it never restores a whole-file snapshot: that is the history list's "Restore deck to <time>".
+//
+// Lead decision E-3 (review finding 14): an edit's entry exists from the moment main accepts its commit (reserve: a
+// pending slot, in the order commits were accepted), is filled when its write lands and cancelled when it becomes a
+// note or a refusal, so "the newest write" is well defined while writes are in flight. undo() takes the newest
+// entry whose write has landed; main runs it in the document's lane, behind the commits in flight. An entry put
+// back after a failed undo goes where it was, below everything accepted since.
 
 import { randomBytes } from 'node:crypto';
 import type { WriteRecord } from '@blueline/core/types';
@@ -113,59 +119,107 @@ export type UndoSettle =
   /** Nothing was written (case 3, a refusal, a failed write): the entry goes back where it was. */
   | { ok: false };
 
+/** A place on the undo stack: an accepted write, its entry once the write landed (null while it is pending). */
+interface Slot {
+  token: string;
+  /** Order of acceptance (reserve) or of the write (redo): the stack is kept in this order. */
+  seq: number;
+  entry: UndoEntry | null;
+}
+
 /**
  * One document's undo and redo stacks. `undo()` and `redo()` start an operation and return the entry to pass to
  * the queue; `settle()` ends it. Only one operation runs at a time (both return null while one is in flight),
  * so a second Cmd+Z never sends the same record twice or skips past a write still being undone.
  */
 export class UndoStack {
-  /** Oldest first; the newest undoable write is last. */
-  private readonly undos: UndoEntry[] = [];
+  /** Oldest first; the newest accepted write is last (pending ones too, E-3). */
+  private readonly undos: Slot[] = [];
   /** Oldest first; the most recently undone write is last. */
   private readonly redos: UndoEntry[] = [];
-  private inFlight: { entry: UndoEntry; kind: 'undo' | 'redo'; pushedSince: boolean } | null = null;
+  private inFlight: { entry: UndoEntry; seq: number; kind: 'undo' | 'redo'; pushedSince: boolean } | null = null;
+  private seq = 0;
 
   constructor(private readonly max: number = MAX_UNDO_ENTRIES) {}
 
   /**
-   * Records a new own write (an edit, an applied suggestion) on top of the undo stack and returns it with its
-   * token. A new write forks the history: the redo stack is cleared, as in every editor. Throws on a malformed
-   * entry (a bug in main: the queue's own outcome is pushed here, never a deck's data).
+   * E-3: main accepted a commit; its write is in flight. Returns the token its entry will have (fill() when it
+   * lands, cancel() when it does not). The slot keeps its place in the order commits were accepted.
+   */
+  reserve(token?: string): string {
+    if (token !== undefined && (typeof token !== 'string' || !UNDO_TOKEN.test(token))) throw new Error('UndoStack: bad token');
+    let t = token ?? newUndoToken();
+    while (token === undefined && this.has(t)) t = newUndoToken();
+    if (this.has(t)) throw new Error('UndoStack: token already used');
+    this.undos.push({ token: t, seq: ++this.seq, entry: null });
+    while (this.undos.length > this.max) this.undos.shift();
+    return t;
+  }
+
+  /**
+   * The reserved write landed: its entry, in its slot. A new write forks the history: the redo stack is cleared, as
+   * in every editor. Null when the slot is gone (the stack was cleared meanwhile). Throws on a malformed entry (a bug
+   * in main: the queue's own outcome is pushed here, never a deck's data).
+   */
+  fill(token: string, e: NewUndoEntry): UndoEntry | null {
+    checkEntry(e);
+    const slot = this.undos.find((x) => x.token === token);
+    if (!slot || slot.entry) return null;
+    slot.entry = { token, record: copyRecord(e.record), runId: e.runId, strategy: e.strategy as UndoEntry['strategy'], beforeText: e.beforeText, afterText: e.afterText, noteId: e.noteId, line: e.line };
+    this.redos.length = 0;
+    if (this.inFlight) this.inFlight.pushedSince = true;
+    return copyEntry(slot.entry);
+  }
+
+  /** The reserved write did not land (a note, a refusal): its slot goes. False when no such pending slot. */
+  cancel(token: string): boolean {
+    const i = this.undos.findIndex((x) => x.token === token && x.entry === null);
+    if (i === -1) return false;
+    this.undos.splice(i, 1);
+    return true;
+  }
+
+  /**
+   * Records a new own write (an edit, an applied suggestion) that already landed, on top of the undo stack, and
+   * returns it with its token (reserve and fill at once).
    */
   push(e: NewUndoEntry): UndoEntry {
     checkEntry(e);
-    let token = e.token ?? newUndoToken();
-    while (e.token === undefined && this.has(token)) token = newUndoToken();
-    if (this.has(token)) throw new Error('UndoStack: token already used');
-    const entry: UndoEntry = { token, record: copyRecord(e.record), runId: e.runId, strategy: e.strategy as UndoEntry['strategy'], beforeText: e.beforeText, afterText: e.afterText, noteId: e.noteId, line: e.line };
-    this.undos.push(entry);
-    while (this.undos.length > this.max) this.undos.shift();
-    this.redos.length = 0;
-    if (this.inFlight) this.inFlight.pushedSince = true;
-    return copyEntry(entry);
+    const token = this.reserve(e.token);
+    return this.fill(token, e)!;
   }
 
-  /** Starts undoing the newest write: returns its entry (pass entry.record to WriteQueue.undo), or null. */
+  /**
+   * Starts undoing the newest write that has landed (E-3: one still pending is newer, and its undo comes after it):
+   * returns its entry (pass entry.record to WriteQueue.undo), or null.
+   */
   undo(): UndoEntry | null {
-    if (this.inFlight || this.undos.length === 0) return null;
-    const entry = this.undos.pop()!;
-    this.inFlight = { entry, kind: 'undo', pushedSince: false };
-    return copyEntry(entry);
+    if (this.inFlight) return null;
+    for (let i = this.undos.length - 1; i >= 0; i--) {
+      const slot = this.undos[i];
+      if (!slot.entry) continue;
+      this.undos.splice(i, 1);
+      this.inFlight = { entry: slot.entry, seq: slot.seq, kind: 'undo', pushedSince: false };
+      return copyEntry(slot.entry);
+    }
+    return null;
   }
 
   /** Starts redoing the most recently undone write: pass entry.record (the ORIGINAL record) to WriteQueue.redo. */
   redo(): UndoEntry | null {
     if (this.inFlight || this.redos.length === 0) return null;
     const entry = this.redos.pop()!;
-    this.inFlight = { entry, kind: 'redo', pushedSince: false };
+    // A redo is a write made now: commits accepted after it are newer.
+    this.inFlight = { entry, seq: ++this.seq, kind: 'redo', pushedSince: false };
     return copyEntry(entry);
   }
 
   /**
    * Ends the operation undo() or redo() started for `token`. Written: an undone write moves to the redo stack
-   * (unless a new write was pushed meanwhile, which cleared redo), a redone one back on top of the undo stack
-   * with its new note id. Not written: the entry goes back where it was, so Cmd+Z tries it again (and case 3
-   * offers Make a note again) rather than skipping to an older write. Returns false for a token not in flight.
+   * (unless a new write was pushed meanwhile, which cleared redo), a redone one back on the undo stack with its
+   * new note id, below the commits accepted after it. Not written: the entry goes back where it was, below every
+   * write accepted since (E-3), so Cmd+Z tries it again (and case 3 offers Make a note again) rather than skipping
+   * to an older write, and never hides a newer one. Returns false for a token not in flight.
    */
   settle(token: string, how: UndoSettle): boolean {
     const f = this.inFlight;
@@ -177,13 +231,21 @@ export class UndoStack {
       e.noteId = how.noteId;
     }
     if (f.kind === 'undo') {
-      if (!how.ok) this.restoreTop(this.undos, e);
+      if (!how.ok) this.putBack({ token: e.token, seq: f.seq, entry: e });
       else if (!f.pushedSince) this.restoreTop(this.redos, e);
     } else {
-      if (how.ok) this.restoreTop(this.undos, e);
+      if (how.ok) this.putBack({ token: e.token, seq: f.seq, entry: e });
       else if (!f.pushedSince) this.restoreTop(this.redos, e);
     }
     return true;
+  }
+
+  /** A slot back in acceptance order. */
+  private putBack(slot: Slot): void {
+    const at = this.undos.findIndex((x) => x.seq > slot.seq);
+    if (at === -1) this.undos.push(slot);
+    else this.undos.splice(at, 0, slot);
+    while (this.undos.length > this.max) this.undos.shift();
   }
 
   private restoreTop(stack: UndoEntry[], e: UndoEntry): void {
@@ -197,23 +259,24 @@ export class UndoStack {
    */
   latest(token: string): UndoEntry | null {
     if (this.inFlight || typeof token !== 'string' || !UNDO_TOKEN.test(token)) return null;
+    // A commit accepted after it (still pending) is newer: then it is not the latest.
     const top = this.undos[this.undos.length - 1];
-    return top && top.token === token ? copyEntry(top) : null;
+    return top && top.entry && top.token === token ? copyEntry(top.entry) : null;
   }
 
-  /** The entry for `token` on either stack (not in flight), or null: case 3's Make a note names it. */
+  /** The entry for `token` on either stack (not in flight, not pending), or null: case 3's Make a note names it. */
   get(token: string): UndoEntry | null {
     if (typeof token !== 'string' || !UNDO_TOKEN.test(token)) return null;
-    const e = this.undos.find((x) => x.token === token) ?? this.redos.find((x) => x.token === token);
+    const e = this.undos.find((x) => x.token === token)?.entry ?? this.redos.find((x) => x.token === token);
     return e ? copyEntry(e) : null;
   }
 
   /** Removes the entry for `token` (after Make a note kept it as a verbatim note). Returns it, or null. */
   drop(token: string): UndoEntry | null {
-    for (const stack of [this.undos, this.redos]) {
-      const i = stack.findIndex((x) => x.token === token);
-      if (i !== -1) return copyEntry(stack.splice(i, 1)[0]);
-    }
+    const i = this.undos.findIndex((x) => x.token === token && x.entry !== null);
+    if (i !== -1) return copyEntry(this.undos.splice(i, 1)[0].entry!);
+    const j = this.redos.findIndex((x) => x.token === token);
+    if (j !== -1) return copyEntry(this.redos.splice(j, 1)[0]);
     return null;
   }
 
@@ -225,7 +288,7 @@ export class UndoStack {
   }
 
   get canUndo(): boolean {
-    return !this.inFlight && this.undos.length > 0;
+    return !this.inFlight && this.undos.some((x) => x.entry !== null);
   }
 
   get canRedo(): boolean {
@@ -237,8 +300,14 @@ export class UndoStack {
     return this.inFlight !== null;
   }
 
+  /** Entries whose write has landed (undo), undone writes (redo). */
   get size(): { undo: number; redo: number } {
-    return { undo: this.undos.length, redo: this.redos.length };
+    return { undo: this.undos.filter((x) => x.entry !== null).length, redo: this.redos.length };
+  }
+
+  /** Accepted writes still in flight (E-3). */
+  get pending(): number {
+    return this.undos.filter((x) => x.entry === null).length;
   }
 
   private has(token: string): boolean {

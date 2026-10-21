@@ -112,7 +112,9 @@ createMatcher(map: ClientMap | DeckMap, opts?: { fileName?: string }): (node: Do
 // nodes) agree with the stamp's source runs and no other run of the element has the same text (PHASE0-FINDINGS F22)
 
 // edit-cleanup.ts
-cleanupCommit(before: string, after: string): string     // NBSP → space unless at the same position relative to the unchanged prefix/suffix; drop U+200B/U+FEFF; line breaks → spaces
+cleanupCommit(before: string, after: string): string     // only characters the edit introduced are cleaned: NBSP → space, drop U+200B/U+FEFF, line breaks → spaces
+// introduced = between the unchanged prefix and suffix, not at the same position relative to them, and not paired by the changed region's character
+// diff (a longest common subsequence in a widening band, deterministic, no time limit; past its cell cap every class the old region held is kept)
 changedSpan(before: string, after: string): { start: number; endBefore: number; endAfter: number }
 ```
 
@@ -127,7 +129,10 @@ meaningful together with the map `version` it came from.
 `packages/editor/src/index.ts` exports `editorVersion` and `createWriteQueue(io, opts)` (the
 `EditorModule` interface), plus the pure functions the fuzz test uses (`planEdit`, `verifyEdit`,
 `planUndo`). The write queue implements the whole write protocol (9.2): per-deck serial queue, version
-check and re-resolution by `beforeText` + 32 chars of context, re-check, atomic write through
+check and, when the file changed since the request's version, placement by position (a diff of that version to the
+current bytes maps the run's range, and the run must hold `beforeText` there with no change over it; neither the text
+nor its 32 characters of context ever chooses a copy; review finding 0; when the text is in several places, the text
+around every copy must confirm the placement, `place.ts`, or the edit is a note), re-check, atomic write through
 `DeckIO.atomicWrite` (which re-hashes before rename), verify (re-parse, same run holds `afterText`, no new
 parse5 errors, Strategy 2 checks) on the exact bytes before they are renamed in (decision P2-1, so a bad file never
 lands), and the verbatim fallback.
@@ -363,15 +368,23 @@ below), and every piece of the commit path that a reader-only build or the fuzz 
 | Module | What |
 |---|---|
 | `edit-commit.ts` | `commitField(field, {smartPunctuation})`: the field's text before and after, its recorded runs (offsets in the field's `textContent`) and the caret's run → an edit of one run (`{runId, beforeText, afterText}`, the run's whole text), a `verbatim` note with a typed reason (`VerbatimWhy`), or a no-op. Clean-up, then the changed span, then the run rule (one run; an insertion at a boundary goes to the caret's run), then smart punctuation on that run (6.3). `liftToRun`/`liftPick` lift a picked substring or whitespace/NFC-normalized candidate to its run's whole text (P2-8); `pickKindFor` says which matcher reasons the picker offers (never `split` or `short`). The overlay and both fuzz harnesses call it: "the same path as a typed edit" is the same code |
-| `locked-spans.ts` | Section 8 locks: `transformLockedSpans(prev, cur, spans)` for external changes and restores (`diff_main` with a time limit, `diff_xIndex`, no semantic clean-up; a timeout only over-reports a violation), `applyOwnWrite(spans, record, {noteId})` for Blueline's own writes (shift; a write inside a span updates it; an undo drops its note's span), `lockForRun`. `LockedSpan.text` is the raw source slice |
-| `ipc-edit.ts` | The edit channels (`EditDeckToMain`, `MainToDeckEdit`), their payloads, `EDIT_LIMITS` (UTF-8 bytes), the id/version/token formats, `candidateContext` (±40 characters on one line) |
-| `capabilities.ts` (changed) | `WriteQueueOptions` gains `beforeWrite(prev, next)` (the exact bytes about to be replaced, right before the rename: the history snapshot), `afterWrite(map, record, next)` with `next.basedOn` (the hash the queue read), `canWrite()` (checked at the moment of the write, 9.1), `onHookError`, `maxRetries`; `WriteQueue` gains `know(version, src, map)` (P2-3: the version the page holds, for the 32-character context), `restore(bytes, expectVersion)` and `currentMap()`. Refusals carry a typed `RefusalCode`; a written outcome says whether it `merged` an external change |
+| `locked-spans.ts` | Section 8 locks: `transformLockedSpans(prev, cur, spans)` for external changes and restores (`diff_main` with a time limit, `diff_xIndex`, no semantic clean-up; a timeout only over-reports a violation), `applyOwnWrite(spans, record, {noteId})` for Blueline's own writes (shift; a write inside a span updates it; an undo drops its note's span), `lockForRun`, and `mapRange(prev, cur, start, end, {timeoutSec})` for the write queue (a run's range in a newer version, or `changed`/`timeout`), with `mapRangesClean` (several ranges through one diff, each with how far the diff leaves the text around it unchanged), `stretchesKept` and `longestKept` (what a diff of two neighbourhoods keeps) for the stale placement's checks. `LockedSpan.text` is the raw source slice |
+| `ipc-edit.ts` | The edit channels (`EditDeckToMain`, `MainToDeckEdit`, and `MainToDeckEditRequest.commitNow`: main asks the deck to commit its open field), their payloads, `EDIT_LIMITS` (UTF-8 bytes), the id/version/token formats, `candidateContext` (±40 characters on one line) |
+| `capabilities.ts` (changed) | `WriteQueueOptions` gains `beforeWrite(prev, next)` (the exact bytes about to be replaced, right before the rename: the history snapshot), `afterWrite(map, record, next)` with `next.basedOn` (the hash the queue read), `canWrite()` (checked at the moment of the write, 9.1), `onHookError`, `maxRetries`; `WriteQueue` gains `know(version, src, map, {pin})` and `unpin(version)` (P2-3: the versions the page and its open fields hold; a pinned one is never evicted), `restore(bytes, expectVersion)` and `currentMap()`. Refusals carry a typed `RefusalCode`; a written outcome says whether it `merged` an external change |
 | `dom-walk.ts` (changed) | `describeNode(node, tracker)` for the overlay, `ScriptTouchTracker.ownChanges(fn)` and `ownRegion(el)` so the overlay's own changes never count as a script's (P2-6) |
 
 ### editor
 
-`write-queue.ts` implements the new options: `know` (checked against its sha256), `beforeWrite` with the bytes read
-in step 2, `canWrite` before and after it, verify on the exact bytes before the rename (P2-1), a read-back after the
+`write-queue.ts` implements the new options: `know` (checked against its sha256; pins counted), the stale request
+placed by position (`place.ts` `placeStale`: the run's range mapped from the request's version to the current one;
+an unknown version, a timeout or a change over the run is a verbatim note; when the text is in several places, every
+copy the diff keeps must be told apart from the others by text the diff left unchanged around it, reaching 32
+characters past where they stop agreeing, the run's place must hold nothing that told another copy apart and no
+other kept copy what told the run apart (looked for only where the diff changed a place's surroundings within
+that reach: unchanged, they are that copy's own), and a copy the current version adds must share no long stretch with the
+run's surroundings unless it sits in other markup (the same words in a new paragraph); otherwise an `ambiguous` note:
+a moved or copied templated slide is never written into),
+`beforeWrite` with the bytes read in step 2, `canWrite` before and after it, verify on the exact bytes before the rename (P2-1), a read-back after the
 rename, `restore` serialized and conflict-checked, typed refusals. `plan.ts` refuses by rule what the HTML parser
 reports as an error and the `<pre>` character-reference case parse5 mislocates.
 
@@ -380,12 +393,12 @@ reports as an error and the `<pre>` character-reference case parse5 mislocates.
 | Module | What |
 |---|---|
 | `edit-session.ts` | **EditRegistry** (one per app): one **EditLane** per realpath, shared by every window of the file and kept 30 s after its last window so a D-1 reopen keeps it (P2-3). A lane holds the write queue (from the `EditorModule`), the history store, a version cache and ONE serial lane through which the watcher's external changes and the queue's writes both pass. Its hooks: `beforeWrite` snapshots the bytes being replaced (and, first, the content main last knew when the queue writes on top of an external change, cause `external`); `afterWrite` handles an absorbed external change (locks moved from the content main knew to the bytes the queue read, trust decided again per D-1, reload; P2-4), then moves the locks for the own write and adopts it. **EditSession** (one per window): the deck's edit channels with the trusted-input rule (`TrustedInput` from `input-event`, `FieldRegistry`, `gateCommit`; P2-7), the picker's candidates (P2-8), app undo and redo through `UndoStack` (P2-10), Make a note, toasts with actions (`ToastBook`, P2-14), Copy (P2-13), the history list and Restore (P2-11), Edit availability (6.3, 6.10) |
-| `history.ts` | `HistoryStore`: `<userData>/files/<fileKey>/history/`, one `<sha256>.html` per version (0600, Protected ones marked), `index.json`, newest 100 within 256 MiB, `countSince` for Restore's counts, `setBase` for the last content main knew (P2-12) |
-| `undo-stack.ts` | `UndoStack`: per window, in memory; entries hold the original `WriteRecord`, the run, the decoded texts and the note id; one operation at a time (`undo()`/`redo()` start it, `settle` ends it); `latest(token)` for the toast's Undo |
+| `history.ts` | `HistoryStore`: `<userData>/files/<fileKey>/history/`, one `<sha256>.html` per version (0600, Protected ones marked), `index.json`, newest 100 within 256 MiB, `countSince` for Restore's counts, `setBase` for the last content main knew (P2-12). `snapshot(..., {pending})` and `settle(id, landed)`: the lane's snapshot is an entry only once its write landed; a snapshot equal to the newest entry is not added again |
+| `undo-stack.ts` | `UndoStack`: per window, in memory; entries hold the original `WriteRecord`, the run, the decoded texts and the note id; one operation at a time (`undo()`/`redo()` start it, `settle` ends it); `latest(token)` for the toast's Undo. A commit reserves its slot when main accepts it (`reserve`, then `fill` or `cancel`), so slots keep acceptance order and undo takes the newest landed entry |
 | `notes.ts` (changed) | `addEdit` (kind `edit`, done, with its `SourceLoc` and lock), `addVerbatim` (kind `verbatim`, open, exact texts, why), `removeEdit` (tombstoned, so redo gets a new id), `canRecordEdit` |
 | `session-store.ts` (changed) | Targets keep their `SourceLoc`; locks are validated; `known: {version}` (the last whole-file hash main knew, P2-12) |
 | `config.ts`, `settings-window.ts`, `identity.ts` | Settings › General › Smart punctuation (`SettingsToMain.setSmartPunctuation`); `Identity` for the name chip (6.8), which updates the live `Person` and every open session |
-| `documents.ts`, `atomic-write.ts`, `watcher.ts` (changed) | Own writes are adopted, not re-read (P2-2): `DeckIOOptions.expectOwn(hash)` before the rename, `BlDocument.adoptOwnWrite(bytes, map)` after it (content, map, served copy, version, `knownHash`), the watcher's `isOwnWrite` |
+| `documents.ts`, `atomic-write.ts`, `watcher.ts` (changed) | Own writes are adopted, not re-read (P2-2): `DeckIOOptions.expectOwn(hash)` before the rename, `BlDocument.adoptOwnWrite(bytes, map, src, {basedOn})` after it (content, map, served copy, version, `knownHash`), the watcher's `isOwnWrite`. `knownHash` never moves back to an own write once main decided another version (the write stays pending until it is adopted), and `Watcher.recheck()` looks again when the read-back after an own write found other bytes |
 | `view-state.ts` (changed) | `ReloadCoordinator`: `setEditBusy` (a field open or a commit in flight), `setWriting` (an own write running), `noteOwnWrite` (html-text writes need no reload; literals and absorbed changes do), `whenIdle()` for the in-place reloads of Allow network and reduced motion |
 | `window.ts`, `controller.ts`, `actions.ts`, `menu.ts`, `channels.ts`, `ipc-guard.ts` (changed) | The lane per window (`deps.edits.acquire`), `input-event` fed to `TrustedInput`, the edit channels declared with validators, Edit > Undo/Redo outside a text field go to `appUndo`, File › History, the quit wait includes lanes and history |
 
@@ -397,15 +410,45 @@ edit results; `DeckInit` gains `fileName`, `pageVersion` (the version whose serv
 
 | Module | What |
 |---|---|
-| `edit-controller.ts` | Edit in the page: matching against the map of the page's version only (P2-5, P2-6), hover outlines (solid exact, dashed pickable), the field (opened on the press at window capture; source case; `user-select` lifted; SVG text through an overlay input), commit with `commitField`, the result and the toast's Undo, "Not editable", stale-page handling, busy reporting |
+| `edit-controller.ts` | Edit in the page: matching against the map of the page's version only (P2-5, P2-6), hover outlines (solid exact, dashed pickable; a node a script rewrote is neither), hit testing by the text's geometry (`hitText`: past every element that shows nothing at the point, then once more with every element hit-testable through a sheet adopted for that call only, so `pointer-events: none` text is reached), the field (opened on the press at window capture; source case; `user-select` lifted; SVG text through an overlay input), commit with `commitField`, the result (an own html-text write advances the page version), "Not editable", stale-page handling, busy reporting, `commitNow()` when main asks, and a press deferred while a commit of this page is unanswered (it opens on the new version; the keys typed meanwhile, which the key router keeps from the deck as `pending`, are typed into it when it opens). A right-click in the open field, the SVG overlay input included, never reaches the page's `contextmenu` listeners; text under a layer whose `::before`/`::after` paints a fill is not seen through |
 | `edit-input.ts` | The field's input filter and gate (P2-7, P2-9), shared with the Diagnostics heading: the range from the selection (Electron 44 gives `getTargetRanges()` nothing for `plaintext-only`), the allowed `inputType`s, line breaks to spaces, native undo only within the field's own steps |
-| `picker.ts`, `fit-guard.ts`, `animation-pause.ts` | The picker's rows and keys; the fit guard's line, overflow and widow badge; pausing animations on entering Edit and resuming only what it paused (render-agent shares the helpers) |
+| `picker.ts`, `fit-guard.ts`, `animation-pause.ts` | The picker's rows and keys; the fit guard's line, overflow and widow badge, measured with the element's own case (`measureFitAs`); pausing animations on entering Edit and resuming only what it paused (render-agent shares the helpers) |
 
 ### shell
 
 The notes panel lists edit and verbatim notes with Copy (P2-13); toasts carry action buttons; the name chip; File ›
 History opens the history list in the left rail, and Restore asks through a native confirmation with the counts and
-a line diff.
+a line diff. The Saved toast and its Undo are the shell's (`EditSession` sends them through `ToastBook`), so they stay
+when the deck reloads, and so is the toast of a commit main answered without writing ("Not changed in place … kept as
+a note", "Not saved: …"); the overlay shows only what it decides alone (a text too long to send, no answer).
+
+### What the Phase 2 review changed in the flows
+
+- **Version pins (E-1).** `EditSession.onBegin` holds the field's version in its lane (`EditLane.hold`, the queue's
+  `know(..., {pin})`), and the page's shown version is held too; the commit's answer (or the field being dropped)
+  releases it. The lane's version cache never evicts a pinned version. The queue resolves a stale request only by
+  position (above), so a field held open across many external saves is still placed exactly, or kept as a note.
+- **Commit requests from main (E-2).** `EditSession.requestCommit()` sends `MainToDeckEditRequest.commitNow` and
+  waits (at most 3 s) until the deck holds no field and no commit is unanswered (`holdsTyping`, from `EditBusy` and
+  the commits in flight). `window.ts` holds the window's `close` for it, `index.ts` `before-quit` asks every window
+  first (`controller.commitTyping()`), and the shell's `focus` while the window has focus asks too, as does the
+  window's `focus` when the shell holds the focus (a click on the toolbar or notes panel of an inactive window
+  focuses the shell before the window is active). A build without
+  the Edit capability never waits. The gate takes the mode when main accepts a commit; `canWrite` checks only the
+  capability and `editable()` at the write.
+- **Authorisation (E-4).** `FieldRegistry` keeps one field (a newer begin drops the others), drops it on
+  `busy {edit:false}`, keeps only the open one when Edit is left (accepted until the request window ends), and the
+  gate refuses after 10 minutes without trusted input (`TrustedInput.idleFor`; `fieldIdleMs` for tests).
+- **Undo in the lane (E-3).** `appUndo` runs inside `lane.exclusive`, so Cmd+Z waits for the writes in flight; the
+  commit's undo slot was reserved at acceptance, so it undoes that commit, not the one before.
+- **Own writes recorded whatever the window (E-7, E-8).** `EditLane.afterWrite` never returns early: it records the
+  written version (`noteBase` with that version, session `known` and the history base) even when the window closed,
+  hands `Adopted` the written map and source (locks are built from them), and calls `host.recheck()` when the
+  read-back found other bytes (`ReadBackMismatch`). `BlDocument.knownHash` counts the times the watcher set it; an
+  own write moves it (`onWritten`, `adoptOwnWrite`) only when that count has not moved since the write's rename, so
+  a change the watcher decided meanwhile stays known even when its bytes are the very version the write replaced.
+- **History pending entries (E-11).** `beforeWrite` takes a pending snapshot (dropping the previous attempt's when the
+  queue requeued), `afterWrite` settles it as landed, and the job's end settles anything left as not landed.
 
 ### Exit-gate harnesses
 

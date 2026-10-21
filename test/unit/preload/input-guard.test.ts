@@ -5,7 +5,7 @@
 // test/e2e/card-input.spec.ts and test/security/card-input.spec.ts.
 
 import { describe, expect, it, vi } from 'vitest';
-import { CardInputGate, GUARDED_EVENTS, GUARDED_KEYS, InputGuard, type TextFieldLike } from '../../../packages/app/src/preload/input-guard';
+import { CardInputGate, GUARDED_EVENTS, GUARDED_KEYS, InputGuard, dropTarget, type TextFieldLike } from '../../../packages/app/src/preload/input-guard';
 import { listenOn, reinstall } from '../../../packages/app/src/preload/listeners';
 
 type Handler = (e: unknown) => void;
@@ -72,6 +72,33 @@ describe('InputGuard (D-e: card input never reaches the page)', () => {
       expect(onOverlayEvent, type).toHaveBeenCalledWith(e);
       expect(e.stopImmediatePropagation, type).toHaveBeenCalledTimes(1);
       expect(e.preventDefault, type).not.toHaveBeenCalled(); // the insertion (typing, paste, Wispr) still happens
+    }
+  });
+
+  it('notes where a trusted drop landed, for the rest of its task, without touching the drop (E-10)', () => {
+    vi.useFakeTimers();
+    try {
+      const { win, onOverlayEvent } = setup();
+      const pageEl = { localName: 'div' };
+      win.fire('drop', fakeEvent('drop', { path0: pageEl, trusted: false }));
+      expect(dropTarget(win)).toBeUndefined();
+      const e = fakeEvent('drop', { path0: pageEl });
+      win.fire('drop', e);
+      expect(dropTarget(win)).toBe(pageEl);
+      // A drop on the page stays the page's: neither stopped nor prevented.
+      expect(e.stopImmediatePropagation).not.toHaveBeenCalled();
+      expect(e.preventDefault).not.toHaveBeenCalled();
+      // The deleteByDrag of a move comes in the same task; a later one finds no drop.
+      vi.runAllTimers();
+      expect(dropTarget(win)).toBeUndefined();
+      // A drop on the overlay is noted as its host (outside any deck field), and handled as before.
+      win.fire('drop', fakeEvent('drop', { path0: host }));
+      expect(dropTarget(win)).toBe(host);
+      expect(onOverlayEvent).toHaveBeenCalledTimes(1);
+      // Another window's drop is its own.
+      expect(dropTarget(fakeTarget())).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
     }
   });
 

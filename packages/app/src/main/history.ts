@@ -22,6 +22,13 @@
 //
 // One store per folder in this process (forFile), so every window of a file, before and after a D-1 reopen,
 // writes through the same serial chain.
+//
+// Lead decision E-11 (review finding 21): one entry per write that LANDED. The queue snapshots the bytes before
+// every attempt (P2-11: no write without its snapshot), so such a snapshot is `pending`: its file and its entry are
+// stored at once (index.json lists it, so a crash right after the write keeps it), but list, entry, countSince and
+// findBySha256 see it only once settle(id, true) says its write landed; settle(id, false) removes it (a conflict
+// requeued the write, it was refused, or it failed). An entry whose bytes are those of the newest entry is not
+// added again (never two consecutive entries with the same sha256), so Restore's counts are exact.
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
@@ -239,6 +246,8 @@ export class HistoryStore {
   private state: IndexState;
   private chain: Promise<unknown> = Promise.resolve();
   private pending = 0;
+  /** E-11: entries of snapshots whose write has not landed yet (in index.json; listed once settled). */
+  private readonly unsettled = new Set<string>();
   private readonly maxEntries: number;
   private readonly maxBytes: number;
 
@@ -350,18 +359,19 @@ export class HistoryStore {
 
   /** The snapshots, newest first. */
   list(): HistoryEntry[] {
-    return this.state.entries.map(copyEntry).reverse();
+    return this.settled().map(copyEntry).reverse();
   }
 
   /** The entry with this id, or null. */
   entry(id: string): HistoryEntry | null {
-    const e = this.state.entries.find((x) => x.id === id);
+    const e = this.settled().find((x) => x.id === id);
     return e ? copyEntry(e) : null;
   }
 
   /** The newest entry of these bytes, or null. */
   findBySha256(sha: string): HistoryEntry | null {
-    for (let i = this.state.entries.length - 1; i >= 0; i--) if (this.state.entries[i].sha256 === sha) return copyEntry(this.state.entries[i]);
+    const list = this.settled();
+    for (let i = list.length - 1; i >= 0; i--) if (list[i].sha256 === sha) return copyEntry(list[i]);
     return null;
   }
 
@@ -382,11 +392,12 @@ export class HistoryStore {
    * agent's edits, in Phase 4). Null for an id not in the list.
    */
   countSince(id: string): { direct: number; external: number } | null {
-    const i = this.state.entries.findIndex((e) => e.id === id);
+    const list = this.settled();
+    const i = list.findIndex((e) => e.id === id);
     if (i === -1) return null;
     let direct = 0;
     let external = 0;
-    for (const e of this.state.entries.slice(i)) {
+    for (const e of list.slice(i)) {
       if (e.cause === 'external') external++;
       else direct++;
     }
@@ -399,7 +410,7 @@ export class HistoryStore {
    * rejects and leaves the list as it was. Bytes already stored (the same sha256) are not written again, but a
    * file stored unmarked is marked when this snapshot needs a marker. Then the list is pruned.
    */
-  snapshot(bytes: Uint8Array, m: SnapshotMeta): Promise<string> {
+  snapshot(bytes: Uint8Array, m: SnapshotMeta, o: { pending?: boolean } = {}): Promise<string> {
     let meta: SnapshotMeta;
     try {
       meta = checkMeta(m);
@@ -413,6 +424,13 @@ export class HistoryStore {
     return this.enqueue(async () => {
       const next = cloneState(this.state);
       await this.store(next, copy, meta.sha256, meta.marker);
+      // E-11: the newest entry (a write that landed) already holds these bytes: nothing new to list (its file is kept,
+      // and marked above when it must be).
+      const newest = next.entries.length > 0 ? next.entries[next.entries.length - 1] : null;
+      if (newest && !this.unsettled.has(newest.id) && newest.sha256 === meta.sha256) {
+        if (next.files.get(meta.sha256)?.marked !== this.state.files.get(meta.sha256)?.marked) await this.commit(next);
+        return newest.id;
+      }
       const id = `h-${next.next}`;
       next.next++;
       const entry: HistoryEntry = { id, sha256: meta.sha256, contentHash: meta.contentHash, cause: meta.cause, at: meta.at, size: copy.byteLength };
@@ -420,9 +438,34 @@ export class HistoryStore {
       next.entries.push(entry);
       const dropped = this.pruneState(next);
       await this.commit(next);
+      if (o.pending === true) this.unsettled.add(id);
       await this.removeFiles(dropped);
       return id;
     });
+  }
+
+  /**
+   * E-11: the write a pending snapshot (snapshot with `pending`) was taken for landed (`landed`: the entry is listed
+   * from now on) or did not (the entry goes, and its file when nothing else needs it). An id that is not pending
+   * (already settled, or a snapshot that found its bytes already listed) is left alone.
+   */
+  settle(id: string, landed: boolean): Promise<void> {
+    return this.enqueue(async () => {
+      if (!this.unsettled.delete(id)) return;
+      if (landed) return;
+      const next = cloneState(this.state);
+      const i = next.entries.findIndex((e) => e.id === id);
+      if (i === -1) return;
+      next.entries.splice(i, 1);
+      const dropped = this.pruneState(next);
+      await this.commit(next);
+      await this.removeFiles(dropped);
+    });
+  }
+
+  /** Entries whose write landed (E-11), oldest first. */
+  private settled(): HistoryEntry[] {
+    return this.state.entries.filter((e) => !this.unsettled.has(e.id));
   }
 
   /**

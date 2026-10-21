@@ -39,13 +39,13 @@ import {
   EditDeckToMain,
   RESULT_OUTCOMES,
   VERSION_RE,
+  failureToast,
   type EditBegin,
   type EditBusy,
   type EditCandidatesRequest,
   type EditCommit,
   type EditResult,
   type EditResultOutcome,
-  type EditUndoRequest,
   type PickerCandidate,
 } from '@blueline/core/ipc-edit';
 import { isWhitespaceOnly } from '@blueline/core/text';
@@ -69,7 +69,8 @@ import {
   type RangeFacts,
 } from './edit-input';
 import { AnimationPause } from './animation-pause';
-import { fitContainer, fitWarnings, measureFit, type FitState } from './fit-guard';
+import { dropTarget } from './input-guard';
+import { fitContainer, fitWarnings, measureFitAs, type FitState } from './fit-guard';
 import type { PickerKey } from './key-router';
 import { listen, listenOn } from './listeners';
 import type { Overlay, ViewRect } from './overlay';
@@ -78,6 +79,29 @@ import { describeTarget } from './targets';
 
 /** A commit main never answers (a Diagnostics deck, a broken main) is given up after this, and the text restored. */
 export const COMMIT_TIMEOUT_MS = 15_000;
+
+/** E-1: the toasts for keys typed while a press waited to open its field. */
+export const NOT_TYPED = 'What you typed before the field opened was not typed: type it again';
+const NOT_TYPED_SHORT = 'what you typed was not kept';
+export const SOME_NOT_TYPED = 'Some keys came before the field opened and were not typed: check the text';
+
+/** Keys that type nothing by themselves (a key held with another). */
+const MODIFIER_KEYS: ReadonlySet<string> = new Set(['Shift', 'Control', 'Alt', 'AltGraph', 'Meta', 'CapsLock', 'Fn', 'FnLock', 'NumLock', 'ScrollLock', 'OS', 'Hyper', 'Super']);
+
+/** A computed style with no background colour (fully transparent) and no background image. */
+function clearFill(cs: CSSStyleDeclaration): boolean {
+  const bg = cs.backgroundColor.replace(/\s+/g, '');
+  const clear = bg === '' || bg === 'transparent' || /^rgba\(\d+,\d+,\d+,0(?:\.0+)?\)$/.test(bg);
+  return clear && (cs.backgroundImage === 'none' || cs.backgroundImage === '');
+}
+
+/** A KeyboardEvent.key that types itself: one character (one code point), not a control character. */
+function isPrintableKey(key: string): boolean {
+  const cps = Array.from(key);
+  if (cps.length !== 1) return false;
+  const c = cps[0].codePointAt(0)!;
+  return c >= 0x20 && c !== 0x7f && !(c >= 0x80 && c < 0xa0);
+}
 /** The picker's candidates request is given up after this. */
 const CANDIDATES_TIMEOUT_MS = 10_000;
 /** How often an open field checks that the page has not removed it (P2-17). */
@@ -90,6 +114,11 @@ const STAMP_RE = /^bl-[0-9]{1,9}$/;
 /** Elements whose text is never page text, or that the browser edits itself (section 10 step 4; 9.2 Strategy 1 step 4). */
 const NO_EDIT_TAGS = new Set(['script', 'style', 'noscript', 'template', 'textarea', 'title', 'input', 'select', 'option']);
 
+/** Elements a hit test looks through (E-9) at most: a press on a large slide still costs little. */
+const HIT_SEARCH_MAX = 2000;
+/** Empty elements that still show something (an image, a canvas): what is under them cannot be reached (E-9). */
+const COVER_BLOCKERS = new Set(['img', 'canvas', 'video', 'picture', 'iframe', 'object', 'embed', 'svg', 'input', 'textarea', 'select']);
+
 /** Why a commit is a verbatim note when the page changed or removed the field while it was open (P2-17). */
 const PAGE_CHANGED_WHY: VerbatimWhy = 'page-changed';
 
@@ -98,8 +127,15 @@ const PAGE_CHANGED_WHY: VerbatimWhy = 'page-changed';
 /** What a match means in Edit (6.3): `exact` is editable, a pickable ambiguity opens the picker, anything else is not editable. */
 export type Editability = { kind: 'exact'; runId: string } | { kind: 'pick'; pick: EditPick['kind'] } | { kind: 'none' };
 
-export function editability(m: MatchResult): Editability {
+/**
+ * `node`: the node as the render walk described it. A node a script rewrote (`touched`) offers no picker candidates
+ * (lead decision E-9): its text on screen does not come from any run the matcher could name, even an equal one
+ * (on D10 the only candidate for a script-written slide title was another place's static text). It stays editable
+ * when the matcher places it exactly (a script literal, Strategy 2).
+ */
+export function editability(m: MatchResult, node?: { touched?: boolean }): Editability {
   if (m.confidence === 'exact' && typeof m.runId === 'string') return { kind: 'exact', runId: m.runId };
+  if (node?.touched === true) return { kind: 'none' };
   const pick = pickable(m);
   return pick ? { kind: 'pick', pick } : { kind: 'none' };
 }
@@ -141,21 +177,8 @@ export function verbatimOf(before: string, raw: string, why: VerbatimWhy, smart:
   return { kind: 'verbatim', before, after, why };
 }
 
-/** The toast after a written edit (6.3 Saving; P2-14): its text, and the token its Undo sends (null: no Undo). */
-export function savedToast(r: { line?: unknown; token?: unknown }, fileName: string | null, alsoPlaces: number): { text: string; token: string | null } {
-  const line = Number.isInteger(r.line) && (r.line as number) >= 1 ? (r.line as number) : null;
-  let text = line !== null ? `Saved \u00b7 ${fileName ?? 'deck.html'}:${line}` : 'Saved';
-  if (alsoPlaces > 0) text += ` \u00b7 also changes ${alsoPlaces} other place${alsoPlaces === 1 ? '' : 's'}`;
-  const token = typeof r.token === 'string' && EDIT_TOKEN_RE.test(r.token) ? r.token : null;
-  return { text, token };
-}
-
-/** The toast after a commit that was not written (6.3 "When a write fails"; P2-14), or null for none. */
-export function failureToast(outcome: EditResultOutcome, why: string | null): string | null {
-  if (outcome === 'verbatim') return why ? `Not changed in place: ${why} \u00b7 your text is kept as a note` : 'Not changed in place \u00b7 your text is kept as a note';
-  if (outcome === 'refused') return why ? `Not saved: ${why}` : 'Not saved';
-  return null;
-}
+/** The toast after a commit main did not write (core/ipc-edit.ts; the shell shows it, E-5). */
+export { failureToast };
 
 /** main's EditResult, rebuilt field by field (main is trusted, but the page shows only what fits). */
 export function readResult(p: unknown): EditResult | null {
@@ -180,8 +203,11 @@ export function readResult(p: unknown): EditResult | null {
 /**
  * Whether `next` is `base` with exactly one html-text run changed to `text` (the page's own write, P2-6): then the
  * page, once its node shows `text`, shows `next`, and matching may use it. Anything else (another run changed,
- * literals, keys or shadows changed, stamps renumbered) means the page does not show that version: it waits for a
- * reload. A content check, so it does not depend on the order main's messages arrive in.
+ * literals changed, stamps renumbered) means the page does not show that version: it waits for a reload. A content
+ * check, so it does not depend on the order main's messages arrive in. Keys and shadow values are not compared
+ * (lead decision E-6, review finding 2): they are counted over the whole file (a typed "40%" that a script literal
+ * also holds turns that literal into a shadow), while an html-text write changes nothing the page shows outside its
+ * run; main counts such a write as shown, and so must the page.
  */
 export function differsOnlyIn(base: ClientMap, next: ClientMap, runId: string, text: string): boolean {
   if (base.utf8 !== next.utf8 || base.runs.length !== next.runs.length || base.literals.length !== next.literals.length) return false;
@@ -201,12 +227,7 @@ export function differsOnlyIn(base: ClientMap, next: ClientMap, runId: string, t
     const b = next.literals[i];
     if (a.id !== b.id || a.value !== b.value || a.placeholder !== b.placeholder || a.html !== b.html || a.strategy !== b.strategy || a.aligned !== b.aligned) return false;
   }
-  const same = (x: readonly string[] | undefined, y: readonly string[] | undefined) => {
-    const p = x ?? [];
-    const q = y ?? [];
-    return p.length === q.length && p.every((v, i) => v === q[i]);
-  };
-  return same(base.keyValues, next.keyValues) && same(base.shadowValues, next.shadowValues);
+  return true;
 }
 
 /** DeckInit's Phase 2 fields (fileName, pageVersion, settings), read defensively: main adds them in Phase 2. */
@@ -220,6 +241,28 @@ export function editInitFields(p: DeckInit): { fileName: string | null; pageVers
   // 6.3: smart punctuation is on by default.
   const smartPunctuation = settings?.smartPunctuation !== false;
   return { fileName, pageVersion, smartPunctuation };
+}
+
+/**
+ * The caret offset in `t` nearest a view point on it, from its characters' boxes (E-9: hit testing cannot place a
+ * caret in text that something covers), or null when no box of it holds the point.
+ */
+export function offsetAt(t: Text, x: number, y: number): number | null {
+  const doc = t.ownerDocument;
+  const range = doc.createRange();
+  const n = Math.min(t.data.length, 20_000);
+  for (let i = 0; i < n; ) {
+    // A surrogate pair is one character: the caret never goes between its halves.
+    const c = t.data.charCodeAt(i);
+    const step = c >= 0xd800 && c <= 0xdbff && i + 1 < t.data.length ? 2 : 1;
+    range.setStart(t, i);
+    range.setEnd(t, i + step);
+    for (const r of Array.from(range.getClientRects())) {
+      if (y >= r.top - 2 && y <= r.bottom + 2 && x >= r.left && x <= r.right) return x < (r.left + r.right) / 2 ? i : i + step;
+    }
+    i += step;
+  }
+  return null;
 }
 
 // ------------------------------------------------------------------------------------------- fields
@@ -238,7 +281,7 @@ interface FieldHost {
   hint(text: string): void;
 }
 
-type CommitCause = 'enter' | 'blur' | 'mode' | 'replaced' | 'page' | 'picker';
+type CommitCause = 'enter' | 'blur' | 'mode' | 'replaced' | 'page' | 'picker' | 'request';
 
 interface FieldSpec {
   id: number;
@@ -350,6 +393,12 @@ abstract class Field implements ActiveEdit {
   /** Focuses the field and puts the caret at the view point, or at the end of the clicked node. */
   abstract focusAt(x: number | null, y: number | null): void;
 
+  /**
+   * E-1: types `text` at the caret through the field's own gate, as if typed (keys that came while the field
+   * waited to open). False when the caret is not in the field's text, so nothing was typed.
+   */
+  abstract typeText(text: string): boolean;
+
   /** Rect of the field for badges and the picker. */
   rect(): ViewRect {
     const r = this.root.getBoundingClientRect();
@@ -452,6 +501,37 @@ class HtmlField extends Field {
     if (focus) this.focusAt(focus.x, focus.y);
   }
 
+  /**
+   * E-10: the inline text-transform and font-variant-caps the element had before Source case reset them (the fit
+   * guard measures the text as it will render), or none when Source case did not apply.
+   */
+  renderedCase(): [string, string, string][] {
+    const s = this.saved;
+    if (!s || !s.sourceCase) return [];
+    return s.styles.filter(([prop]) => prop === 'text-transform' || prop === 'font-variant-caps');
+  }
+
+  /**
+   * E-10 (review finding 11): a plain Space in a field on or inside a <button> or <summary>. Chromium takes it as
+   * the element's activation and marks the keydown handled, so no beforeinput (and no space) comes; the field types
+   * it itself through its own gate, and nothing activates.
+   */
+  space(e: KeyboardEvent): void {
+    if (this.closed || !this.element.closest('button, summary')) return;
+    e.preventDefault();
+    this.gate.own(() => this.host.doc.execCommand('insertText', false, ' '));
+  }
+
+  typeText(text: string): boolean {
+    if (this.closed || !text) return false;
+    const sel = this.host.win.getSelection();
+    const at = sel && sel.rangeCount > 0 && sel.isCollapsed ? sel.anchorNode : null;
+    // 9.2 step 2: typing lands in one of the field's own text nodes, as a key typed there would.
+    if (!at || at.nodeType !== Node.TEXT_NODE || !this.nodeRun.has(at as Text) || this.host.doc.activeElement !== this.element) return false;
+    this.gate.own(() => this.host.doc.execCommand('insertText', false, text));
+    return true;
+  }
+
   focusAt(x: number | null, y: number | null): void {
     const el = this.element;
     el.focus({ preventScroll: true });
@@ -464,6 +544,12 @@ class HtmlField extends Field {
         sel.collapse(pos.offsetNode, pos.offset);
         return;
       }
+    }
+    // E-9: text under a cover (hit testing gives the cover): the offset from the clicked text's own boxes.
+    const at = x !== null && y !== null && el.contains(this.clicked) ? offsetAt(this.clicked, x, y) : null;
+    if (at !== null) {
+      sel.collapse(this.clicked, at);
+      return;
     }
     if (el.contains(this.clicked)) sel.collapse(this.clicked, this.clicked.data.length);
   }
@@ -653,6 +739,13 @@ class SvgField extends Field {
     input.setSelectionRange(at, at);
   }
 
+  typeText(text: string): boolean {
+    const input = this.element;
+    if (this.closed || !text || !input.matches(':focus')) return false;
+    this.gate.own(() => this.host.doc.execCommand('insertText', false, text));
+    return true;
+  }
+
   text(): string {
     const value = this.tamperedFlag ? this.acceptedValue : this.element.value;
     return this.before.slice(0, this.nodeStart) + value + this.before.slice(this.nodeEnd);
@@ -676,12 +769,16 @@ class SvgField extends Field {
     const start = input.selectionStart ?? 0;
     const end = input.selectionEnd ?? 0;
     const data = insertedText(e);
-    // The input holds one text node's text: every range is inside the active node.
+    // The input holds one text node's text: every range is inside the active node. A drag-move's deletion (E-10)
+    // also needs its drop inside the field, as an HTML field's does (edit-input.ts affectedRanges): seen from window,
+    // a drop on the input has the overlay host as its real target, and in Edit the input is the overlay's only
+    // editable element. A drag that ends in the page's own editable element copies and takes nothing out.
+    const inField = e.inputType !== 'deleteByDrag' || dropTarget(this.host.win) === this.host.overlay.host;
     const decision = classifyInput({
       inputType: e.inputType,
       trusted: e.isTrusted,
       cancelable: e.cancelable,
-      range: { collapsed: start === end, textNodes: 1, other: false, inField: true },
+      range: { collapsed: start === end, textNodes: 1, other: false, inField },
       data,
       undoAllowed: this.history.undoAllowed(input.value, this.startValue),
       redoAllowed: this.history.redoAllowed(),
@@ -754,11 +851,31 @@ interface Pending {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/**
+ * A field that waits to open (lead decision E-1, review finding 0): the author pressed text while a commit of this
+ * page was unanswered, so the field opens once every answer and its map are in, on the version the page then
+ * shows, with the caret where they pressed. `pick`: a run chosen in the picker.
+ */
+interface DeferredOpen {
+  node: Text;
+  x: number;
+  y: number;
+  pick: { runId: string } | null;
+  timer: ReturnType<typeof setTimeout>;
+  /**
+   * The keys typed while it waits (E-1; finding 0 re-verification: they reached the deck and were lost, and the
+   * field then wrote the text without them): `text` is typed into the field when it opens; `enter` commits it
+   * then; `dropped`: a key that cannot be typed for the author (an arrow, Delete, an IME, a paste) came, so
+   * nothing from then on is typed and the author is told.
+   */
+  keys: { text: string; enter: boolean; dropped: boolean };
+}
+
 /** The press being handled at window capture, and what its click does. */
 type Gesture =
   | { kind: 'overlay'; run: (() => void) | null }
   | { kind: 'field' }
-  | { kind: 'opened'; x: number; y: number }
+  | { kind: 'opened'; x: number; y: number; covered?: boolean }
   | { kind: 'pick'; node: Text; match: MatchResult; pick: EditPick['kind']; x: number; y: number }
   | { kind: 'svg'; node: Text; runId: string; x: number; y: number }
   | { kind: 'refuse'; text: string }
@@ -790,6 +907,8 @@ export class EditController implements FieldHost {
   private pageMap: ClientMap | null = null;
   /** Maps main sent for other versions since: the page waits for a reload, or for its own write's answer. */
   private mapsAhead: ClientMap[] = [];
+  /** E-9: the sheet that makes every element hit-testable for one hit test (undefined: not made yet; null: none). */
+  private hitSheet: CSSStyleSheet | null | undefined = undefined;
   /** main said the last map is null (the deck is not UTF-8 any more, or has no map). */
   private latestNull = false;
   /** A write asked the page to reload once the field closes (a literal write, P2-4), or main said it will. */
@@ -814,6 +933,8 @@ export class EditController implements FieldHost {
   private readonly pageChanged = new WeakSet<Element>();
   /** The page's own html-text writes main answered before sending their map (P2-6: advance when it comes). */
   private awaitingMap: { runId: string; text: string }[] = [];
+  /** A field waiting for this page's commits to be answered (E-1). */
+  private deferred: DeferredOpen | null = null;
 
   constructor(
     readonly doc: Document,
@@ -850,6 +971,8 @@ export class EditController implements FieldHost {
     // Starting a selection in the field is the author's: a page cannot cancel it (decks often cancel selectstart).
     listen(w, 'selectstart', (e) => this.onSelectStart(e), true);
     listen(w, 'focusout', (e) => this.onFocusOut(e), true);
+    // 6.3 spellcheck (E-10): a right-click in the open field is the field's; main shows the spelling suggestions.
+    listen(w, 'contextmenu', (e) => this.onContextMenu(e), true);
     listen(
       w,
       'pointermove',
@@ -890,6 +1013,7 @@ export class EditController implements FieldHost {
     this.latestNull = false;
     this.reloadPending = false;
     this.matcher = null;
+    this.dropDeferred();
     // The map in DeckInit comes through DeckUi.applyMap, as MainToDeck.map does.
   }
 
@@ -910,6 +1034,7 @@ export class EditController implements FieldHost {
       // 6.3: animations pause on entering Edit (and again when a field opens: new Web Animations may have started).
       if (!this.pause.active) this.pause.pause();
     } else {
+      this.dropDeferred();
       if (this.field) this.commit(this.field, 'mode');
       this.closePicker();
       this.overlay.showOutline(null);
@@ -953,6 +1078,17 @@ export class EditController implements FieldHost {
       }
     }
     this.refreshAvailability();
+    this.openDeferred();
+  }
+
+  /**
+   * MainToDeckEdit.commitNow (lead decision E-2): main asks for the open field's commit now, as a blur would end it
+   * (the window closes, the app quits, the shell took focus). A field waiting to open does not open.
+   */
+  commitNow(): void {
+    this.dropDeferred();
+    this.closePicker();
+    if (this.field) this.commit(this.field, 'request');
   }
 
   // ------------------------------------------------------------------------------------------- what DeckUi asks
@@ -1004,6 +1140,51 @@ export class EditController implements FieldHost {
 
   get pickerOpen(): boolean {
     return this.picker !== null;
+  }
+
+  /** E-1: a press waits for this page's unanswered commit before its field opens. */
+  get pendingOpen(): boolean {
+    return this.deferred !== null;
+  }
+
+  /**
+   * A trusted key while a press waits to open its field (the key router keeps it from the deck): what it types is
+   * typed into the field once it opens (E-1; finding 0 re-verification). Esc gives the press up.
+   */
+  onPendingKey(e: KeyboardEvent): void {
+    const d = this.deferred;
+    if (!d || !e.isTrusted) return;
+    const k = d.keys;
+    if (e.code === 'Escape' && !e.isComposing) {
+      this.dropDeferred();
+      return;
+    }
+    if (k.dropped) return;
+    if (k.enter) {
+      // Enter already ends the field: what comes after it is not the field's.
+      k.dropped = true;
+      return;
+    }
+    if (e.isComposing || e.key === 'Process' || e.key === 'Dead' || e.keyCode === 229) {
+      k.dropped = true;
+      return;
+    }
+    if (MODIFIER_KEYS.has(e.key)) return;
+    if (e.code === 'Enter' || e.code === 'NumpadEnter') {
+      k.enter = true;
+      return;
+    }
+    if (e.key === 'Backspace') {
+      // Takes back what was typed in the wait; the field's own text is not reached from here.
+      if (k.text) k.text = Array.from(k.text).slice(0, -1).join('');
+      else k.dropped = true;
+      return;
+    }
+    if (!e.ctrlKey && !e.metaKey && isPrintableKey(e.key)) {
+      k.text += e.key;
+      return;
+    }
+    k.dropped = true;
   }
 
   /** Esc with the picker open closes it (DeckUi's Esc order: help, picker, card, edit, Read). */
@@ -1091,6 +1272,19 @@ export class EditController implements FieldHost {
 
   /** The visible, non-blank text node under a view point, outside the overlay and form controls, or null. */
   private textAt(x: number, y: number): Text | null {
+    return this.hitText(x, y)?.t ?? null;
+  }
+
+  /**
+   * The text under a view point (6.3 hover and press). `covered`: hit testing alone would not reach it (lead
+   * decision E-9, review finding 9): an empty element lies over it (a deck's full-height prev/next button), or it
+   * is in an element with pointer-events: none. The text's own geometry decides: caretPositionFromPoint first, then
+   * the elements at the point (document.elementsFromPoint) in paint order, each searched for a text node whose boxes
+   * hold the point, past every element that shows nothing there (seeThrough). Last, the same walk with every
+   * element hit-testable for the moment of the call (an adopted sheet: no DOM change), so text in a pointer-events:
+   * none layer painted above the slide is found too; the page's pointer-events: none elements are seen through.
+   */
+  private hitText(x: number, y: number): { t: Text; covered: boolean } | null {
     const doc = this.doc;
     let node: Node | null = null;
     if (typeof doc.caretPositionFromPoint === 'function') node = doc.caretPositionFromPoint(x, y)?.offsetNode ?? null;
@@ -1098,19 +1292,132 @@ export class EditController implements FieldHost {
       const legacy = (doc as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null }).caretRangeFromPoint;
       node = legacy ? (legacy.call(doc, x, y)?.startContainer ?? null) : null;
     }
-    if (!node || node.nodeType !== 3) return null;
-    const t = node as Text;
+    // caretPositionFromPoint answers the nearest text for a point in padding or a margin: the point must be on it.
+    const direct = node && node.nodeType === 3 ? this.textHit(node as Text, x, y) : null;
+    if (direct) return { t: direct, covered: false };
+    if (typeof doc.elementsFromPoint !== 'function') return null;
+    const budget = { n: HIT_SEARCH_MAX };
+    const plain = this.walkAt(doc.elementsFromPoint(x, y), x, y, budget, false);
+    if (plain) return { t: plain, covered: true };
+    const all = this.allHittable(() => doc.elementsFromPoint(x, y));
+    const under = all ? this.walkAt(all, x, y, budget, true) : null;
+    return under ? { t: under, covered: true } : null;
+  }
+
+  /** E-9: the first text at the point among `els` (topmost first), past the ones that show nothing there. */
+  private walkAt(els: Element[], x: number, y: number, budget: { n: number }, passNoPointer: boolean): Text | null {
+    for (const el of els) {
+      if (el === this.overlay.host) continue;
+      const t = this.textInside(el, x, y, budget);
+      if (t) return t;
+      if (this.seeThrough(el)) continue;
+      // A layer the page made pointer-events: none takes no press, in Read either: what lies under it is reached.
+      if (passNoPointer && this.win.getComputedStyle(el).pointerEvents === 'none') continue;
+      return null;
+    }
+    return null;
+  }
+
+  /**
+   * `fn` run with every element of the page hit-testable (pointer-events: auto), through a document sheet adopted
+   * and removed in this call (as the animation pause adopts its own): no DOM change a page observer could see.
+   */
+  private allHittable<T>(fn: () => T): T | null {
+    const doc = this.doc as Document & { adoptedStyleSheets: CSSStyleSheet[] };
+    if (this.hitSheet === undefined) {
+      try {
+        const s = new CSSStyleSheet();
+        s.replaceSync('*{pointer-events:auto!important}');
+        this.hitSheet = s;
+      } catch {
+        this.hitSheet = null;
+      }
+    }
+    const sheet = this.hitSheet;
+    if (!sheet) return null;
+    try {
+      // adoptedStyleSheets is a live array: copy it, never keep it to put back.
+      doc.adoptedStyleSheets = [...Array.from(doc.adoptedStyleSheets), sheet];
+    } catch {
+      return null;
+    }
+    try {
+      return fn();
+    } finally {
+      try {
+        doc.adoptedStyleSheets = Array.from(doc.adoptedStyleSheets).filter((x) => x !== sheet);
+      } catch {
+        // A page that broke adoptedStyleSheets: nothing more to undo.
+      }
+    }
+  }
+
+  /** `t` when it is visible, non-blank page text (not the overlay's, not a form control's) and its boxes hold the point. */
+  private textHit(t: Text, x: number, y: number): Text | null {
     if (isWhitespaceOnly(t.data) || !t.parentElement) return null;
     for (let a: Element | null = t.parentElement; a; a = a.parentElement) {
       if (a === this.overlay.host || NO_EDIT_TAGS.has(a.localName)) return null;
     }
-    // caretPositionFromPoint answers the nearest text for a point in padding or a margin: the point must be on it.
-    const range = doc.createRange();
+    const range = this.doc.createRange();
     range.selectNodeContents(t);
     for (const r of Array.from(range.getClientRects())) {
-      if (x >= r.left - 2 && x <= r.right + 2 && y >= r.top - 2 && y <= r.bottom + 2) return t;
+      if (x >= r.left - 2 && x <= r.right + 2 && y >= r.top - 2 && y <= r.bottom + 2) {
+        // Found by geometry, and hit testing also lists transparent elements: it must be shown (a slide faded out
+        // with opacity 0, or hidden, has boxes too).
+        const el = t.parentElement as Element & { checkVisibility?(o: Record<string, boolean>): boolean };
+        if (typeof el.checkVisibility === 'function') return el.checkVisibility({ opacityProperty: true, visibilityProperty: true }) ? t : null;
+        const cs = this.win.getComputedStyle(el);
+        return cs.visibility === 'visible' && cs.opacity !== '0' ? t : null;
+      }
     }
     return null;
+  }
+
+  /**
+   * E-9: a text node of `el`, or of a descendant whose box holds the point (one hit testing skipped: pointer-events:
+   * none), under the point. At most `budget.n` elements are looked at in all.
+   */
+  private textInside(el: Element, x: number, y: number, budget: { n: number }): Text | null {
+    if (NO_EDIT_TAGS.has(el.localName)) return null;
+    for (let c = el.firstChild; c; c = c.nextSibling) {
+      if (c.nodeType !== 3) continue;
+      const t = this.textHit(c as Text, x, y);
+      if (t) return t;
+    }
+    for (let c = el.firstElementChild; c; c = c.nextElementSibling) {
+      if (--budget.n < 0) return null;
+      if (c === this.overlay.host || NO_EDIT_TAGS.has(c.localName)) continue;
+      const r = c.getBoundingClientRect();
+      if (!(x >= r.left - 2 && x <= r.right + 2 && y >= r.top - 2 && y <= r.bottom + 2)) continue;
+      const t = this.textInside(c, x, y, budget);
+      if (t) return t;
+    }
+    return null;
+  }
+
+  /**
+   * An element that shows nothing at the point, so what lies under it shows through: the page's root and body; an
+   * `<svg>` root (elementsFromPoint lists its shapes only where they paint, and a shape stops the walk); an HTML
+   * element with no background colour or image of its own that is not an image, a frame or a form control (its own
+   * text is not at the point: textInside looked). A transparent click layer, a nav button, a slide's wrapper. Not
+   * one whose ::before or ::after paints a background (a scrim, a curtain, a modal backdrop drawn by a pseudo-
+   * element: finding 9, re-verification, the text under it is not visible), nor one that blurs or filters what is
+   * behind it (backdrop-filter).
+   */
+  private seeThrough(el: Element): boolean {
+    if (el === this.doc.documentElement || el === this.doc.body) return true;
+    if (el.namespaceURI === SVG_NS) return el.localName === 'svg';
+    if (COVER_BLOCKERS.has(el.localName)) return false;
+    const cs = this.win.getComputedStyle(el);
+    if (!clearFill(cs)) return false;
+    const bf = (cs as CSSStyleDeclaration & { backdropFilter?: string }).backdropFilter;
+    if (bf && bf !== 'none') return false;
+    for (const pseudo of ['::before', '::after']) {
+      const ps = this.win.getComputedStyle(el, pseudo);
+      if (ps.content === 'none' || ps.content === 'normal' || ps.display === 'none') continue;
+      if (!clearFill(ps)) return false;
+    }
+    return true;
   }
 
   /**
@@ -1142,9 +1449,17 @@ export class EditController implements FieldHost {
     return m ? m(this.describe(t)) : null;
   }
 
+  /** What `t` is in Edit: its match, and its editability with the node as described (E-9: a script's node). */
+  private classify(t: Text): { match: MatchResult | null; ed: Editability } {
+    const m = this.matcherNow();
+    if (!m) return { match: null, ed: { kind: 'none' } };
+    const d = this.describe(t);
+    const match = m(d);
+    return { match, ed: editability(match, d) };
+  }
+
   private editabilityOf(t: Text): Editability {
-    const m = this.matchOf(t);
-    return m ? editability(m) : { kind: 'none' };
+    return this.classify(t).ed;
   }
 
   private nodeRect(t: Node): ViewRect | null {
@@ -1169,7 +1484,7 @@ export class EditController implements FieldHost {
   /** 6.3 Hover outlines: solid over `exact` text, dashed over ambiguous text the picker can offer, none otherwise. */
   private updateHover(): void {
     const p = this.pointer;
-    if (!p || !this.active() || this.blockedReason() || this.picker) {
+    if (!p || !this.active() || this.blockedReason() || this.picker || this.deferred) {
       this.overlay.showOutline(null);
       return;
     }
@@ -1210,9 +1525,10 @@ export class EditController implements FieldHost {
       this.gesture = { kind: 'field' };
       return;
     }
-    const t = this.textAt(x, y);
+    const hit = this.hitText(x, y);
     // Not on text: the press is the page's (an open field loses focus and commits, 6.3).
-    if (!t) return;
+    if (!hit) return;
+    const t = hit.t;
     // On text in Edit, the press is Blueline's (P2-13, P2-17): the page never sees it. Like any press on the deck
     // in Edit, it closes the open note card (6.4).
     e.stopImmediatePropagation();
@@ -1228,18 +1544,29 @@ export class EditController implements FieldHost {
       this.gesture = { kind: 'refuse', text: why };
       return;
     }
-    const match = this.matchOf(t);
-    const ed: Editability = match ? editability(match) : { kind: 'none' };
+    const { match, ed } = this.classify(t);
     const svg = t.parentElement?.namespaceURI === SVG_NS;
     if (ed.kind === 'exact' && !svg) {
-      const busy = this.busyOn(t.parentElement);
-      if (busy) {
-        e.preventDefault();
-        this.gesture = { kind: 'refuse', text: busy };
-        return;
-      }
       this.deps.closeCard();
       if (this.field) this.commit(this.field, 'replaced');
+      // E-1: never a field on a version with an unanswered commit of this page (this press's own included): it
+      // opens once the answers are in, on the version the page then shows.
+      if (this.defer(t, x, y, null)) {
+        e.preventDefault();
+        this.gesture = { kind: 'swallow' };
+        return;
+      }
+      if (hit.covered) {
+        // E-9: the browser's mousedown would focus what covers the text (a nav button): the field takes focus and
+        // the caret at the point itself, and nothing of the press reaches the page.
+        e.preventDefault();
+        if (this.openField(t, ed.runId, null, { x, y })) {
+          this.gesture = { kind: 'opened', x, y, covered: true };
+          return;
+        }
+        this.gesture = { kind: 'refuse', text: 'Not editable' };
+        return;
+      }
       // No preventDefault: the browser's mousedown focuses the field and places the caret where the author pressed.
       if (this.openField(t, ed.runId, null, null)) {
         this.gesture = { kind: 'opened', x, y };
@@ -1272,7 +1599,9 @@ export class EditController implements FieldHost {
   private onGestureEvent(e: MouseEvent): void {
     if (!e.isTrusted || !this.gesture) return;
     e.stopImmediatePropagation();
-    if (this.gesture.kind !== 'field' && this.gesture.kind !== 'opened') e.preventDefault();
+    const g = this.gesture;
+    // A field opened on covered text keeps its focus: the mousedown's default would move it to the cover (E-9).
+    if (g.kind !== 'field' && !(g.kind === 'opened' && !g.covered)) e.preventDefault();
   }
 
   private onClick(e: MouseEvent): void {
@@ -1307,6 +1636,7 @@ export class EditController implements FieldHost {
         this.gesture = null;
         this.deps.closeCard();
         if (this.field) this.commit(this.field, 'replaced');
+        if (this.defer(g.node, g.x, g.y, null)) return;
         if (!this.openField(g.node, g.runId, null, { x: g.x, y: g.y })) this.toast('Not editable');
         return;
       case 'refuse':
@@ -1316,6 +1646,25 @@ export class EditController implements FieldHost {
         this.toast(g.text);
         return;
     }
+  }
+
+  /**
+   * E-10 (review finding 13): the page's own contextmenu listeners never see a right-click in the open field (it is
+   * not prevented: main's menu of spelling suggestions needs the default).
+   */
+  private onContextMenu(e: MouseEvent): void {
+    const f = this.field;
+    if (!e.isTrusted || !f || f.closed) return;
+    const path = e.composedPath();
+    const real = (path.length > 0 ? path[0] : e.target) as Node | null;
+    if (real && (real === f.element || f.element.contains(real))) {
+      e.stopImmediatePropagation();
+      return;
+    }
+    // An SVG text field is the overlay's input, in its closed shadow root: seen from window, the right-click's real
+    // target is the overlay host (finding 13, re-verification). It is the field's when the input is what lies
+    // under the pointer in the overlay.
+    if (f.svg && real === this.overlay.host && this.overlay.shadowRoot.elementFromPoint(e.clientX, e.clientY) === f.element) e.stopImmediatePropagation();
   }
 
   private onSelectStart(e: Event): void {
@@ -1356,14 +1705,86 @@ export class EditController implements FieldHost {
 
   // ------------------------------------------------------------------------------------------- the field
 
-  /** Why no field may open on this element now (a commit for it is still in flight), or null. */
-  private busyOn(el: Element | null): string | null {
-    if (!el) return 'Not editable';
-    for (const p of this.pending.values()) {
-      const r = p.field.root;
-      if (r === el || r.contains(el) || el.contains(r)) return 'Saving\u2026';
+  /**
+   * E-1 (review finding 0): when a commit of this page is unanswered, the field the author pressed for waits: it
+   * opens once every answer (and, for an html-text write, its map) is in, on the version the page shows then.
+   * Until then a "Saving…" badge sits by the text. True when it waits.
+   */
+  private defer(node: Text, x: number, y: number, pick: { runId: string } | null): boolean {
+    // 9.2 step 6: main sends a write's map before its result, so once the answers are in the page shows the version
+    // they made (or waits for a reload).
+    if (this.pending.size === 0) return false;
+    this.dropDeferred();
+    // Given up with the commit it waits for (COMMIT_TIMEOUT_MS): the field then does not open.
+    const timer = setTimeout(() => {
+      const typed = this.deferred?.keys.text ?? '';
+      this.dropDeferred();
+      if (typed) this.toast(NOT_TYPED);
+    }, COMMIT_TIMEOUT_MS);
+    this.deferred = { node, x, y, pick, timer, keys: { text: '', enter: false, dropped: false } };
+    this.overlay.showOutline(null);
+    this.overlay.setFitBadge('Saving\u2026', this.nodeRect(node) ?? { x, y, w: 0, h: 0 });
+    return true;
+  }
+
+  private dropDeferred(): void {
+    const d = this.deferred;
+    if (!d) return;
+    clearTimeout(d.timer);
+    this.deferred = null;
+    if (!this.field) this.overlay.setFitBadge(null);
+  }
+
+  /** Opens the waiting field once nothing of this page is unanswered (E-1). */
+  private openDeferred(): void {
+    const d = this.deferred;
+    if (!d || this.pending.size > 0) return;
+    this.dropDeferred();
+    const keys = d.keys;
+    const typed = keys.text !== '' || keys.enter || keys.dropped;
+    // What the author typed while it waited is not lost without a word when no field opens.
+    const tell = (text: string): void => this.toast(typed ? `${text} · ${NOT_TYPED_SHORT}` : text);
+    // A write that reloads the page (a literal or picked write), or Edit was left: nothing opens.
+    if (this.reloadPending || !this.active() || this.field) {
+      if (typed && !this.field) this.toast(NOT_TYPED);
+      return;
     }
-    return null;
+    const why = this.blockedReason();
+    if (why) {
+      tell(why);
+      return;
+    }
+    const { match, ed } = d.node.isConnected ? this.classify(d.node) : { match: null, ed: { kind: 'none' } as Editability };
+    let opened = false;
+    if (d.pick) {
+      // The run the author chose must still be one of the node's candidates in the version shown now.
+      if (ed.kind === 'pick' && match && match.candidates.some((c) => c.runId === d.pick!.runId)) {
+        opened = this.openField(d.node, d.pick.runId, { runId: d.pick.runId, kind: ed.pick }, { x: d.x, y: d.y });
+      } else {
+        tell('The text changed meanwhile: click it again');
+        return;
+      }
+    } else if (ed.kind === 'exact') opened = this.openField(d.node, ed.runId, null, { x: d.x, y: d.y });
+    if (!opened) {
+      tell('Not editable');
+      return;
+    }
+    this.replayKeys(keys);
+  }
+
+  /** E-1: types what came while the field waited, then commits it if Enter came too. */
+  private replayKeys(keys: DeferredOpen['keys']): void {
+    const f = this.field;
+    if (!f) return;
+    if (keys.text && !f.typeText(keys.text)) {
+      this.toast(NOT_TYPED);
+      return;
+    }
+    if (keys.dropped) {
+      this.toast(SOME_NOT_TYPED);
+      return;
+    }
+    if (keys.enter) this.commit(f, 'enter');
   }
 
   /**
@@ -1421,7 +1842,8 @@ export class EditController implements FieldHost {
     this.pause.pause();
     this.overlay.showOutline(null);
     field.fitContainer = svg ? null : fitContainer(el, this.win);
-    field.fitBefore = svg ? null : measureFit(el, this.win, field.fitContainer);
+    // E-10: the state before the edit as the deck shows it (its own case), not the source case the field shows.
+    field.fitBefore = field instanceof HtmlField ? measureFitAs(field.element, this.win, field.fitContainer, field.renderedCase()) : null;
     this.deps.onActiveChange(field);
     const begin: EditBegin = { fieldId: field.id, version, runIds: [...new Set(runs.map((r) => r.runId))] };
     this.deps.send(EditDeckToMain.begin, begin);
@@ -1545,6 +1967,8 @@ export class EditController implements FieldHost {
     this.pending.delete(fieldId);
     p.field.restoreOriginal();
     p.field.finish();
+    // Nothing says which version the page shows now: a field waiting for this answer does not open.
+    this.dropDeferred();
     this.toast('Not saved: Blueline did not answer');
     this.reportBusy();
   }
@@ -1564,28 +1988,25 @@ export class EditController implements FieldHost {
       if (res.kind === 'edit' && typeof r.text === 'string' && (picked === null || picked === 'equal')) {
         // The run's text as the file holds it now (html-text needs no reload, Strategy 2 needs one).
         f.writeRun(res.runId, r.text);
-        if (!r.reload && r.strategy === 'html-text' && !f.tamperedFlag && !f.changedAfterClose) this.advance(res.runId, r.text);
+        // E-6 (review finding 2): main counts this write as shown, so the page does too, also when the page changed
+        // the element after the field closed (the matcher then sees that node as the script's, not the run's).
+        if (!r.reload && r.strategy === 'html-text') this.advance(res.runId, r.text);
       }
       if (r.reload) this.reloadPending = true;
-      const t = savedToast(r, this.fileName, pend.alsoPlaces);
-      this.toast(t.text, t.token ? { label: 'Undo', run: () => this.undo(t.token!) } : undefined);
+      // E-5 (review finding 8): "Saved · <file>:<line>", "· also changes N other places" and its Undo are the
+      // shell's toast (main shows it), so the reload a literal or picked write makes does not take them away.
     } else {
-      // A note, a no-op or a refusal: the page shows what the file holds, the old text.
+      // A note, a no-op or a refusal: the page shows what the file holds, the old text. "Not changed in place … your
+      // text is kept as a note" and "Not saved: …" are the shell's toast (main shows it with the answer, as the Saved
+      // toast, E-5), so the reload that may follow does not take them away.
       f.restoreOriginal();
-      const msg = failureToast(r.outcome, r.why ?? null);
-      if (msg) this.toast(msg);
       if (r.reload) this.reloadPending = true;
     }
     f.finish();
     this.refreshAvailability();
     this.reportBusy();
     this.flushApplied();
-  }
-
-  /** The toast's Undo (6.3 Saving): main checks the token is still the document's latest undoable write (P2-14). */
-  private undo(token: string): void {
-    const req: EditUndoRequest = { token };
-    this.deps.send(EditDeckToMain.undo, req);
+    this.openDeferred();
   }
 
   /**
@@ -1725,12 +2146,8 @@ export class EditController implements FieldHost {
       this.toast('The text changed meanwhile: click it again');
       return;
     }
-    const busy = this.busyOn(p.node.parentElement);
-    if (busy) {
-      this.toast(busy);
-      return;
-    }
     if (this.field) this.commit(this.field, 'picker');
+    if (this.defer(p.node, p.x, p.y, { runId: c.runId })) return;
     if (!this.openField(p.node, c.runId, { runId: c.runId, kind: p.pick }, { x: p.x, y: p.y })) this.toast('Not editable');
   }
 
@@ -1760,7 +2177,7 @@ export class EditController implements FieldHost {
       this.overlay.setFitBadge(null);
       return;
     }
-    const now = measureFit(f.element, this.win, f.fitContainer);
+    const now = measureFitAs(f.element as HTMLElement, this.win, f.fitContainer, f instanceof HtmlField ? f.renderedCase() : []);
     const warnings = fitWarnings(f.fitBefore, now);
     this.overlay.setFitBadge(warnings.length > 0 ? warnings.join(' \u00b7 ') : null, f.rect());
   }

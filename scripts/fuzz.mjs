@@ -20,8 +20,10 @@
 // --negative-control (never the gate): after every fifth written edit the run's text changes once more behind the
 // oracle's back, and the run passes only if the mutation probe catches every such change.
 //
-// Exit 0 when every edit passed and the requested number was made, 1 when an edit failed (or too few could be made),
-// 2 on a usage or harness error.
+// Exit 0 when every edit passed, every written edit was probed and the requested number was made; 1 when an edit
+// failed, a written edit could not be probed (SPEC 10 Phase 2: the probe passes after EACH written edit, so one it
+// never reached is not a pass; E-12), a deck had an error, or too few edits could be made; 2 on a usage or harness
+// error. scripts/fuzz-selftest.mjs checks that the gate fails the edits it must fail (test/fuzz/selftest).
 
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -128,7 +130,7 @@ export function summarize(r) {
   lines.push(`  Electron ${r.environment.electron} (Chromium ${r.environment.chrome}), ${r.environment.platform}-${r.environment.arch}, editor ${r.environment.editorVersion}, reduced motion`);
   lines.push(`  written ${t.written} (${pct(r.shares.written)}), notes by rule ${t.notes} (${pct(r.shares.notes)}), no-ops ${t.noops} (${pct(r.shares.noops)}), failures ${t.failures}`);
   lines.push(`  picked candidates ${t.picks} (written ${t.pickWritten}); stale-version requests ${t.stale}; merged writes ${t.merged}; external writes before ${t.externalBefore}, inside the atomic write ${t.externalInside} (landed ${t.externalFired}); undo+redo ${t.undoRedo}`);
-  lines.push(`  mutation probe: ${t.probedRuns} edited runs in ${t.probeLoads} probe loads; ${t.unprobed} written edits not probed${t.unprobed ? ` (${Object.entries(r.unprobedByReason).map(([k, n]) => `${n} ${k}`).join('; ')})` : ''}; ${t.rounds} rounds, ${t.walks} walks`);
+  lines.push(`  mutation probe: ${t.probedRuns} edited runs in ${t.probeLoads} probe loads (${t.probedAlone ?? 0} probed on their own, their node not in the round's walk); ${t.unprobed} written edits not probed${t.unprobed ? ` (${Object.entries(r.unprobedByReason).map(([k, n]) => `${n} ${k}`).join('; ')}: each fails the run)` : ''}; ${t.rounds} rounds, ${t.walks} walks`);
   if (t.controlsPlanted) lines.push(`  NEGATIVE CONTROL: ${t.controlsCaught} of ${t.controlsPlanted} planted changes caught by the probe (not a gate run)`);
   const by = Object.entries(r.byStrategy).map(([k, v]) => `${k} ${v.written} written / ${v.notes} notes`);
   if (by.length) lines.push(`  by strategy: ${by.join('; ')}`);
@@ -140,9 +142,9 @@ export function summarize(r) {
   for (const d of r.decks) {
     const why = d.skipped ? ` skipped: ${d.skipped}` : '';
     const errs = d.errors.length ? ` ERRORS: ${d.errors.join(' | ').slice(0, 200)}` : '';
-    lines.push(`    ${d.label.padEnd(36)} ${String(d.edits).padStart(4)} edits ${String(d.written).padStart(4)} written ${String(d.notes).padStart(4)} notes ${String(d.failures).padStart(3)} fail  ${String(d.rounds).padStart(3)} rounds ${String(d.walks).padStart(3)} walks ${String(d.probeLoads).padStart(3)} probe loads ${String(d.unprobed).padStart(2)} unprobed  ${Math.round(d.ms / 1000)} s${why}${errs}`);
+    lines.push(`    ${d.label.padEnd(36)} ${String(d.edits).padStart(4)} edits ${String(d.written).padStart(4)} written ${String(d.notes).padStart(4)} notes ${String(d.failures).padStart(3)} fail  ${String(d.rounds).padStart(3)} rounds ${String(d.walks).padStart(3)} walks ${String(d.probeLoads).padStart(3)} probe loads ${String(d.probedAlone ?? 0).padStart(2)} alone ${String(d.unprobed).padStart(2)} unprobed  ${Math.round(d.ms / 1000)} s${why}${errs}`);
   }
-  lines.push(`  failures: ${r.failures.length}`);
+  lines.push(`  failures: ${r.failures.length}; written edits not probed: ${t.unprobed} (the run passes only when both are 0)`);
   for (const f of r.failures.slice(0, 40)) lines.push(`    edit ${f.edit} ${f.deck} (round ${f.round}): ${String(f.what).slice(0, 300)}`);
   return lines.join('\n');
 }
@@ -230,7 +232,10 @@ async function main() {
   const short = result.totals.edits < result.editsRequested;
   if (short) console.error(`fuzz: only ${result.totals.edits} of ${result.editsRequested} edits could be made`);
   const controls = result.totals.controlsCaught === result.totals.controlsPlanted && (!o.negativeControl || result.totals.controlsPlanted > 0);
-  process.exit(result.totals.failures === 0 && !deckErrors && !short && controls ? 0 : 1);
+  // A written edit the probe never reached has not passed it (SPEC 10 Phase 2 "Checks after each written edit").
+  const unprobed = result.totals.unprobed;
+  if (unprobed > 0) console.error(`fuzz: ${unprobed} written edit${unprobed === 1 ? '' : 's'} could not be probed: the run fails`);
+  process.exit(result.totals.failures === 0 && unprobed === 0 && !deckErrors && !short && controls ? 0 : 1);
 }
 
 await main();

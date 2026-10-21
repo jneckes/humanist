@@ -17,7 +17,7 @@ import {
   type DiagSend,
 } from './diagnostics-hooks';
 import { InkLayer, type Tool } from './ink';
-import type { KeyAction, PickerKey, ShortcutAction, TextFieldKind } from './key-router';
+import type { KeyAction, PickerKey, ShortcutAction, TextFieldKind, TextHandle } from './key-router';
 import { installLinkReporter } from './link-reporter';
 import { NotesController } from './notes';
 import { Overlay } from './overlay';
@@ -329,7 +329,12 @@ export class DeckUi {
     return null;
   }
 
-  onAction(a: ShortcutAction | 'commit-edit' | 'cancel-edit' | 'close-card', e: KeyboardEvent): void {
+  onAction(a: ShortcutAction | TextHandle, e: KeyboardEvent): void {
+    if (a === 'edit-space') {
+      // Typing, not a shortcut (no diagnostics row): the field may type it itself (E-10).
+      this.activeEdit?.space?.(e);
+      return;
+    }
     this.diag?.('shortcut', { key: e.key, code: e.code, action: a });
     switch (a) {
       case 'commit-edit':
@@ -395,6 +400,15 @@ export class DeckUi {
 
   onPickerKey(k: PickerKey): void {
     this.edit.onPickerKey(k);
+  }
+
+  /** E-1: a press in Edit waits for this page's commit before its field opens. */
+  editPending(): boolean {
+    return this.mode === 'edit' && this.edit.pendingOpen;
+  }
+
+  onPendingKey(e: KeyboardEvent): void {
+    this.edit.onPendingKey(e);
   }
 
   // ------------------------------------------------------------------------------------------- input guard bridge

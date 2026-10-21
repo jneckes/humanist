@@ -8,12 +8,15 @@ import {
   COLLAPSED_DELETIONS,
   FieldHistory,
   FieldInputGate,
+  affectedRanges,
   classifyInput,
   hasLineBreak,
   lineBreaksToSpaces,
+  rangeFacts,
   type InputFacts,
   type RangeFacts,
 } from '../../../packages/app/src/preload/edit-input';
+import { noteDrop } from '../../../packages/app/src/preload/input-guard';
 import { ALLOWED_INPUT_TYPES as FROM_DIAGNOSTICS } from '../../../packages/app/src/preload/diagnostics-hooks';
 
 const inNode: RangeFacts = { collapsed: false, textNodes: 1, other: false, inField: true };
@@ -26,11 +29,12 @@ function facts(o: Partial<InputFacts>): InputFacts {
 describe('classifyInput (9.2 Committing an edit, step 2)', () => {
   it('allows exactly the listed input types inside one text node', () => {
     expect([...ALLOWED_INPUT_TYPES].sort()).toEqual(
-      ['deleteByCut', 'deleteContentBackward', 'deleteContentForward', 'deleteWordBackward', 'deleteWordForward', 'insertFromDrop', 'insertFromPaste', 'insertReplacementText', 'insertText'].sort(),
+      ['deleteByCut', 'deleteByDrag', 'deleteContentBackward', 'deleteContentForward', 'deleteWordBackward', 'deleteWordForward', 'insertFromDrop', 'insertFromPaste', 'insertReplacementText', 'insertText'].sort(),
     );
     for (const t of ALLOWED_INPUT_TYPES) {
       expect(classifyInput(facts({ inputType: t, range: inNode, data: t.startsWith('insert') ? 'x' : null })), t).toBe('allow');
-      expect(classifyInput(facts({ inputType: t, range: caret, data: t.startsWith('insert') ? 'x' : null })), t).toBe('allow');
+      // A drag moves a selection, never a caret (below).
+      if (t !== 'deleteByDrag') expect(classifyInput(facts({ inputType: t, range: caret, data: t.startsWith('insert') ? 'x' : null })), t).toBe('allow');
     }
     // The Diagnostics heading uses the same list.
     expect(FROM_DIAGNOSTICS).toBe(ALLOWED_INPUT_TYPES);
@@ -38,7 +42,7 @@ describe('classifyInput (9.2 Committing an edit, step 2)', () => {
 
   it('commits on insertParagraph (Enter) and blocks every other type, Shift+Enter included', () => {
     expect(classifyInput(facts({ inputType: 'insertParagraph' }))).toBe('commit');
-    for (const t of ['insertLineBreak', 'formatBold', 'formatItalic', 'insertOrderedList', 'insertHorizontalRule', 'deleteSoftLineBackward', 'deleteHardLineForward', 'insertTranspose', 'insertLink', 'deleteByDrag', 'formatSetBlockTextDirection']) {
+    for (const t of ['insertLineBreak', 'formatBold', 'formatItalic', 'insertOrderedList', 'insertHorizontalRule', 'deleteSoftLineBackward', 'deleteHardLineForward', 'insertTranspose', 'insertLink', 'formatSetBlockTextDirection']) {
       expect(classifyInput(facts({ inputType: t })), t).toBe('block');
     }
   });
@@ -53,6 +57,26 @@ describe('classifyInput (9.2 Committing an edit, step 2)', () => {
     expect(classifyInput(facts({ range: null }))).toBe('block');
     // A collapsed range at an element boundary is an insertion point: the commit's diff places it.
     expect(classifyInput(facts({ range: { collapsed: true, textNodes: 0, other: false, inField: true } }))).toBe('allow');
+  });
+
+  it('allows deleteByDrag (the source of a drag-move) only for a selection in one text node of the field (E-10)', () => {
+    // Chromium moves dragged text with deleteByDrag at the source, then insertFromDrop at the drop point; with only
+    // the second allowed, a drag-move copied the word (review finding 12). getTargetRanges() is empty for it, so the
+    // range is the selection being dragged, confined as deleteByCut's is.
+    const drag = (range: RangeFacts | null, o: Partial<InputFacts> = {}) => classifyInput(facts({ inputType: 'deleteByDrag', range, data: null, ...o }));
+    expect(drag(inNode)).toBe('allow');
+    expect(drag({ ...inNode, textNodes: 2 })).toBe('block');
+    expect(drag({ ...inNode, other: true })).toBe('block');
+    expect(drag({ ...inNode, textNodes: 0, other: true })).toBe('block');
+    expect(drag({ ...inNode, inField: false })).toBe('block');
+    expect(drag(null)).toBe('block');
+    // A drag always moves a selection (Chromium deletes by drag only for a range): a caret is not the author's.
+    expect(drag(caret)).toBe('block');
+    expect(drag({ collapsed: true, textNodes: 0, other: false, inField: true })).toBe('block');
+    expect(drag(inNode, { trusted: false })).toBe('block');
+    // The drop that follows it is an insertion at the drop point: allowed, its line breaks rewritten.
+    expect(classifyInput(facts({ inputType: 'insertFromDrop', range: caret, data: 'beta' }))).toBe('allow');
+    expect(classifyInput(facts({ inputType: 'insertFromDrop', range: caret, data: 'be\nta' }))).toBe('rewrite');
   });
 
   it('rewrites pasted, dropped and dictated line breaks into spaces (6.3)', () => {
@@ -88,6 +112,63 @@ describe('classifyInput (9.2 Committing an edit, step 2)', () => {
     expect(COLLAPSED_DELETIONS.deleteContentBackward).toEqual(['backward', 'character']);
     expect(COLLAPSED_DELETIONS.deleteWordForward).toEqual(['forward', 'word']);
     expect(COLLAPSED_DELETIONS.deleteByCut).toBeUndefined();
+  });
+});
+
+describe('affectedRanges for deleteByDrag (E-10: a drag-move takes text out of the field only to put it back in)', () => {
+  // A field <h1>"Alpha beta gamma"</h1> with "beta" selected, an inline element inside it, and a page element (the
+  // page's own contenteditable) outside it. Fakes: rangeFacts needs only contains() for a range in one node.
+  const text = { nodeType: 3 };
+  const inner = { nodeType: 1 };
+  const field = { nodeType: 1, ownerDocument: {}, contains: (n: unknown) => n === text || n === inner };
+  const page = { nodeType: 1 };
+  const dragged = { startContainer: text, startOffset: 6, endContainer: text, endOffset: 10, collapsed: false };
+  function view(range = dragged) {
+    const sel = { rangeCount: 1, getRangeAt: () => ({ cloneRange: () => range }) };
+    return { getSelection: () => sel } as unknown as Window;
+  }
+  const input = (inputType = 'deleteByDrag') => ({ inputType, getTargetRanges: () => [] }) as unknown as InputEvent;
+  const decide = (w: Window, e = input()) => {
+    const r = affectedRanges(e, w);
+    return classifyInput(facts({ inputType: e.inputType, range: r ? rangeFacts(r, field as unknown as Element) : null, data: null }));
+  };
+  const drop = (w: Window, target: unknown) => {
+    const later: (() => void)[] = [];
+    noteDrop(w, target as EventTarget, (fn) => later.push(fn));
+    return () => later.splice(0).forEach((f) => f());
+  };
+
+  it("allows the deletion when this task's drop landed in the field, and only until the task ends", () => {
+    const w = view();
+    const endTask = drop(w, field);
+    expect(affectedRanges(input(), w)).toEqual([dragged, { startContainer: field, startOffset: 0, endContainer: field, endOffset: 0, collapsed: true }]);
+    expect(decide(w)).toBe('allow');
+    endTask();
+    expect(affectedRanges(input(), w)).toBeNull();
+    expect(decide(w)).toBe('block');
+    drop(w, inner);
+    expect(decide(w)).toBe('allow');
+  });
+
+  it("blocks it when the drop landed outside the field (the page's own editable element) or no drop came first", () => {
+    // The text would leave the field: Chromium copies it to the page's element instead, and the field keeps it.
+    const w = view();
+    drop(w, page);
+    expect(decide(w)).toBe('block');
+    expect(decide(view())).toBe('block');
+    drop(w, null);
+    expect(decide(w)).toBe('block');
+    // A drop in the field does not let a dragged selection outside it go.
+    const outside = view({ ...dragged, startContainer: page as typeof text });
+    drop(outside, field);
+    expect(decide(outside)).toBe('block');
+  });
+
+  it('adds the drop point to deleteByDrag only: the drop itself is an insertion at the selection Chromium moved there', () => {
+    const w = view();
+    drop(w, page);
+    expect(affectedRanges(input('insertFromDrop'), w)).toEqual([dragged]);
+    expect(affectedRanges(input('deleteByCut'), w)).toEqual([dragged]);
   });
 });
 
@@ -167,6 +248,21 @@ describe('FieldInputGate (P2-7: only input a trusted beforeinput announced)', ()
     t.set({ text: 'abc', start: 2, end: 2 });
     t.g.arm(ev('deleteContentBackward'));
     expect(t.g.check(ev('deleteContentBackward'), 'ac')).toBe(true);
+  });
+
+  it('accepts a drag-move: the deletion of the dragged selection, then the drop at the drop point (E-10)', () => {
+    const t = gate({ text: 'Alpha beta gamma', start: 6, end: 10 });
+    t.g.arm(ev('deleteByDrag'));
+    expect(t.g.check(ev('deleteByDrag'), 'Alpha  gamma')).toBe(true);
+    // Chromium puts the selection at the drop point before the insertion.
+    t.set({ text: 'Alpha  gamma', start: 12, end: 12 });
+    t.g.arm(ev('insertFromDrop'));
+    expect(t.g.check(ev('insertFromDrop'), 'Alpha  gammabeta')).toBe(true);
+    // A deleteByDrag arm is consumed by its input and accepts no other type.
+    t.set({ text: 'Alpha  gammabeta', start: 0, end: 5 });
+    t.g.arm(ev('deleteByDrag'));
+    expect(t.g.check(ev('deleteContentBackward'), '  gammabeta')).toBe(false);
+    expect(t.g.check(ev('deleteByDrag'), '  gammabeta')).toBe(false);
   });
 
   it('expires an arm at the end of the task', () => {
