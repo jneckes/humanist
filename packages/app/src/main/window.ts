@@ -2596,6 +2596,15 @@ export class DocWindow {
     return this.reload.reloads;
   }
 
+  /**
+   * The version the deck view shows or is loading, and whether a reload waits or runs (tests): a test of external
+   * saves waits for the outcome (the page on the version on disk), not for one reload per save, since saves that
+   * land within one settle are shown by one reload (9.2 Watcher step 2).
+   */
+  get reloadView(): { showing: string; phase: 'idle' | 'deferred' | 'reloading' } {
+    return { showing: this.reload.showing, phase: this.reload.phase };
+  }
+
   pushState(): void {
     if (this.win.isDestroyed()) return;
     this.win.webContents.send(MainToShell.state, this.state());

@@ -76,8 +76,18 @@ test('File › Open Recent lists every file that opened and reopens it', async (
     await app.waitForDeck('single.html');
     await expect.poll(() => menuLabels(app, 'File', 'Open Recent')).toEqual(expect.arrayContaining(['single.html', 'generic-index.html']));
     expect((await menuLabels(app, 'File', 'Open Recent'))[0]).toBe('single.html');
-    const recent = JSON.parse(fs.readFileSync(path.join(app.userData, 'recent.json'), 'utf8')) as { files: string[] };
-    expect(recent.files).toEqual([fs.realpathSync(b), fs.realpathSync(a)]);
+    // recent.json follows the menu: the menu is built from the list in memory (recent.ts commit), and the file is
+    // written after it through a coalescing atomic write, so it is polled until the second open's write lands
+    // (one read could come before it: the hardening round's full run once read the first open's list).
+    const recentFile = path.join(app.userData, 'recent.json');
+    const stored = (): string[] | null => {
+      try {
+        return (JSON.parse(fs.readFileSync(recentFile, 'utf8')) as { files: string[] }).files;
+      } catch {
+        return null;
+      }
+    };
+    await expect.poll(stored, { timeout: 15_000 }).toEqual([fs.realpathSync(b), fs.realpathSync(a)]);
     // Close the first, then reopen it from the menu.
     await app.closeDoc(deck.docId);
     expect((await app.windows()).some((w) => w.fileName === 'generic-index.html')).toBe(false);

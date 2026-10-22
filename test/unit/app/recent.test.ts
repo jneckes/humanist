@@ -205,6 +205,43 @@ describe('RecentFiles (recent.json)', () => {
     expect(logs.some((l) => l.includes('menu'))).toBe(true);
   });
 
+  it('the menu follows an add at once, before recent.json is written; adds during a write end in one more write with both', async () => {
+    // File › Open Recent never waits for the file (the hardening round's full run once read recent.json before the
+    // second open's write landed, while the menu already listed both).
+    const writes: string[][] = [];
+    const held: (() => void)[] = [];
+    const r = new RecentFiles({
+      file: path.join(dir, 'recent.json'),
+      write: (_p, bytes) =>
+        new Promise<void>((resolve) => {
+          writes.push((JSON.parse(new TextDecoder().decode(bytes)) as { files: string[] }).files);
+          held.push(resolve);
+        }),
+    });
+    r.load();
+    let changes = 0;
+    r.onChange(() => changes++);
+    const a = deckFile('a.html');
+    const b = deckFile('b.html');
+    const first = r.add(a);
+    await new Promise((res) => setTimeout(res, 10));
+    // The first write is held; the second open comes meanwhile.
+    expect(writes).toEqual([[a]]);
+    const second = r.add(b);
+    expect(changes).toBe(2);
+    expect(labels(r.menuItems(() => undefined))).toEqual(['b.html', 'a.html', '—', 'Clear Menu']);
+    expect(r.busy).toBe(true);
+    // Only the first write has started; the second waits for it and carries both.
+    expect(writes).toEqual([[a]]);
+    held.shift()!();
+    await new Promise((res) => setTimeout(res, 10));
+    expect(writes).toEqual([[a], [b, a]]);
+    held.shift()!();
+    await Promise.all([first, second]);
+    expect(r.busy).toBe(false);
+    expect(writes).toHaveLength(2);
+  });
+
   it('a write error is logged, and the list stays in memory', async () => {
     const logs: string[] = [];
     const r = new RecentFiles({ file: path.join(dir, 'recent.json'), write: async () => Promise.reject(new Error('disk full')), log: (m) => logs.push(m) });

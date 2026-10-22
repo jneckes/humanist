@@ -18,6 +18,7 @@ import { assetsDir, servedDirs } from './app-paths';
 import { parseAppArgs, parseParentArg, validateSecondInstanceData, type ParsedArgs, type SecondInstanceData } from './args';
 import { chooseWithDialog, createCliInstallEnv, runInstallCommandLineTool, type CliInstallUi } from './cli-install';
 import { ConfigStore, configGeneralSettings } from './config';
+import { deckRouter } from './channels';
 import { AppController } from './controller';
 import { interruptDiagnostics, openDiagnostics } from './diagnostics';
 import { dropResultText, installDropHandler } from './drop';
@@ -639,6 +640,8 @@ function exposeTestHooks(controller: AppController): void {
         view: w.viewInfo(),
         reloads: w.reloads,
         reloadStatus: w.reloadStatus,
+        reloadView: w.reloadView,
+        version: w.doc.version,
         fullScreen: w.win.isFullScreen(),
         contentSize: w.win.getContentSize(),
         state: w.state(),
@@ -690,5 +693,10 @@ function exposeTestHooks(controller: AppController): void {
         historyOpen: w.historyShown,
       };
     },
+    /**
+     * 9.1: the deck messages of a document's views of one kind that were within the rate limits (the sender's
+     * budget for all channels, then the channel's), valid or not (ipc-guard DeckIpc.admittedFor).
+     */
+    ipcAdmitted: (docId: string, kind: 'deck' | 'render' | 'diagnostics' = 'deck') => deckRouter().admittedFor(docId, kind),
   };
 }

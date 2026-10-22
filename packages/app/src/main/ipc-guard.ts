@@ -4,9 +4,9 @@
 // - accepts it only from a webContents it registered as a deck, render or diagnostics view, only from that
 //   view's main frame, and only while the frame's origin is `blueline://<docId>`;
 // - takes the document from the sender's registration, never from the payload;
-// - rate-limits per document, view kind and channel: a token bucket per channel with a fixed rate and burst,
-//   refilled by the clock (1,000 messages a second, note operations 50 a second with a burst of 100; excess is
-//   dropped, invalid messages count too);
+// - rate-limits per document and view kind: one token bucket for all its deck channels together (9.1's 1,000
+//   messages a second), then one per channel (1,000 a second, note operations 50 a second with a burst of 100),
+//   each with a fixed rate and burst refilled by the clock; excess is dropped, invalid messages count too;
 // - validates the payload with a strict validator that rebuilds every object field by field (never
 //   spreading or assigning the parsed object), drops unknown fields, refuses `__proto__`, `constructor`
 //   and `prototype` keys anywhere, and enforces size limits;
@@ -742,6 +742,17 @@ export const DECK_CHANNEL_RATES: Readonly<Record<string, Readonly<RateSpec>>> = 
   [DeckToMain.note]: Object.freeze({ perSecond: 50, burst: 100 }),
 });
 
+/**
+ * 9.1's "1,000 messages a second" for a sender (a document's views of one kind, as the channel buckets are keyed),
+ * all its deck channels together: checked before the channel's own bucket, and every message counts, valid or not,
+ * whatever its channel's bucket then says. Without it the channel buckets alone (about twenty deck channels at up to
+ * 1,000 a second each) let one view send many times 9.1's figure. A second's worth of burst, as the channel buckets
+ * have: in any one second at most 2,000 pass (the burst and a second's refill), over a minute at most 61,000.
+ * Legitimate use stays far below it (test/e2e/ipc-legit-rates.spec.ts measures typing in a card and in an edit
+ * field, drawing, slide changes, the wheel and a long deck's background renders; SECURITY.md has the numbers).
+ */
+export const DECK_SENDER_RATE: Readonly<RateSpec> = Object.freeze({ perSecond: IPC_LIMITS.messagesPerSecond, burst: IPC_LIMITS.messagesPerSecond });
+
 /** Milliseconds from a monotonic clock (a wall-clock step back or forward neither stalls nor refills a bucket). */
 function monotonicMs(): number {
   const p = (globalThis as { performance?: { now(): number } }).performance;
@@ -852,6 +863,8 @@ export interface RouterOptions {
   perSecond?: number;
   /** DeckIpc: per channel limits (default DECK_CHANNEL_RATES). */
   rates?: Readonly<Record<string, Readonly<RateSpec>>>;
+  /** DeckIpc: the limit of a sender's deck channels together (default DECK_SENDER_RATE). */
+  senderRate?: Readonly<RateSpec>;
   /** The clock the buckets refill by, in milliseconds (default monotonic). */
   now?: () => number;
   /** Called for each dropped message (log it, rate-limited by the caller). Never sees payload contents. */
@@ -883,9 +896,17 @@ export class DeckIpc {
   private readonly views = new Map<number, { wc: WebContentsLike; docId: string; kind: DeckViewKind }>();
   /**
    * One token bucket per document, view kind and channel (a limiter per channel, keyed by document and kind): the
-   * render views of one document share theirs, and a flood on one channel takes no token from another.
+   * render views of one document share theirs, and a flood on one channel takes no token of another's.
    */
   private readonly limiters = new Map<string, RateLimiter>();
+  /**
+   * One more bucket per document and view kind for all its channels together (DECK_SENDER_RATE, 9.1): what a flood
+   * on one channel takes from it, the others do not get (a sender's whole budget is 9.1's figure).
+   */
+  private readonly senderLimiter: RateLimiter;
+  private readonly senderRate: Readonly<RateSpec>;
+  /** Messages within both rate limits (valid or not), per document and view kind (tests and diagnostics). */
+  private readonly admitted = new Map<string, number>();
   private readonly rates: Readonly<Record<string, Readonly<RateSpec>>>;
   private readonly fallbackRate: Readonly<RateSpec>;
   private readonly now?: () => number;
@@ -899,6 +920,18 @@ export class DeckIpc {
     this.fallbackRate = opts.perSecond !== undefined ? { perSecond: opts.perSecond, burst: opts.perSecond } : DEFAULT_DECK_RATE;
     this.now = opts.now;
     this.onDrop = opts.onDrop;
+    this.senderRate = opts.senderRate ?? DECK_SENDER_RATE;
+    this.senderLimiter = new RateLimiter(this.senderRate.perSecond, this.now, this.senderRate.burst);
+  }
+
+  /** The limit of a sender's deck channels together (DECK_SENDER_RATE). */
+  get senderRateSpec(): Readonly<RateSpec> {
+    return this.senderRate;
+  }
+
+  /** Messages from document `docId`'s views of `kind` within both rate limits, valid or not (tests and diagnostics). */
+  admittedFor(docId: string, kind: DeckViewKind): number {
+    return this.admitted.get(bucketKey(docId, kind)) ?? 0;
   }
 
   /** The channel's limit (DECK_CHANNEL_RATES, else 1,000 a second). */
@@ -942,6 +975,8 @@ export class DeckIpc {
     for (const v of this.views.values()) if (v.docId === docId && v.kind === kind) return;
     const key = bucketKey(docId, kind);
     for (const l of this.limiters.values()) l.forget(key);
+    this.senderLimiter.forget(key);
+    this.admitted.delete(key);
   }
 
   /**
@@ -996,8 +1031,12 @@ export class DeckIpc {
     const out: { reason?: DropReason } = {};
     const from = this.check(event, out);
     if (!from) return this.drop(channel, out.reason ?? 'unregistered', wcId);
-    // Count every message from a registered sender, valid or not, so a flood of junk is throttled too.
-    if (!this.limiterFor(channel).allow(bucketKey(from.docId, from.kind))) return this.drop(channel, 'rate', wcId);
+    // Count every message from a registered sender, valid or not, so a flood of junk is throttled too: first against
+    // the sender's budget for all its channels (9.1's 1,000 a second), then against its channel's.
+    const key = bucketKey(from.docId, from.kind);
+    if (!this.senderLimiter.allow(key)) return this.drop(channel, 'rate', wcId, 'sender');
+    if (!this.limiterFor(channel).allow(key)) return this.drop(channel, 'rate', wcId, 'channel');
+    this.admitted.set(key, (this.admitted.get(key) ?? 0) + 1);
     if (!kinds.includes(from.kind)) return this.drop(channel, 'kind', wcId);
     if (args.length > 1) return this.drop(channel, 'args', wcId);
     const v = validate(args[0]);

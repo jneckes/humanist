@@ -5,6 +5,7 @@ import { EditDeckToMain } from '@blueline/core/ipc-edit';
 import {
   DECK_CHANNEL_KINDS,
   DECK_CHANNEL_RATES,
+  DECK_SENDER_RATE,
   DECK_VALIDATORS,
   DeckIpc,
   IPC_LIMITS,
@@ -308,7 +309,9 @@ describe('rate limiting', () => {
     const drops: DropInfo[] = [];
     const router = new DeckIpc({ ipcMain: ipc, onDrop: (d) => drops.push(d), now: () => now });
     let notes = 0;
+    let focus = 0;
     router.on(DeckToMain.focus, validateFocus, () => {
+      focus++;
       now += 0.005;
     });
     router.on(DeckToMain.note, validateNote, () => {
@@ -322,14 +325,145 @@ describe('rate limiting', () => {
       ipc.send(c, ev(wc), p);
     };
     const start = now;
-    for (let i = 0; i < 5000; i++) send(DeckToMain.focus, { textField: i % 2 === 0 });
     for (let j = 0; j < 5000; j++) send(DeckToMain.note, { op: 'create', clientId: `f${j}`, text: 'x', marks: [], slide: 0 });
+    for (let i = 0; i < 5000; i++) send(DeckToMain.focus, { textField: i % 2 === 0 });
     const elapsed = (now - start) / 1000;
-    // The focus flood took no note tokens: the whole burst got through, and then only what the clock refilled.
+    // The whole burst of creates got through, and then only what the note bucket's clock refilled.
     expect(notes).toBeGreaterThanOrEqual(100);
     expect(notes).toBeLessThanOrEqual(Math.floor(100 + 50 * elapsed));
     expect(notes).toBeLessThan(200);
     expect(drops.filter((d) => d.reason === 'rate' && d.channel === DeckToMain.note).length).toBe(5000 - notes);
+    // Everything the sender sent, on both channels, drew on its one budget (DECK_SENDER_RATE): the creates spent its
+    // burst, so the focus flood after them got only what main's clock refilled, never the focus bucket's own burst of
+    // 1,000 (which the hardening round's per channel buckets alone let through).
+    expect(router.admittedFor(DOC, 'deck')).toBe(notes + focus);
+    expect(notes + focus).toBeLessThanOrEqual(Math.floor(1000 + 1000 * elapsed));
+    expect(focus).toBeLessThanOrEqual(Math.floor(1000 * elapsed) + 1);
+    expect(focus).toBeLessThan(1000);
+    expect(drops.filter((d) => d.reason === 'rate' && d.channel === DeckToMain.focus && d.why === 'sender').length).toBe(5000 - focus);
+  });
+
+  it("a sender's deck channels together get 9.1's 1,000 a second (DECK_SENDER_RATE), checked before each channel's bucket", () => {
+    expect(DECK_SENDER_RATE).toEqual({ perSecond: IPC_LIMITS.messagesPerSecond, burst: IPC_LIMITS.messagesPerSecond });
+    let now = 0;
+    const s = deckSetup(() => now);
+    expect(s.router.senderRateSpec).toEqual(DECK_SENDER_RATE);
+    const wc = new FakeWc(60);
+    s.router.registerDeckView(wc, { docId: DOC, kind: 'deck' });
+    const admitted = () => s.router.admittedFor(DOC, 'deck');
+    const rateDrops = (why: string) => s.drops.filter((d) => d.reason === 'rate' && d.why === why).length;
+    // One message on each of four channels: a valid one, a malformed one, and two this view kind may not use. Each
+    // counts against the sender's budget whatever happens to it after.
+    const four = (w: FakeWc = wc) => {
+      s.ipc.send(DeckToMain.focus, ev(w), { textField: true });
+      s.ipc.send(DeckToMain.link, ev(w), { href: 'not a url' });
+      s.ipc.send(DeckToMain.diag, ev(w), { event: 'paste', data: { length: 1 } });
+      s.ipc.send(DeckToMain.renderReply, ev(w), { reqId: 1, ok: true });
+    };
+    // 2,400 messages at one instant, 600 a channel: each channel's own bucket (1,000) would take all of its 600 (the
+    // hardening round's limits let 2,400 through); the sender's budget takes 1,000.
+    for (let i = 0; i < 600; i++) four();
+    expect(admitted()).toBe(1000);
+    expect(rateDrops('sender')).toBe(1400);
+    expect(rateDrops('channel')).toBe(0);
+    expect(s.got.filter((g) => g.channel === DeckToMain.focus)).toHaveLength(250);
+    // Refilled by the clock, whatever the channels: half a second is 500 more.
+    now += 500;
+    for (let i = 0; i < 600; i++) four();
+    expect(admitted()).toBe(1500);
+    // Sustained: 4,000 a second across the four channels for 10 s gets exactly 1,000 a second through.
+    let before = admitted();
+    for (let t = 0; t < 10_000; t++) {
+      now += 1;
+      four();
+    }
+    expect(admitted() - before).toBe(10_000);
+    // In any one second at most the burst plus a second's refill: idle for 5 s (the bucket is full, never above the
+    // burst), then 4,000 a second for a second.
+    now += 5000;
+    before = admitted();
+    for (let i = 0; i < 1000; i++) four();
+    for (let t = 0; t < 1000; t++) {
+      now += 1;
+      four();
+    }
+    expect(admitted() - before).toBe(2000);
+    // Another document, and another view kind of this one, have their own budget.
+    const other = new FakeWc(61, frame({ origin: `blueline://${OTHER}` }));
+    const render = new FakeWc(62);
+    s.router.registerDeckView(other, { docId: OTHER, kind: 'deck' });
+    s.router.registerDeckView(render, { docId: DOC, kind: 'render' });
+    for (let i = 0; i < 300; i++) four(other);
+    for (let i = 0; i < 300; i++) four(render);
+    expect(s.router.admittedFor(OTHER, 'deck')).toBe(1000);
+    expect(s.router.admittedFor(DOC, 'render')).toBe(1000);
+    // The budget goes with the document's last view of that kind (a full bucket is a new one: nothing is lost).
+    expect(s.router.admittedFor(DOC, 'deck')).toBeGreaterThan(0);
+    four();
+    const dropsBefore = rateDrops('sender');
+    four();
+    expect(rateDrops('sender')).toBe(dropsBefore + 4);
+    wc.destroy();
+    const again = new FakeWc(63);
+    s.router.registerDeckView(again, { docId: DOC, kind: 'deck' });
+    expect(s.router.admittedFor(DOC, 'deck')).toBe(0);
+    for (let i = 0; i < 300; i++) four(again);
+    expect(s.router.admittedFor(DOC, 'deck')).toBe(1000);
+  });
+
+  it("every message takes a token of the sender's budget, even one its channel's bucket then drops", () => {
+    let now = 0;
+    const s = deckSetup(() => now);
+    const wc = new FakeWc(64);
+    s.router.registerDeckView(wc, { docId: DOC, kind: 'deck' });
+    for (let i = 0; i < 150; i++) s.ipc.send(DeckToMain.note, ev(wc), { op: 'create', clientId: `c${i}`, text: 'x', marks: [], slide: 0 });
+    expect(s.got.filter((g) => g.channel === DeckToMain.note)).toHaveLength(100);
+    expect(s.drops.filter((d) => d.reason === 'rate' && d.why === 'channel')).toHaveLength(50);
+    // 150 of the sender's 1,000 are spent: 900 focus reports get 850 through.
+    for (let i = 0; i < 900; i++) s.ipc.send(DeckToMain.focus, ev(wc), { textField: i % 2 === 0 });
+    expect(s.got.filter((g) => g.channel === DeckToMain.focus)).toHaveLength(850);
+    expect(s.drops.filter((d) => d.reason === 'rate' && d.why === 'sender')).toHaveLength(50);
+    expect(s.router.admittedFor(DOC, 'deck')).toBe(950);
+    // A sender's budget never limits the shell: ShellIpc has its own (1,000 a second per shell, all channels).
+    now += 1000;
+    s.ipc.send(DeckToMain.focus, ev(wc), { textField: true });
+    expect(s.got.filter((g) => g.channel === DeckToMain.focus)).toHaveLength(851);
+  });
+
+  it("what a person does stays far below the sender's budget, every channel together", () => {
+    // A busy minute, faster than a person: a trackpad pan at 120 Hz (wheel pans go out once a frame), slide changes
+    // as fast as the slide watcher reports them (every 120 ms), a stroke every 100 ms, the card's text every 300 ms
+    // (SAVE_DEBOUNCE_MS), focus and the edit field's busy state twice a second each. Measured in the app the peaks
+    // are lower still (test/e2e/ipc-legit-rates.spec.ts).
+    let now = 0;
+    const s = deckSetup(() => now);
+    const wheel = 'bl:views:wheel';
+    s.router.on(wheel, (p) => ({ ok: true, value: p }), (from, payload) => s.got.push({ channel: wheel, docId: from.docId, kind: from.kind, payload }), { kinds: ['deck'] });
+    const wc = new FakeWc(65);
+    s.router.registerDeckView(wc, { docId: DOC, kind: 'deck' });
+    const sent: number[] = [];
+    const send = (c: string, p: unknown) => {
+      sent.push(now);
+      s.ipc.send(c, ev(wc), p);
+    };
+    for (let tick = 0; tick < 60_000 * 6; tick++) {
+      now = tick / 6; // 1/6 ms steps
+      if (tick % 50 === 0) send(wheel, { dx: 0, dy: 12 }); // every 8.3 ms: 120 a second
+      if (tick % 720 === 0) send(DeckToMain.slides, { kind: 'generic', count: 24, current: (tick / 720) % 24, titles: [], navKind: 'index' });
+      if (tick % 600 === 0) send(DeckToMain.note, { op: 'update', id: 'n-0001', marks: [] });
+      if (tick % 1800 === 0) send(DeckToMain.note, { op: 'update', id: 'n-0001', text: `t${tick}` });
+      if (tick % 3000 === 0) send(DeckToMain.focus, { textField: (tick / 3000) % 2 === 0 });
+      if (tick % 3000 === 1500) send(EditDeckToMain.busy, { edit: (tick / 3000) % 2 === 0, committing: false });
+    }
+    expect(s.drops).toEqual([]);
+    // The busiest second of the minute.
+    let peak = 0;
+    for (let i = 0, j = 0; i < sent.length; i++) {
+      while (sent[i] - sent[j] >= 1000) j++;
+      peak = Math.max(peak, i - j + 1);
+    }
+    expect(peak).toBeLessThan(160);
+    expect(peak * 6).toBeLessThan(DECK_SENDER_RATE.perSecond);
   });
 
   it('buckets are per document, view kind and channel; render views of one document share theirs', () => {
