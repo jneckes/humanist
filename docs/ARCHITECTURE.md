@@ -133,7 +133,8 @@ check and, when the file changed since the request's version, placement by posit
 current bytes maps the run's range, and the run must hold `beforeText` there with no change over it; neither the text
 nor its 32 characters of context ever chooses a copy; review finding 0; the text on both sides of the place must
 then confirm it, out past what made it unique in that version and at least 128 characters, `anchors.ts` and
-`place.ts`, or the edit is a note; undo and redo case 2 are placed the same way, `undo.ts`), re-check, atomic write through
+`place.ts`, and the place's record must agree with the author's, `records.ts`, the second hardening round, or the edit
+is a note; undo and redo case 2 are placed the same way, `undo.ts`), re-check, atomic write through
 `DeckIO.atomicWrite` (which re-hashes before rename), verify (re-parse, same run holds `afterText`, no new
 parse5 errors, Strategy 2 checks) on the exact bytes before they are renamed in (decision P2-1, so a bad file never
 lands), and the verbatim fallback.
@@ -384,13 +385,19 @@ hardening round: on BOTH sides the run's old context, from its edge out to its u
 version, and its distinguishing part must not occur more often than before; and no copy of beforeText the other
 program added may carry more than 32 characters of the run's surroundings on both sides; otherwise an `ambiguous`
 note: one side is never enough, so a copy slid next to the author's changed or deleted run is never written into.
-The repair's three rules, which a structural attack got past one by one, are gone. Between the request's version and the
-current one the run is carried through the changes the queue saw (`write-queue.ts` `steps`, the first change that
-produced each version, so an undo or redo back to a version never cuts the chain; `carry`): its own writes
-move it exactly by their splices, and only another program's change is placed (and confirmed) as above, between the
-two versions around it (kept for the last 3 such changes, `aroundForeign`); else the diff over the whole span. Undo and redo case 2 (`undo.ts`
-`planUndo`) need the source of the version the write made (the queue's versions), map the write's place from it by
-diff, and confirm it the same way, else case 3),
+The repair's three rules, which a structural attack got past one by one, are gone. Rule 3 (`records.ts`, the second
+hardening round): the place's record (the largest parse5 element, or acorn node of a script, around it that holds no
+other copy of the text; widened past the anchors when they already cover it) must hold what told the author's record
+apart wherever another copy's record holds it, no added copy may hold what the place lost or half of what only the
+author's record held, and the place's record may hold nothing only another copy's held. Between the request's version
+and the current one the run is carried through the changes the queue saw (`write-queue.ts` `steps`, every change that
+produced each version, searched for the shortest route, newest first; `carryRange`): its own edits, undos and redos
+move it exactly by their splices, and another program's change or a restore is placed (and confirmed) as above,
+between the two versions around it (kept for the last 3 such changes, `aroundForeign`); when that fails, the diff over
+the whole span only when Blueline wrote nothing since the request's version, else a note. Undo and redo case 2
+(`undo.ts` `planUndo` with `place`) carry the write's range from the version it made in the same way, else case 3.
+`readWhole` waits up to 5 s for a deck that stopped ending as a whole document (another program writing it in place),
+else refuses (`conflict`)),
 `beforeWrite` with the bytes read in step 2, `canWrite` before and after it, verify on the exact bytes before the rename (P2-1), a read-back after the
 rename, `restore` serialized and conflict-checked, typed refusals. `plan.ts` refuses by rule what the HTML parser
 reports as an error and the `<pre>` character-reference case parse5 mislocates.

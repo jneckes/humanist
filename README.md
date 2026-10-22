@@ -10,8 +10,8 @@ one-pagers that AI tools produce. Think Adobe Acrobat Reader, but for HTML.
 
 Status: **Phase 2 (Edit) built.** Its exit gate is measured in
 [docs/PHASE2-RESULTS.md](docs/PHASE2-RESULTS.md): the fuzz, concurrency and reader-only criteria are met (the extra
-fuzz run on Josh's decks has 2 failures from a known limit of the probe on one deck's ticker); the one left is Josh
-finishing 3 real decks with Edit on a Mac build (see
+fuzz run on Josh's decks has 1 failure, 2 before the hardening rounds, from a known limit of the probe on one deck's
+ticker); the one left is Josh finishing 3 real decks with Edit on a Mac build (see
 [Real use of Edit on a Mac](#real-use-of-edit-on-a-mac)). Phase 1 (Reader) is measured in
 [docs/PHASE1-RESULTS.md](docs/PHASE1-RESULTS.md); its week of real use is also Mac work
 (see [Dogfooding on a Mac](#dogfooding-on-a-mac)). See [SPEC.md](SPEC.md) for the build spec,
@@ -303,7 +303,12 @@ run of the element pressed. All are fixed: a stale edit, an undo and a redo are 
 sides of the place confirms it (`packages/editor/src/anchors.ts`), the caret is placed as the text looked when the
 author pressed, no write replaces bytes whose trust differs from the window's, and Cmd+Z right after an Enter that
 became a note undoes nothing. Each finding has a regression test that fails before the round and passes after it, and
-the attackers' property tests find no wrong write that the text could tell apart. The round also fixed the two tests
+the attackers' property tests find no wrong write that the text could tell apart. A second round of three attackers
+found 7 more (docs/PHASE2-RESULTS.md, "The second hardening round"): a generator that renumbers slides, a new card
+modelled on the author's, a program writing the deck in place, and three ways Blueline's own writes were not seen when
+placing a later write. All are fixed: a write must also agree with the author's slide or record
+(`packages/editor/src/records.ts`), Blueline's own writes are carried exactly and everything else placed, and a deck
+still being written is waited for or left alone. The first round also fixed the two tests
 that failed by chance: the flood rate limit (note operations are now limited to 50 a second per document, SECURITY.md)
 and a PDF cancelled by its document's close. From a clean build after the round (logs in
 `test-results/p2-harden-final/`): all 2,100 unit tests pass (112 files, the Node fuzz's 1,200 edits among them, 0
@@ -314,7 +319,16 @@ passes 6 of 6, `npm run package:smoke` 17 of 17, the parity Playwright suite 9 o
 tests 30 of 30 over three repeats, and `npm run test:reader-only` passes. The cost: a stale edit with another
 program's change within about 128 characters of it is a verbatim note now. The fuzz gate in Chromium writes 894 of
 1,000 edits on the committed decks with **0 failures** (903 before the round); on Josh's decks 915 written edits pass
-(917 before) and 1 fails, again D5's ticker.
+(917 before) and 1 fails, again D5's ticker. From a clean build after the second round (2026-10-22, logs in
+`test-results/p2-harden2-final/`): all 2,129 unit tests pass (113 files, the Node fuzz's 1,200 edits among them, 0
+failures); the E2E suite runs 316 tests, and in each of three runs 315 pass and 1 is the expected failure; the
+security suite, run twice, 65 tests, 59 pass and 6 are the expected failures; `blueline check --auto` passes 6 of 6,
+`npm run package:smoke` 17 of 17, the parity Playwright suite 9 of 9, and `npm run test:reader-only` passes. The fuzz
+gate in Chromium writes 894 of 1,000 edits on the committed decks with **0 failures**, every edit as after the first
+round; on Josh's decks 913 written edits pass (one stale edit on D9 is a note now, by the round's rule on Blueline's
+own writes) and 1 fails, D5's ticker again. The cost on copies of Josh's decks, case for case against the attackers'
+runs: 2.0% fewer stale edits written (7,128 of 17,091 realistic changes near repeated text) and 2.7% fewer undos and
+redos done (7,296 of 22,166).
 
 Phase 1 results (2026-10-18, Linux, Electron 44.7.2, from a clean build, after review round 1): 1,639 unit
 tests pass (84 files; the exit-gate parity harness adds 37 more); the E2E suite runs 194 tests, 193 pass and 1 is

@@ -222,11 +222,16 @@ one run of the version it shows, and only right after the user pressed a key or 
   must then be the run's old surroundings, out past what made them unique in that version and at least 128 characters,
   found nowhere else in the file now, and no copy the other program added may carry those surroundings
   (editor/anchors.ts, editor/place.ts; the hardening round): a moved, copied, re-wrapped or respelled copy, or one
-  slid next to the author's changed text, is a note, never a write into another slide. Undo and redo case 2 are placed
-  the same way, from the version the write made. (Blueline's own writes in between move the run exactly by their
-  splices; only another program's change is placed this way.) A version the queue does not hold, a diff that runs out
-  of time, a change that overlaps the run, or a place the text around it does not confirm makes the commit a verbatim
-  note. Right before the write, the file's trust must still be the window's (D-1): a write that would replace bytes
+  slid next to the author's changed text, is a note, never a write into another slide. The place's record (its slide,
+  card or data record) must also hold what told the author's record apart, as no other copy's record does
+  (editor/records.ts; the second hardening round): a generator that renumbers slides by position, or a new card
+  modelled on the author's beside it, is a note. Undo and redo case 2 are placed the same way, from the version the write
+  made. (Blueline's own edits, undos and redos in between move the run exactly by their splices; another program's
+  change and a restore are placed this way; when that fails and Blueline wrote anything in between, it is a note.) A
+  version the queue does not hold, a diff that runs out of time, a change that overlaps the run, or a place the text
+  around it does not confirm makes the commit a verbatim note. A deck that no longer ends as a whole document, when it
+  did before (another program writing it in place), is waited for up to 5 s and otherwise not written: the commit is a
+  verbatim note. Right before the write, the file's trust must still be the window's (D-1): a write that would replace bytes
   Blueline has not decided may be edited (a marked download saved over the deck while a field was open), or one made
   while a trust change waits for its reopen, is a verbatim note. Main keeps the version of every open field and of the
   page shown until its commit is answered. The queue then plans the smallest splice inside that run, encodes it (`&`
@@ -336,6 +341,16 @@ Known limits added by Phase 2:
 - **The window between the re-hash and the rename** (9.2 Atomic write): another program's write that lands after
   Blueline re-hashed the deck and before it renamed its temp file over it is lost. A write any time before the
   re-hash is caught, and Blueline's write is requeued on top of it.
+- **A program that writes the deck in place** (a shell redirect, Python's `open('w')`) and pauses mid-file: when the
+  deck ended as a whole document (`</html>`) and the file no longer does, Blueline reads it again for up to 5 s and
+  otherwise writes nothing (the commit is a verbatim note, an undo or redo is refused). A deck that never ended so is
+  not waited for, so such a writer's rest can still be lost; a version without its end that stands for 30 s is taken
+  as the deck (the second hardening round).
+- **Copies no byte tells apart.** When another program leaves the author's slide or record and a copy of it that
+  read the same byte for byte (two identical slides swapped or moved, the author's deleted with an identical one at
+  its place, a copy made and the original deleted), a stale edit, an undo or a redo can land on the copy: nothing in
+  the file tells the two apart. Every case the attackers of both hardening rounds found that text could tell apart is
+  a verbatim note (docs/PHASE2-RESULTS.md).
 - **History snapshots on Linux** carry no marker (Linux has none), so a Protected document's snapshot opened
   directly from the history folder opens Trusted there, as an unmarked download does.
 

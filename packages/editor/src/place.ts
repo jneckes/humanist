@@ -22,6 +22,13 @@
 //      carries more than ANCHOR_MARGIN characters of the run's old surroundings on both sides: such a copy could
 //      be the author's slide changed a little, with the diff's place a copy of it (a slide duplicated beside the
 //      author's, then the original's kicker edited).
+//   3. The place's record (its slide, card or data record: the largest element or syntax node around it that holds
+//      no other copy) holds what the author's record held that told it from the other copies' records, wherever
+//      another copy's record holds it, and no added copy's record holds half or more of what only the author's
+//      record held (records.ts; the second hardening round). A program that renumbers slides by position gives the
+//      anchors' distinguishing ends (an id, a page counter) to the slide now at the author's old position, and a
+//      new card modelled on the author's takes the anchors when the author's card is renamed next to its label;
+//      in both the author's record, whole but for that, stands elsewhere.
 //
 // Anything else is a verbatim note (`ambiguous`), never a guess: a note keeps the author's words; a write into
 // another copy changes a slide they did not touch. Two copies that differ only in where they are (identical
@@ -30,6 +37,7 @@
 import { mapRangesClean, type CleanRange } from '@blueline/core/locked-spans';
 import type { DeckMap, HtmlRun, LiteralRun, RefusalCode } from '@blueline/core/types';
 import { ANCHOR_MARGIN, confirmPlace } from './anchors';
+import { checkRecord } from './records';
 
 /** The most characters rule 2 compares; past that the edit is a note (a deck of thousands of copies). */
 const PLACE_BUDGET = 20_000_000;
@@ -108,5 +116,8 @@ export function placeStale(old: PlaceVersion, run: Run, cur: PlaceVersion, befor
       return { ok: false, why: 'the text is in several places, and the deck now has another copy of it with the same surroundings (9.2 Write protocol step 2)', code: 'ambiguous' };
     }
   }
+  // Rule 3: the records.
+  const recorded = checkRecord(old, run, cur, hit, copiesOld, copiesCur, images);
+  if (!recorded.ok) return { ok: false, why: recorded.why, code: 'ambiguous' };
   return { ok: true, runId: hit.id };
 }

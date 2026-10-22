@@ -120,8 +120,20 @@ export function isWriteRecord(r: unknown): r is WriteRecord {
  * another slide). So `base`, the source of record.versionAfter, must be known: the write's place in it is mapped to
  * the current source through a diff, it must be exactly the needle's one place, and the text on both sides must
  * confirm it (confirmPlace). Without `base`, or when any of that fails, it is case 3.
+ *
+ * The write queue passes `opts.place` instead (the second hardening round): the write's range carried from the
+ * version it made to the current one through every change the queue saw since, Blueline's own later writes exactly
+ * and each other program's change placed and confirmed as a stale edit is (write-queue.ts carryRange). One diff from
+ * the version the write made cannot see the author's later writes, which can make another copy read as the written
+ * one did. Case 2 then needs the needle's one place to be exactly that range; `place: null` is case 3.
  */
-export function planUndo(src: string, record: WriteRecord, currentVersion: string, base?: string | null, opts: { timeoutSec?: number } = {}): UndoPlan | UndoRefusal {
+export function planUndo(
+  src: string,
+  record: WriteRecord,
+  currentVersion: string,
+  base?: string | null,
+  opts: { timeoutSec?: number; place?: { start: number; end: number } | null } = {},
+): UndoPlan | UndoRefusal {
   if (!isWriteRecord(record)) return { ok: false, why: 'not a write record', canMakeNote: false, code: 'refused' };
   const { start, rawBefore, rawAfter, prefix, suffix } = record;
   if (currentVersion === record.versionAfter) {
@@ -147,6 +159,12 @@ export function planUndo(src: string, record: WriteRecord, currentVersion: strin
   const refuse: UndoRefusal = { ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' };
   if (count !== 1) return refuse;
   const at = found + prefix.length;
+  if ('place' in opts) {
+    // By position: the write's range carried through the changes since (E-1).
+    const pl = opts.place;
+    if (!pl || pl.start !== at || pl.end !== at + rawAfter.length) return refuse;
+    return { ok: true, case: 2, start: at, rawBefore: rawAfter, rawAfter: rawBefore };
+  }
   // By position: the write's place in the version it made, mapped to this one (E-1).
   if (typeof base !== 'string' || start + rawAfter.length > base.length || base.slice(start, start + rawAfter.length) !== rawAfter) return refuse;
   const m = mapRangesClean(base, src, [[start, start + rawAfter.length]], opts)[0];
