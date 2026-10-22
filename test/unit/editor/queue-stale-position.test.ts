@@ -1,6 +1,6 @@
 // A stale edit is placed by POSITION (lead decision E-1; review findings 0, 1 and 22): the client's run is mapped
 // from its version to the current one through a diff, and only the run at that exact place, holding beforeText,
-// with no change overlapping it, is written. Text and its 32 characters of context never pick a copy by
+// with no change overlapping it, is written, and only when beforeText is in one place in both versions (F-1). Text and its 32 characters of context never pick a copy by
 // themselves; anything else is a verbatim note. The versions a client holds are pinned (9.2 Write protocol step 1),
 // and a version the queue does not know is a `stale` note, never a guess.
 import { describe, expect, it } from 'vitest';
@@ -64,20 +64,29 @@ describe('a stale edit on duplicated text lands on the run the client edited, or
     expect(two).toContain('Not Same subtitle');
   });
 
-  it('a change far away still lands right, on either copy', async () => {
+  it('a change far away: a note on either copy, the text being in two places (F-1); a heading of its own lands right', async () => {
     const filler = Array.from({ length: 6 }, (_, i) => `<p>line ${i} of the filler text</p>`).join('\n');
     const A = deck({ tail: filler });
     for (const which of [0, 1] as const) {
       const io = new MemIO(A);
       const q = createWriteQueue(io);
       const mA = await q.refresh();
-      io.external(A.replace('line 5 of the filler', 'line 5 of the changed filler'));
+      const C = A.replace('line 5 of the filler', 'line 5 of the changed filler');
+      io.external(C);
       const out = await q.edit(headingEdit(mA, which));
-      expect(out.ok).toBe(true);
-      const [one, two] = slides(io.text);
-      expect(one.includes('Key takeaways two')).toBe(which === 0);
-      expect(two.includes('Key takeaways two')).toBe(which === 1);
+      expect(out).toMatchObject({ ok: false, code: 'ambiguous', verbatim: { before: 'Key takeaways', after: 'Key takeaways two' } });
+      expect(io.text).toBe(C);
     }
+    const U = A.replace('<h2 class="title">Key takeaways</h2>\n  <p class="sub">Same subtitle</p>\n  <p>Body text 2', '<h2 class="title">Key results</h2>\n  <p class="sub">Same subtitle</p>\n  <p>Body text 2');
+    const io = new MemIO(U);
+    const q = createWriteQueue(io);
+    const mU = await q.refresh();
+    io.external(U.replace('line 5 of the filler', 'line 5 of the changed filler'));
+    const run = mU.runs.find((r) => r.value === 'Key results')!;
+    expect((await q.edit({ version: mU.version, runId: run.id, beforeText: 'Key results', afterText: 'Key results two' })).ok).toBe(true);
+    const [one, two] = slides(io.text);
+    expect(one).toContain('Key takeaways</h2>');
+    expect(two).toContain('Key results two');
   });
 
   it('the copy being edited was rewritten: a verbatim note (ambiguous), the file is the other program\'s', async () => {
@@ -157,19 +166,20 @@ describe('the versions a client holds are pinned; an unknown version is a note (
   });
 
   it('unpin lets the LRU evict it again; pins are counted', async () => {
-    const v0src = agenda(0, 'Agenda');
+    const v0src = agenda(0, 'Plan');
     const io = new MemIO(v0src);
     const q = createWriteQueue(io, { keepVersions: 2 });
     const m0 = mapOf(v0src);
     q.know(m0.version, v0src, m0, { pin: true });
     q.know(m0.version, v0src, m0, { pin: true });
     const tell = (i: number) => {
-      const s = agenda(i, 'Agenda');
+      const s = agenda(i, 'Plan');
       io.external(s);
       const m = mapOf(s);
       q.know(m.version, s, m);
     };
-    const req = { version: m0.version, runId: m0.runs.filter((r) => r.value === 'Agenda')[1].id, beforeText: 'Agenda', afterText: 'Agenda Monday' };
+    // #b's heading in one place, so a known version is placed by position and written (F-1).
+    const req = { version: m0.version, runId: m0.runs.find((r) => r.value === 'Plan')!.id, beforeText: 'Plan', afterText: 'Plan Monday' };
     for (let i = 1; i <= 3; i++) tell(i);
     q.unpin(m0.version);
     for (let i = 4; i <= 6; i++) tell(i);
@@ -177,7 +187,7 @@ describe('the versions a client holds are pinned; an unknown version is a note (
     expect((await q.edit(req)).ok).toBe(true);
     q.unpin(m0.version);
     for (let i = 7; i <= 9; i++) tell(i);
-    expect(await q.edit({ ...req, afterText: 'Agenda Tuesday' })).toMatchObject({ ok: false, code: 'stale' });
+    expect(await q.edit({ ...req, afterText: 'Plan Tuesday' })).toMatchObject({ ok: false, code: 'stale', why: expect.stringMatching(/not known/) });
   });
 });
 
@@ -194,21 +204,24 @@ describe('what cannot be placed by position is a note (E-1)', () => {
 
   it('a diff that reaches its time limit is a stale note, never a guess', async () => {
     const filler = Array.from({ length: 400 }, (_, i) => `<p>line ${i} of the filler text</p>`).join('\n');
-    const A = deck({ tail: filler });
+    // Slide 2's heading of its own, so the edit can be placed at all across another program's change (F-1).
+    const own = (x: string) => x.replace('<h2 class="title">Key takeaways</h2>\n  <p class="sub">Same subtitle</p>\n  <p>Body text 2', '<h2 class="title">Key results</h2>\n  <p class="sub">Same subtitle</p>\n  <p>Body text 2');
+    const A = own(deck({ tail: filler }));
     const io = new MemIO(A);
     const q = createWriteQueue(io, { diffTimeoutSec: 1e-9 });
     const mA = await q.refresh();
-    const changed = deck({ k1: 'Section recap', tail: filler.replace(/(line [1-9]\d+ )of the/g, '$1in the') });
+    const changed = own(deck({ k1: 'Section recap', tail: filler.replace(/(line [1-9]\d+ )of the/g, '$1in the') }));
     io.external(changed);
-    const out = await q.edit(headingEdit(mA, 1));
-    expect(out).toMatchObject({ ok: false, code: 'stale' });
+    const req = { version: mA.version, runId: mA.runs.find((r) => r.value === 'Key results')!.id, beforeText: 'Key results', afterText: 'Key results two' };
+    const out = await q.edit(req);
+    expect(out).toMatchObject({ ok: false, code: 'stale', why: expect.stringMatching(/too large/) });
     expect(io.text).toBe(changed);
     // The same request with the default limit is placed by position.
     const io2 = new MemIO(A);
     const q2 = createWriteQueue(io2);
     await q2.refresh();
     io2.external(changed);
-    expect((await q2.edit(headingEdit(mA, 1))).ok).toBe(true);
-    expect(slides(io2.text)[1]).toContain('Key takeaways two');
+    expect((await q2.edit(req)).ok).toBe(true);
+    expect(slides(io2.text)[1]).toContain('Key results two');
   });
 });

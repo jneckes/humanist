@@ -19,6 +19,7 @@ export type { VerifyResult, SpliceSpan } from './verify';
 export { planUndo, makeRecord, swapRecord, isWriteRecord, CANT_UNDO } from './undo';
 export type { UndoPlan, UndoRefusal } from './undo';
 export { applySplice } from './splice';
+export { placesOf, runsHolding } from './place';
 
 // The bundle must satisfy the capability seam's interface.
 const editorModule: EditorModule = { editorVersion, createWriteQueue };

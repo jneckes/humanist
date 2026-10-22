@@ -7,9 +7,7 @@
 // re-escapes, so an undo restores the previous bytes exactly. Cmd+Z never restores a whole-file snapshot
 // (that is the separate "Restore deck to <time>" command: WriteQueue.restore, P2-11).
 
-import { mapRangesClean } from '@blueline/core/locked-spans';
 import type { RefusalCode, WriteRecord } from '@blueline/core/types';
-import { confirmPlace } from './anchors';
 
 /** Characters of source context kept on each side of a write (9.2 Undo and redo). */
 export const CONTEXT = 32;
@@ -108,31 +106,25 @@ export function isWriteRecord(r: unknown): r is WriteRecord {
 /**
  * Plans the undo of `record` in the current source (9.2 Undo and redo):
  *  1. the file's hash equals versionAfter: the write's rawAfter is at `start`; replace it there;
- *  2. otherwise search for prefix + rawAfter + suffix; if it occurs exactly once, replace that rawAfter;
+ *  2. otherwise search for prefix + rawAfter + suffix; if it occurs exactly once, AT the write's place, replace
+ *     that rawAfter;
  *  3. otherwise refuse with "Can't undo in place", and offer Make a note.
  * A context shorter than 32 characters reached the start (or end) of the file when the write was made, so
  * the match must too: that keeps a short context from matching somewhere it never was.
  * For redo, pass swapRecord(record).
  *
- * Case 2 is placed by POSITION as a stale edit is (lead decision E-1; the hardening round after the repair): text
- * and its 32 characters of context alone never pick a place. An edit that makes the edited copy read like another
- * copy, then a change near it, left the needle only at the twin, and the undo wrote there ("Revenue!" went into
- * another slide). So `base`, the source of record.versionAfter, must be known: the write's place in it is mapped to
- * the current source through a diff, it must be exactly the needle's one place, and the text on both sides must
- * confirm it (confirmPlace). Without `base`, or when any of that fails, it is case 3.
- *
- * The write queue passes `opts.place` instead (the second hardening round): the write's range carried from the
- * version it made to the current one through every change the queue saw since, Blueline's own later writes exactly
- * and each other program's change placed and confirmed as a stale edit is (write-queue.ts carryRange). One diff from
- * the version the write made cannot see the author's later writes, which can make another copy read as the written
- * one did. Case 2 then needs the needle's one place to be exactly that range; `place: null` is case 3.
+ * Case 2 is placed by POSITION (lead decisions E-1 and F-1): text and its 32 characters of context alone never pick a
+ * place. The write queue passes `opts.place`: the write's range carried from the version it made to the current one
+ * through every change the queue saw since, Blueline's own later writes exactly, and, when another program changed
+ * the file, only where the run that holds it is the one place of its text in the version the write made and now
+ * (write-queue.ts undoPlace). Case 2 needs the needle's one place to be exactly that range; without a place
+ * (absent or null) it is case 3.
  */
 export function planUndo(
   src: string,
   record: WriteRecord,
   currentVersion: string,
-  base?: string | null,
-  opts: { timeoutSec?: number; place?: { start: number; end: number } | null } = {},
+  opts: { place?: { start: number; end: number } | null } = {},
 ): UndoPlan | UndoRefusal {
   if (!isWriteRecord(record)) return { ok: false, why: 'not a write record', canMakeNote: false, code: 'refused' };
   const { start, rawBefore, rawAfter, prefix, suffix } = record;
@@ -159,16 +151,8 @@ export function planUndo(
   const refuse: UndoRefusal = { ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' };
   if (count !== 1) return refuse;
   const at = found + prefix.length;
-  if ('place' in opts) {
-    // By position: the write's range carried through the changes since (E-1).
-    const pl = opts.place;
-    if (!pl || pl.start !== at || pl.end !== at + rawAfter.length) return refuse;
-    return { ok: true, case: 2, start: at, rawBefore: rawAfter, rawAfter: rawBefore };
-  }
-  // By position: the write's place in the version it made, mapped to this one (E-1).
-  if (typeof base !== 'string' || start + rawAfter.length > base.length || base.slice(start, start + rawAfter.length) !== rawAfter) return refuse;
-  const m = mapRangesClean(base, src, [[start, start + rawAfter.length]], opts)[0];
-  if (!m.ok || m.start !== at || m.end !== at + rawAfter.length) return refuse;
-  if (!confirmPlace(base, { start, end: start + rawAfter.length }, src, { start: m.start, end: m.end }).ok) return refuse;
+  // By position: the write's range carried through the changes since (E-1, F-1).
+  const pl = opts.place;
+  if (!pl || pl.start !== at || pl.end !== at + rawAfter.length) return refuse;
   return { ok: true, case: 2, start: at, rawBefore: rawAfter, rawAfter: rawBefore };
 }

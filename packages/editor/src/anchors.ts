@@ -1,11 +1,12 @@
 // FSL-1.1-ALv2 (packages/editor/LICENSE.md)
 //
 // Confirming a place by the text on BOTH sides of it (9.2 Write protocol step 2 and Undo case 2, lead decision
-// E-1; the hardening round after the repair). A write that was planned on one version of the file (a stale edit,
-// an undo or redo after another program changed the file) is placed in the current version by position, through a
-// diff. A diff is a minimal edit script, not the truth: when the text is in more than one place, or another place
-// starts to hold it, the diff can line the author's run up with another copy without any change overlapping it.
-// So the diff's place is written only when the text around it says, on both sides, that it is the author's run:
+// E-1; the hardening round after the repair; clause c of the uniqueness rule F-1, place.ts). A write that was planned
+// on one version of the file (a stale edit, an undo or redo after another program changed the file) is placed in the
+// current version by position, through a diff, and only when its text is in one place in both versions (F-1). A diff
+// is a minimal edit script, not the truth: when another program changes or deletes the author's run and makes another
+// run hold its text, the diff can line the author's run up with that run without any change overlapping it. So the
+// diff's place is written only when the text around it says, on both sides, that it is the author's run:
 //
 //   For each side, the ANCHOR is the run's old context on that side, from its edge out to the run's UNIQUE DEPTH
 //   in the old source (the shortest length at which that context occurs nowhere else in the old file) plus

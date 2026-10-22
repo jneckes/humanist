@@ -1,12 +1,13 @@
 // The second hardening round: wrong-place writes three attackers found in the build after the first round, each must
 // now leave the author's words as a verbatim note (or refuse the undo) with the file exactly as the other program
-// left it, never write into another copy of the text. The controls show what is still written.
+// left it, never write into another copy of the text. The controls show what is still written. The round fixed the
+// first two with a record rule (records.ts); the uniqueness rule (lead decision F-1, place.ts) replaced it: each case
+// has the text in two places, so it is a note before any placement is tried.
 //
 //   - a program that renumbers slides by position (a deck generator run again, a script that renumbers ids and page
-//     counters) gives the author's id and counter to the slide now at the author's old position (place.ts rule 3,
-//     records.ts);
+//     counters) gives the author's id and counter to the slide now at the author's old position;
 //   - a new card or record modelled on the author's, put beside it while the word next to the author's label is
-//     renamed (rule 3), and Cmd+Z after the same shape (undo case 2 carried through the queue's steps);
+//     renamed, and Cmd+Z after the same shape (undo case 2 carried through the queue's steps);
 //   - a deck another program is still writing in place (write-queue.ts readWhole);
 //   - Blueline's own writes between a write and its undo, between a field's version and its commit, and a restore
 //     (write-queue.ts carryRange: own writes exactly, a restore placed as another program's change; no whole-span
@@ -111,12 +112,18 @@ describe('a program that renumbers slides by position (tools finding 1)', () => 
     else expect(r.io.text).toBe(C);
   });
 
-  it('control: a slide appended after the author\'s, numbers before it unchanged: written in the author\'s slide', async () => {
+  it('a slide appended after the author\'s, numbers before it unchanged: a note while the heading is in two places (F-1)', async () => {
     const A = mk([['Agenda', 'Today'], ['Results', 'Revenue grew'], ['Results', 'Margins held'], ['Next', 'Dates']]);
     const C = mk([['Agenda', 'Today'], ['Results', 'Revenue grew'], ['Results', 'Margins held'], ['Next', 'Dates'], ['Appendix', 'Method']]);
+    expectNote(await stale(A, C, 'Results', 0, 'Results Q3'), C, 'Results', 'Results Q3');
+  });
+
+  it('control: the same with the heading in one place: written in the author\'s slide', async () => {
+    const A = mk([['Agenda', 'Today'], ['Results', 'Revenue grew'], ['Outlook', 'Margins held'], ['Next', 'Dates']]);
+    const C = mk([['Agenda', 'Today'], ['Results', 'Revenue grew'], ['Outlook', 'Margins held'], ['Next', 'Dates'], ['Appendix', 'Method']]);
     const r = await stale(A, C, 'Results', 0, 'Results Q3');
     expect(r.out.ok).toBe(true);
-    expect(r.io.text).toBe(mk([['Agenda', 'Today'], ['Results Q3', 'Revenue grew'], ['Results', 'Margins held'], ['Next', 'Dates'], ['Appendix', 'Method']]));
+    expect(r.io.text).toBe(mk([['Agenda', 'Today'], ['Results Q3', 'Revenue grew'], ['Outlook', 'Margins held'], ['Next', 'Dates'], ['Appendix', 'Method']]));
   });
 });
 
@@ -174,10 +181,17 @@ describe('a new card or record modelled on the author\'s (decks findings 3 and 4
     expectNote(await stale(A, C, 'Next steps', 1, 'Next steps now'), C, 'Next steps', 'Next steps now');
   });
 
-  it('control: a card with the same label and new text inserted below: written in the author\'s card', async () => {
+  it('a card with the same label and new text inserted below: a note, the label being in two places now (F-1)', async () => {
     const author = card('Next steps', 'step-02', LEAD, REST);
     const A = page(ctx + author + risks('Risks'));
     const C = A.replace(author, author + card('Next steps', 'ops-07', 'Hire two support engineers for the new region and train them on the product', NEW));
+    expectNote(await stale(A, C, 'Next steps', 0, 'Next steps now'), C, 'Next steps', 'Next steps now');
+  });
+
+  it('control: a card with another label and new text inserted below: written in the author\'s card', async () => {
+    const author = card('Next steps', 'step-02', LEAD, REST);
+    const A = page(ctx + author + risks('Risks'));
+    const C = A.replace(author, author + card('Hiring', 'ops-07', 'Hire two support engineers for the new region and train them on the product', NEW));
     const r = await stale(A, C, 'Next steps', 0, 'Next steps now');
     expect(r.out.ok).toBe(true);
     expect(r.io.text).toBe(C.replace(author, author.replace('>Next steps<', '>Next steps now<')));
@@ -339,7 +353,7 @@ describe('Blueline\'s own writes in between (anchors findings F1 to F3)', () => 
 
   it('control: an own write elsewhere, then a far change by another program: the stale edit is carried and written', async () => {
     const far = Array.from({ length: 6 }, (_, i) => s(`Topic ${i}`, `Sub ${i}`, `Body ${i}`));
-    const V0 = D(s('Key takeaways', 'Same subtitle', 'Body B'), ...far, s('Key takeaways', 'Same subtitle', 'Body B'));
+    const V0 = D(s('Key takeaways', 'Same subtitle', 'Body B'), ...far, s('Key results', 'Same subtitle', 'Body B'));
     const io = new MemIO(V0);
     const q = createWriteQueue(io);
     const m0 = await q.refresh();
@@ -348,6 +362,20 @@ describe('Blueline\'s own writes in between (anchors findings F1 to F3)', () => 
     const out = await q.edit({ version: m0.version, runId: runs(m0, 'Key takeaways')[0].id, beforeText: 'Key takeaways', afterText: 'Key takeaways two' });
     expect(out.ok).toBe(true);
     expect(io.text.indexOf('Key takeaways two')).toBeLessThan(io.text.indexOf('Topic 0'));
+  });
+
+  it('the same with the heading in two places: a note (F-1)', async () => {
+    const far = Array.from({ length: 6 }, (_, i) => s(`Topic ${i}`, `Sub ${i}`, `Body ${i}`));
+    const V0 = D(s('Key takeaways', 'Same subtitle', 'Body B'), ...far, s('Key takeaways', 'Same subtitle', 'Body B'));
+    const io = new MemIO(V0);
+    const q = createWriteQueue(io);
+    const m0 = await q.refresh();
+    expect((await q.edit({ version: m0.version, runId: runs(m0, 'Sub 3')[0].id, beforeText: 'Sub 3', afterText: 'Sub three' })).ok).toBe(true);
+    io.external(io.text.replace('Body 5', 'Body five'));
+    const C = io.text;
+    const out = await q.edit({ version: m0.version, runId: runs(m0, 'Key takeaways')[0].id, beforeText: 'Key takeaways', afterText: 'Key takeaways two' });
+    expect(out).toMatchObject({ ok: false, code: 'ambiguous', verbatim: { before: 'Key takeaways', after: 'Key takeaways two' } });
+    expect(io.text).toBe(C);
   });
 
   it('control: undo after an own write elsewhere and a far change by another program is done in place', async () => {

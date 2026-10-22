@@ -5,7 +5,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { CANT_UNDO, createWriteQueue } from '@blueline/editor';
+import { CANT_UNDO, createWriteQueue, placesOf } from '@blueline/editor';
 import type { WriteKind, WrittenVersion } from '@blueline/core/capabilities';
 import { decodeDeck, encodeDeck } from '@blueline/core/text';
 import type { DeckMap, WriteRecord } from '@blueline/core/types';
@@ -176,21 +176,31 @@ describe('merged (P2-4) and know (P2-3)', () => {
     expect(await q.edit(requestFor(map, 'Beta', 'Beta!'))).toMatchObject({ ok: true, merged: true });
   });
 
-  it('a version the queue never read, told with know, places a stale edit by position (E-1)', async () => {
-    const map = mapOf(base);
-    const second = map.runs.filter((r) => r.value === 'Owner')[1];
-    const changed = base.replace('<body>', '<body><h1>Inserted far away</h1>');
+  it('a version the queue never read, told with know, places a stale edit by position (E-1, F-1)', async () => {
+    // The second copy's text made unique, so the edit can be placed at all across another program's change (F-1).
+    const solo = base.replace(`<p>Owner</p><i>${filler} second`, `<p>Lead</p><i>${filler} second`);
+    const map = mapOf(solo);
+    const second = map.runs.find((r) => r.value === 'Lead')!;
+    const changed = solo.replace('<body>', '<body><h1>Inserted far away</h1>');
     // Without know: the queue cannot tell where the client's run is now (a stale note, never a guess).
     const io1 = new MemIO(changed);
     const q1 = createWriteQueue(io1);
-    expect(await q1.edit({ version: map.version, runId: second.id, beforeText: 'Owner', afterText: 'Owner B' })).toMatchObject({ ok: false, code: 'stale' });
+    expect(await q1.edit({ version: map.version, runId: second.id, beforeText: 'Lead', afterText: 'Lead B' })).toMatchObject({ ok: false, code: 'stale' });
     // With know (main calls it at open and after every external change).
     const io2 = new MemIO(changed);
     const q2 = createWriteQueue(io2);
-    q2.know(map.version, base, map);
-    const out = await q2.edit({ version: map.version, runId: second.id, beforeText: 'Owner', afterText: 'Owner B' });
+    q2.know(map.version, solo, map);
+    const out = await q2.edit({ version: map.version, runId: second.id, beforeText: 'Lead', afterText: 'Lead B' });
     expect(out).toMatchObject({ ok: true, merged: true });
-    expect(io2.text).toBe(changed.replace(`<p>Owner</p><i>${filler} second`, `<p>Owner B</p><i>${filler} second`));
+    expect(io2.text).toBe(changed.replace(`<p>Lead</p><i>${filler} second`, `<p>Lead B</p><i>${filler} second`));
+    // The copies of 'Owner' in the known version: a note, never one of them (F-1).
+    const dup = mapOf(base);
+    const io3 = new MemIO(base.replace('<body>', '<body><h1>Inserted far away</h1>'));
+    const q3 = createWriteQueue(io3);
+    q3.know(dup.version, base, dup);
+    const owner = dup.runs.filter((r) => r.value === 'Owner')[1];
+    expect(await q3.edit({ version: dup.version, runId: owner.id, beforeText: 'Owner', afterText: 'Owner B' })).toMatchObject({ ok: false, code: 'ambiguous' });
+    expect(io3.writes).toBe(0);
   });
 
   it('know of the current file is reused without a new parse', async () => {
@@ -258,8 +268,12 @@ describe('typed refusal codes (only noop is not a note)', () => {
     const map = await q.refresh();
     io.external(doc('<p>Alpha</p><p>Gamma</p>'));
     expect(await q.edit(requestFor(map, 'Beta', 'Beta!'))).toMatchObject({ ok: false, code: 'stale' });
-    // The run the client edited was rewritten, and its text is now somewhere else (E-1: never written there).
+    // The run the client edited was rewritten, and its text is now somewhere else, in one place (E-1: never written
+    // there; F-1: `stale`, the text is in no other place).
     io.external(doc('<p>Beta</p><p>Gamma</p>'));
+    expect(await q.edit(requestFor(map, 'Beta', 'Beta!'))).toMatchObject({ ok: false, code: 'stale' });
+    // The text in two places now: `ambiguous`.
+    io.external(doc('<p>Beta</p><p>Beta</p>'));
     expect(await q.edit(requestFor(map, 'Beta', 'Beta!'))).toMatchObject({ ok: false, code: 'ambiguous' });
   });
 
@@ -480,6 +494,7 @@ describe('undo in a changed file (9.2 Undo and redo cases 1–3) on the entity, 
       const runs = [...map.runs.filter((r) => r.aligned), ...map.literals.filter((l) => l.aligned !== false && !l.placeholder && !(l.html && !map.units[l.unit].html))];
       let tried = 0;
       let case3 = 0;
+      let copies = 0;
       for (const run of runs.slice(0, 6)) {
         const base = io.bytes.slice();
         const cur = await q.currentMap();
@@ -502,6 +517,16 @@ describe('undo in a changed file (9.2 Undo and redo cases 1–3) on the entity, 
         const baseSrc = decodeDeck(base).src;
         const bat = baseSrc.lastIndexOf('</html>') >= 0 ? baseSrc.lastIndexOf('</html>') : baseSrc.length;
         expect(bytesEqual(io.bytes, encodeDeck(baseSrc.slice(0, bat) + ins + baseSrc.slice(bat)))).toBe(true);
+        // A redo across another program's change replaces the run's old text: when that text is in another place
+        // too (a title slide's heading is also the <title>, a shadow value), it is case 3 (F-1), the file unchanged.
+        if (placesOf(cur, live.value) > 1) {
+          const undone = io.bytes.slice();
+          expect(await q.redo(out.record)).toMatchObject({ ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' });
+          expect(bytesEqual(io.bytes, undone)).toBe(true);
+          copies++;
+          io.external(base);
+          continue;
+        }
         // Case 3: redo, then the agent rewrites the edited text: undo is refused and nothing changes.
         expect((await q.redo(out.record)).ok).toBe(true);
         const redone = decodeDeck(io.bytes).src;
@@ -518,7 +543,8 @@ describe('undo in a changed file (9.2 Undo and redo cases 1–3) on the entity, 
         io.external(base);
       }
       expect(tried).toBeGreaterThan(0);
-      expect(case3).toBe(tried);
+      expect(case3 + copies).toBe(tried);
+      expect(case3).toBeGreaterThan(0);
     });
   }
 });

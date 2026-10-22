@@ -192,20 +192,30 @@ describe('two short records with the same text swapped, or the edited one moved 
 describe('what is still written (controls)', () => {
   const far = (n: number) => Array.from({ length: n }, (_, i) => `<p>Filler paragraph ${i} of the deck, with its own words.</p>\n`).join('');
   const A = deck(slide('Agenda', 'What we cover today', 'a'), far(6), slide('Key takeaways', 'Revenue grew in every region', 'r'), far(6), slide('Key takeaways', 'Costs fell in two regions', 'o'), far(6), slide('Next steps', 'Owners and dates', 'n'));
-  it('a change far from the run, before and after it: both copies are written where the author typed', async () => {
+  // The same deck with the two headings told apart: each in one place (F-1).
+  const U = A.replace('<h2>Key takeaways</h2>\n  <p>Costs fell', '<h2>Key results</h2>\n  <p>Costs fell');
+  it('a change far from the run, before and after it: each heading is written where the author typed', async () => {
+    const C = U.replace('Filler paragraph 0 of', 'Filler paragraph zero of').replace('Owners and dates', 'Owners, dates and budgets');
+    for (const h of ['Key takeaways', 'Key results']) {
+      const r = await stale(U, C, h, 0, `${h} two`);
+      expect(r.out).toMatchObject({ ok: true, merged: true });
+      expect(r.io.text).toBe(C.replace(`<h2>${h}</h2>`, `<h2>${h} two</h2>`));
+    }
+  });
+  it('the same change with the heading in two places: a note on either copy, however far the change (F-1)', async () => {
     const C = A.replace('Filler paragraph 0 of', 'Filler paragraph zero of').replace('Owners and dates', 'Owners, dates and budgets');
     for (const which of [0, 1]) {
       const r = await stale(A, C, 'Key takeaways', which, 'Key takeaways two');
-      expect(r.out).toMatchObject({ ok: true, merged: true });
-      const at = C.split('<h2>Key takeaways</h2>');
-      expect(r.io.text).toBe(which === 0 ? `${at[0]}<h2>Key takeaways two</h2>${at[1]}<h2>Key takeaways</h2>${at[2]}` : `${at[0]}<h2>Key takeaways</h2>${at[1]}<h2>Key takeaways two</h2>${at[2]}`);
+      expect(r.out).toMatchObject({ code: 'ambiguous' });
+      expectNote(r, C, 'Key takeaways', 'Key takeaways two');
     }
   });
-  it('a slide inserted far before the run and one moved far after it: written on the author\'s slide', async () => {
-    const C = A.replace('<section class="slide" id="a">', `${slide('New slide', 'Added by the agent', 'x')}<section class="slide" id="a">`);
-    const r = await stale(A, C, 'Key takeaways', 1, 'Key takeaways two');
+  it('a slide inserted far before the run: written on the author\'s slide; with the heading in two places, a note (F-1)', async () => {
+    const ins = (x: string) => x.replace('<section class="slide" id="a">', `${slide('New slide', 'Added by the agent', 'x')}<section class="slide" id="a">`);
+    const r = await stale(U, ins(U), 'Key results', 0, 'Key results two');
     expect(r.out.ok).toBe(true);
-    expect(r.io.text).toBe(C.replace('<h2>Key takeaways</h2>\n  <p>Costs fell', '<h2>Key takeaways two</h2>\n  <p>Costs fell'));
+    expect(r.io.text).toBe(ins(U).replace('<h2>Key results</h2>', '<h2>Key results two</h2>'));
+    expectNote(await stale(A, ins(A), 'Key takeaways', 1, 'Key takeaways two'), ins(A), 'Key takeaways', 'Key takeaways two');
   });
   it('a change right next to the run is a note: the text there no longer says which copy it is (E-1)', async () => {
     const C = A.replace('Costs fell in two regions', 'Costs fell in three regions');
@@ -288,7 +298,7 @@ describe('undo and redo case 2 are placed by position too (literals findings 3 a
   });
   const pad = (k: string) => Array.from({ length: 8 }, (_, i) => `<p>Filler paragraph ${i} of part ${k}, with its own words.</p>\n`).join('');
   it('control: undo case 2 after a change far away still restores the bytes', async () => {
-    const A = deck(pad('one'), s('Revenue!', 'Up 12% this year'), pad('two'), s('Revenue', 'Up 9% this year'), pad('three'));
+    const A = deck(pad('one'), s('Revenue!', 'Up 12% this year'), pad('two'), s('Revenues', 'Up 9% this year'), pad('three'));
     const io = new MemIO(A);
     const q = createWriteQueue(io);
     const m = await q.refresh();
@@ -300,6 +310,19 @@ describe('undo and redo case 2 are placed by position too (literals findings 3 a
     const u = await q.undo(out.record);
     expect(u.ok).toBe(true);
     expect(io.text).toBe(A.replace('Filler paragraph 0 of', 'Filler paragraph zero of'));
+  });
+  it('the same undo when the edit made the heading equal its twin\'s: case 3 across another program\'s change, however far (F-1)', async () => {
+    const A = deck(pad('one'), s('Revenue!', 'Up 12% this year'), pad('two'), s('Revenue', 'Up 9% this year'), pad('three'));
+    const io = new MemIO(A);
+    const q = createWriteQueue(io);
+    const m = await q.refresh();
+    const run = m.runs.find((r) => r.value === 'Revenue!')!;
+    const out = await q.edit({ version: m.version, runId: run.id, beforeText: 'Revenue!', afterText: 'Revenue' });
+    if (!out.ok) throw new Error(out.why);
+    const C = io.text.replace('Filler paragraph 0 of', 'Filler paragraph zero of');
+    io.external(C);
+    expect(await q.undo(out.record)).toMatchObject({ ok: false, canMakeNote: true, code: 'stale' });
+    expect(io.text).toBe(C);
   });
   it('a version the queue no longer holds: undo case 2 is refused (case 3), never placed by text alone', async () => {
     for (const keepVersions of [8, 2]) {
@@ -358,7 +381,8 @@ describe('a stale edit after the author\'s own writes only is placed exactly thr
     expect((await q.edit({ version: m.version, runId: m.runs.find((r) => r.value === 'One')!.id, beforeText: 'One', afterText: 'One!' })).ok).toBe(true);
     io.external(io.text.replace('<p>Three</p>', '<p>Three (agent)</p>'));
     const C = io.text;
-    expect(await q.edit({ version: m.version, runId: two.id, beforeText: 'Two', afterText: 'Two!' })).toMatchObject({ ok: false, code: 'ambiguous' });
+    // 'Two' is in one place: the note is `stale` (F-1).
+    expect(await q.edit({ version: m.version, runId: two.id, beforeText: 'Two', afterText: 'Two!' })).toMatchObject({ ok: false, code: 'stale' });
     expect(io.text).toBe(C);
   });
   it('an undo and a redo of the author\'s write between: still placed exactly through them', async () => {
@@ -391,37 +415,71 @@ describe('a stale edit after the author\'s own writes only is placed exactly thr
 
 describe('own writes and another program\'s change between: only the other program\'s change is placed by position', () => {
   const filler = (k: string) => Array.from({ length: 6 }, (_, i) => `<p>Filler paragraph ${i} of part ${k}, with its own words.</p>\n`).join('');
-  const doc = (mid: string, end: string) =>
-    `<!doctype html><html><head></head><body>\n<section><h2>Owner</h2><p>Summary</p></section>\n${filler('a')}<section><h2>Owner</h2>${mid}</section>\n${filler('b')}<p>${end}</p>\n</body></html>\n`;
+  // `first`: the first section's heading. 'Owner' puts the edited heading's text in two places; 'Lead' leaves it in one.
+  const doc = (mid: string, end: string, first = 'Owner') =>
+    `<!doctype html><html><head></head><body>\n<section><h2>${first}</h2><p>Summary</p></section>\n${filler('a')}<section><h2>Owner</h2>${mid}</section>\n${filler('b')}<p>${end}</p>\n</body></html>\n`;
   const owner = (m: { runs: { value: string; start: number; id: string }[] }, i: number) =>
     m.runs.filter((r) => r.value === 'Owner').sort((a, b) => a.start - b.start)[i];
+  /** The edited heading: the second section's, which is the only 'Owner' when the first is 'Lead'. */
+  const target = (m: { runs: { value: string; start: number; id: string }[] }, first: string) => owner(m, first === 'Owner' ? 1 : 0);
+  /** Written on the second section's heading when its text is in one place; a note, the file as it was, when in two (F-1). */
+  function expectOutcome(out: { ok: boolean }, io: MemIO, first: string, written: string, C: string): void {
+    if (first === 'Lead') {
+      expect(out.ok).toBe(true);
+      expect(io.text).toBe(written);
+    } else {
+      expect(out).toMatchObject({ ok: false, code: 'ambiguous', verbatim: { before: 'Owner', after: 'Owner B' } });
+      expect(io.text).toBe(C);
+    }
+  }
 
-  it('the author\'s write right next to the run, then a change far away: written on the right copy', async () => {
-    const A = doc('<p>Summary</p>', 'Closing words');
-    const io = new MemIO(A);
-    const q = createWriteQueue(io);
-    const m = await q.refresh();
-    const sum2 = m.runs.filter((r) => r.value === 'Summary').sort((a, b) => a.start - b.start)[1];
-    expect((await q.edit({ version: m.version, runId: sum2.id, beforeText: 'Summary', afterText: 'Summary, revised' })).ok).toBe(true);
-    io.external(io.text.replace('Closing words', 'Closing words (agent)'));
-    const out = await q.edit({ version: m.version, runId: owner(m, 1).id, beforeText: 'Owner', afterText: 'Owner B' });
-    expect(out.ok).toBe(true);
-    expect(io.text).toBe(doc('<p>Summary, revised</p>', 'Closing words (agent)').replace('<h2>Owner</h2><p>Summary, revised', '<h2>Owner B</h2><p>Summary, revised'));
-  });
+  for (const first of ['Lead', 'Owner']) {
+    it(`the author's write right next to the run, then a change far away: ${first === 'Lead' ? 'written on the right run' : 'a note (the text in two places)'}`, async () => {
+      const A = doc('<p>Summary</p>', 'Closing words', first);
+      const io = new MemIO(A);
+      const q = createWriteQueue(io);
+      const m = await q.refresh();
+      const sum2 = m.runs.filter((r) => r.value === 'Summary').sort((a, b) => a.start - b.start)[1];
+      expect((await q.edit({ version: m.version, runId: sum2.id, beforeText: 'Summary', afterText: 'Summary, revised' })).ok).toBe(true);
+      io.external(io.text.replace('Closing words', 'Closing words (agent)'));
+      const C = io.text;
+      const out = await q.edit({ version: m.version, runId: target(m, first).id, beforeText: 'Owner', afterText: 'Owner B' });
+      expectOutcome(out, io, first, doc('<p>Summary, revised</p>', 'Closing words (agent)', first).replace('<h2>Owner</h2><p>Summary, revised', '<h2>Owner B</h2><p>Summary, revised'), C);
+    });
 
-  it('another program\'s change first, then the author\'s write right next to the run: written on the right copy', async () => {
-    const A = doc('<p>Summary</p>', 'Closing words');
-    const io = new MemIO(A);
-    const q = createWriteQueue(io);
-    const m = await q.refresh();
-    io.external(io.text.replace('Closing words', 'Closing words (agent)'));
-    const m2 = await q.refresh();
-    const sum2 = m2.runs.filter((r) => r.value === 'Summary').sort((a, b) => a.start - b.start)[1];
-    expect((await q.edit({ version: m2.version, runId: sum2.id, beforeText: 'Summary', afterText: 'Summary, revised' })).ok).toBe(true);
-    const out = await q.edit({ version: m.version, runId: owner(m, 1).id, beforeText: 'Owner', afterText: 'Owner B' });
-    expect(out.ok).toBe(true);
-    expect(io.text).toBe(doc('<p>Summary, revised</p>', 'Closing words (agent)').replace('<h2>Owner</h2><p>Summary, revised', '<h2>Owner B</h2><p>Summary, revised'));
-  });
+    it(`another program's change first, then the author's write right next to the run: ${first === 'Lead' ? 'written on the right run' : 'a note'}`, async () => {
+      const A = doc('<p>Summary</p>', 'Closing words', first);
+      const io = new MemIO(A);
+      const q = createWriteQueue(io);
+      const m = await q.refresh();
+      io.external(io.text.replace('Closing words', 'Closing words (agent)'));
+      const m2 = await q.refresh();
+      const sum2 = m2.runs.filter((r) => r.value === 'Summary').sort((a, b) => a.start - b.start)[1];
+      expect((await q.edit({ version: m2.version, runId: sum2.id, beforeText: 'Summary', afterText: 'Summary, revised' })).ok).toBe(true);
+      const C = io.text;
+      const out = await q.edit({ version: m.version, runId: target(m, first).id, beforeText: 'Owner', afterText: 'Owner B' });
+      expectOutcome(out, io, first, doc('<p>Summary, revised</p>', 'Closing words (agent)', first).replace('<h2>Owner</h2><p>Summary, revised', '<h2>Owner B</h2><p>Summary, revised'), C);
+    });
+
+    it(`many own writes after the other program's change: the versions around it are kept, ${first === 'Lead' ? 'written on the right run' : 'a note'}`, async () => {
+      const io = new MemIO(doc('<p>Summary</p>', 'Closing words', first));
+      const q = createWriteQueue(io);
+      const m = await q.refresh();
+      q.know(m.version, io.text, m, { pin: true });
+      const sum2 = m.runs.filter((r) => r.value === 'Summary').sort((a, b) => a.start - b.start)[1];
+      expect((await q.edit({ version: m.version, runId: sum2.id, beforeText: 'Summary', afterText: 'Summary, revised' })).ok).toBe(true);
+      io.external(io.text.replace('Closing words', 'Closing words (agent)'));
+      // Twelve more own writes far away: more versions than the queue keeps unpinned (8).
+      for (let k = 0; k < 12; k++) {
+        const cm = await q.currentMap();
+        const r = cm.runs.find((x) => x.value.startsWith(`Filler paragraph ${k % 6} of part a`))!;
+        expect((await q.edit({ version: cm.version, runId: r.id, beforeText: r.value, afterText: `${r.value}.` })).ok).toBe(true);
+      }
+      const now = io.text;
+      const out = await q.edit({ version: m.version, runId: target(m, first).id, beforeText: 'Owner', afterText: 'Owner B' });
+      expectOutcome(out, io, first, now.replace('<h2>Owner</h2><p>Summary, revised', '<h2>Owner B</h2><p>Summary, revised'), now);
+    });
+  }
 
   it('the other program\'s change is next to the run: a note, the file as it was', async () => {
     const io = new MemIO(doc('<p>Summary</p>', 'Closing words'));
@@ -435,26 +493,6 @@ describe('own writes and another program\'s change between: only the other progr
     const out = await q.edit({ version: m.version, runId: owner(m, 1).id, beforeText: 'Owner', afterText: 'Owner B' });
     expect(out).toMatchObject({ ok: false, verbatim: { before: 'Owner', after: 'Owner B' } });
     expect(io.text).toBe(C);
-  });
-
-  it('many own writes after the other program\'s change: the versions around it are kept, written on the right copy', async () => {
-    const io = new MemIO(doc('<p>Summary</p>', 'Closing words'));
-    const q = createWriteQueue(io);
-    const m = await q.refresh();
-    q.know(m.version, io.text, m, { pin: true });
-    const sum2 = m.runs.filter((r) => r.value === 'Summary').sort((a, b) => a.start - b.start)[1];
-    expect((await q.edit({ version: m.version, runId: sum2.id, beforeText: 'Summary', afterText: 'Summary, revised' })).ok).toBe(true);
-    io.external(io.text.replace('Closing words', 'Closing words (agent)'));
-    // Twelve more own writes far away: more versions than the queue keeps unpinned (8).
-    for (let k = 0; k < 12; k++) {
-      const cm = await q.currentMap();
-      const r = cm.runs.find((x) => x.value.startsWith(`Filler paragraph ${k % 6} of part a`))!;
-      expect((await q.edit({ version: cm.version, runId: r.id, beforeText: r.value, afterText: `${r.value}.` })).ok).toBe(true);
-    }
-    const now = io.text;
-    const out = await q.edit({ version: m.version, runId: owner(m, 1).id, beforeText: 'Owner', afterText: 'Owner B' });
-    expect(out.ok).toBe(true);
-    expect(io.text).toBe(now.replace('<h2>Owner</h2><p>Summary, revised', '<h2>Owner B</h2><p>Summary, revised'));
   });
 
   it('more than 3 changes by another program between: placed across the whole span (a note here)', async () => {

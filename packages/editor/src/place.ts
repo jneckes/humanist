@@ -1,46 +1,31 @@
 // FSL-1.1-ALv2 (packages/editor/LICENSE.md)
 //
-// Where a stale edit goes (9.2 Write protocol step 2; lead decision E-1): the request names a run of a version
-// the file has since moved on from. The run is placed by POSITION: its raw range is mapped from the client's
-// version to the current source through a diff (diff_main with a time limit, no clean-up, as the locked spans are
-// moved), and only a run of the same kind at exactly the mapped range, holding beforeText, with no change
-// overlapping it, can be the edit's run. Text alone never picks a copy, and neither do the 32 characters of
-// context around it.
+// Where a stale edit goes when another program changed the file (9.2 Write protocol step 2; lead decisions E-1 and
+// F-1). The request names a run of a version V the file has since moved on from, to the current version C, and
+// another program's change (or a restore: a whole other version) lies between them. The edit is written only when
+// the text says, with nothing to choose, which run it is:
 //
-// A diff is a minimal edit script, not the truth: it lines the run up with ANOTHER copy of its text, with no change
-// overlapping it, when another program moves or copies a templated slide, deletes the author's slide while another
-// place comes to hold the text (a near copy fixed, a slide renamed, a serialiser respelling the other copy), or
-// changes the author's copy while a copy slides next to its unchanged context (a table cell set to another value
-// and a row appended). The repair step's rules checked one side of the run, or the other copies' surroundings, and
-// each of those cases got through one of them (the hardening round). So the place is written only when:
+//   a. beforeText is the decoded value of exactly ONE place in V and exactly one in C: one run (HTML text or a script
+//      literal, a literal's shadow run too) and no shadow value (text the page may show that Blueline never writes,
+//      DeckMap.shadows), as the matcher counts copies (D-a). Text in two places is never placed across another
+//      program's change: no copy is ever chosen among several, however different their surroundings are.
+//   b. The run's raw range, mapped from V to C through a diff (diff_main with a time limit, no clean-up, as the
+//      locked spans are moved), lands exactly on that one run in C, of the same kind, with no change overlapping it.
+//   c. The text on BOTH sides of the place confirms it (anchors.ts confirmPlace): a minimal diff can line the run up
+//      with a run another program changed to hold its text while it changed or deleted the author's (a list item
+//      deleted and the one before it set to the same value), and both sides' context tells those apart.
 //
-//   1. The text on BOTH sides of the diff's place is the run's old text there, out to where that text is unique in
-//      the old version and a margin past it, and that text is nowhere else in the current version, and no copy of
-//      the run's distinguishing surroundings was added (anchors.ts confirmPlace). One side is never enough: a
-//      place confirmed on one side cannot be told from the author's run changed and a copy put next to that side.
-//   2. No copy of the text that the other program added (a run holding beforeText that is no old copy's image)
-//      carries more than ANCHOR_MARGIN characters of the run's old surroundings on both sides: such a copy could
-//      be the author's slide changed a little, with the diff's place a copy of it (a slide duplicated beside the
-//      author's, then the original's kicker edited).
-//   3. The place's record (its slide, card or data record: the largest element or syntax node around it that holds
-//      no other copy) holds what the author's record held that told it from the other copies' records, wherever
-//      another copy's record holds it, and no added copy's record holds half or more of what only the author's
-//      record held (records.ts; the second hardening round). A program that renumbers slides by position gives the
-//      anchors' distinguishing ends (an id, a page counter) to the slide now at the author's old position, and a
-//      new card modelled on the author's takes the anchors when the author's card is renamed next to its label;
-//      in both the author's record, whole but for that, stands elsewhere.
+// Anything else is a verbatim note: `ambiguous` when the text is in more than one place in V or in C, `stale` when it
+// is in one place but the mapping or the anchors fail (or no run holds it any more). Two identical slides swapped or
+// moved, an identical copy at the place of the author's deleted slide, a slide duplicated and the original deleted,
+// identical divider slides: each has the text in two places on one side, so each is a note.
 //
-// Anything else is a verbatim note (`ambiguous`), never a guess: a note keeps the author's words; a write into
-// another copy changes a slide they did not touch. Two copies that differ only in where they are (identical
-// slides) are told apart by their neighbours; a move of one of them cannot be seen in the text at all.
+// The queue applies this to each change another program made between V and C (write-queue.ts carryRange), with the
+// value of the run at that step, and to V and C themselves; Blueline's own writes are carried exactly, not placed.
 
-import { mapRangesClean, type CleanRange } from '@blueline/core/locked-spans';
+import { mapRangesClean } from '@blueline/core/locked-spans';
 import type { DeckMap, HtmlRun, LiteralRun, RefusalCode } from '@blueline/core/types';
-import { ANCHOR_MARGIN, confirmPlace } from './anchors';
-import { checkRecord } from './records';
-
-/** The most characters rule 2 compares; past that the edit is a note (a deck of thousands of copies). */
-const PLACE_BUDGET = 20_000_000;
+import { confirmPlace } from './anchors';
 
 type Run = HtmlRun | LiteralRun;
 
@@ -52,72 +37,50 @@ export interface PlaceVersion {
 
 export type Placed = { ok: true; runId: string } | { ok: false; why: string; code: RefusalCode };
 
-function allRuns(map: DeckMap): Run[] {
-  return [...map.runs, ...map.literals];
+/** Why a stale edit is not placed, for the note's reason. */
+export const NOT_PLACED = {
+  copies:
+    'the text is in more than one place and another program changed the deck, so which one the edit was made on cannot be told (9.2 Write protocol step 2)',
+  gone: 'the deck changed and no run holds beforeText any more (9.2 Write protocol step 2)',
+  moved: 'the deck changed where the text was, and the one run that holds it now is not where it was (9.2 Write protocol step 2)',
+  timeout: 'the deck changed and the change was too large to place the edit by position (9.2 Write protocol step 2)',
+} as const;
+
+/** The runs of a version whose decoded value is `text`: HTML-text and literal runs, a literal's shadow run too. */
+export function runsHolding(map: DeckMap, text: string): Run[] {
+  const out: Run[] = [];
+  for (const r of map.runs) if (r.value === text) out.push(r);
+  for (const r of map.literals) if (r.value === text) out.push(r);
+  return out;
 }
 
-function overlaps(r: { start: number; end: number }, s: { start: number; end: number }): boolean {
-  return (r.start < s.end && s.start < r.end) || (r.start === s.start && r.end === s.end);
-}
-
-/** How many characters right before x[a] and y[b] are equal, comparing at most `cap`. */
-function agreeBefore(x: string, a: number, y: string, b: number, cap: number): number {
-  let n = 0;
-  while (n < cap && n < a && n < b && x.charCodeAt(a - 1 - n) === y.charCodeAt(b - 1 - n)) n++;
-  return n;
-}
-
-/** How many characters from x[a] and y[b] on are equal, comparing at most `cap`. */
-function agreeAfter(x: string, a: number, y: string, b: number, cap: number): number {
-  let n = 0;
-  while (n < cap && a + n < x.length && b + n < y.length && x.charCodeAt(a + n) === y.charCodeAt(b + n)) n++;
+/**
+ * How many places of a version hold `text` (rule a): its runs, and one more for each shadow value equal to it, as
+ * the matcher counts them (a literal equal to a shadow value is not the only source of its text, D-a).
+ */
+export function placesOf(map: DeckMap, text: string): number {
+  let n = runsHolding(map, text).length;
+  for (const s of map.shadows ?? []) if (s.value === text) n++;
   return n;
 }
 
 /**
- * Places a stale edit (see the file's comment). `old` is the client's version and `run` its run (already checked
- * to hold beforeText); `cur` is the version just read.
+ * Places a stale edit across another program's change (see the file's comment). `old` is the client's version and
+ * `run` its run (already checked to hold beforeText); `cur` is the version just read, or the version after one change.
  */
 export function placeStale(old: PlaceVersion, run: Run, cur: PlaceVersion, beforeText: string, timeoutSec: number): Placed {
-  const kind = run.id.slice(0, 2);
-  const copiesOld = allRuns(old.map).filter((r) => r.value === beforeText);
-  const copiesCur = allRuns(cur.map).filter((r) => r.value === beforeText);
-  const others = copiesOld.filter((r) => !overlaps(r, run));
-  const mapped = mapRangesClean(old.src, cur.src, [[run.start, run.end], ...others.map((r): [number, number] => [r.start, r.end])], { timeoutSec });
-  const at = mapped[0];
-  // A copy is kept when a run of the same kind (parsed text or a literal) holds the text at exactly its mapped
-  // range: an edit never moves between parsed text and a script literal, which are different places on the page.
-  const imageOf = (r: Run, m: CleanRange): Run | undefined =>
-    m.ok ? copiesCur.find((k) => k.id.slice(0, 2) === r.id.slice(0, 2) && k.start === m.start && k.end === m.end) : undefined;
-  const hit = imageOf(run, at);
-  if (!hit || !at.ok || hit.id.slice(0, 2) !== kind) {
-    if (!at.ok && at.why === 'timeout') return { ok: false, why: 'the deck changed and the change was too large to place the edit by position (9.2 Write protocol step 2)', code: 'stale' };
-    if (copiesCur.length > 0) return { ok: false, why: 'the deck changed where the text was, and beforeText is somewhere else (9.2 Write protocol step 2)', code: 'ambiguous' };
-    return { ok: false, why: 'the deck changed and no run holds beforeText any more', code: 'stale' };
-  }
-  // Rule 1: both sides.
+  // a. One place in each version. The run itself is the one in `old`.
+  const inCur = runsHolding(cur.map, beforeText);
+  if (placesOf(old.map, beforeText) > 1 || placesOf(cur.map, beforeText) > 1) return { ok: false, why: NOT_PLACED.copies, code: 'ambiguous' };
+  const hit = inCur[0];
+  if (!hit) return { ok: false, why: NOT_PLACED.gone, code: 'stale' };
+  // b. The diff's place is exactly that run, of the same kind: an edit never moves between parsed text and a script
+  // literal, which are different places on the page.
+  const at = mapRangesClean(old.src, cur.src, [[run.start, run.end]], { timeoutSec })[0];
+  if (!at.ok) return { ok: false, why: at.why === 'timeout' ? NOT_PLACED.timeout : NOT_PLACED.moved, code: 'stale' };
+  if (hit.id.slice(0, 2) !== run.id.slice(0, 2) || hit.start !== at.start || hit.end !== at.end) return { ok: false, why: NOT_PLACED.moved, code: 'stale' };
+  // c. Both sides.
   const confirmed = confirmPlace(old.src, run, cur.src, hit);
-  if (!confirmed.ok) return { ok: false, why: confirmed.why, code: 'ambiguous' };
-  // Rule 2: the copies the other program added.
-  const images = new Set<Run>([hit]);
-  others.forEach((r, i) => {
-    const image = imageOf(r, mapped[i + 1]);
-    if (image) images.add(image);
-  });
-  let budget = PLACE_BUDGET;
-  const cap = ANCHOR_MARGIN + 1;
-  for (const k of copiesCur) {
-    if (images.has(k)) continue;
-    const l = agreeBefore(cur.src, k.start, old.src, run.start, cap);
-    const r = agreeAfter(cur.src, k.end, old.src, run.end, cap);
-    budget -= l + r + 2;
-    if (budget < 0) return { ok: false, why: 'the text is in too many places to tell its copies apart (9.2 Write protocol step 2)', code: 'ambiguous' };
-    if (l > ANCHOR_MARGIN && r > ANCHOR_MARGIN) {
-      return { ok: false, why: 'the text is in several places, and the deck now has another copy of it with the same surroundings (9.2 Write protocol step 2)', code: 'ambiguous' };
-    }
-  }
-  // Rule 3: the records.
-  const recorded = checkRecord(old, run, cur, hit, copiesOld, copiesCur, images);
-  if (!recorded.ok) return { ok: false, why: recorded.why, code: 'ambiguous' };
+  if (!confirmed.ok) return { ok: false, why: confirmed.why, code: 'stale' };
   return { ok: true, runId: hit.id };
 }

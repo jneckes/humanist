@@ -521,14 +521,15 @@ Known after the final runs; none is a write to the wrong place or a lost change.
 - **The caret can land in text Blueline cannot place.** A label whose element also holds an unmapped glyph (D3): End
   puts the caret after the glyph, and what is typed there lands outside every run, so it becomes a verbatim note by
   rule (the toast says so). Correct by rule, surprising in use.
-- **Stale requests and notes.** A request on an older version is placed by position (9.2 Write protocol step 2 as
-  amended), and written only when the text on both sides of the place confirms it (the hardening round) and, for a
-  repeated text, the place's slide or record holds what the author's did (the second hardening round); it becomes a
-  verbatim note by rule when a change overlaps its run or comes within its anchors (at least 128 characters on each
-  side), changes what told the author's record apart, its version is no longer known, the diff runs past its time
-  limit, or the copies cannot be told apart. So a page left open while another program rewrites text near a field
-  gives a note, never a guess: worth watching in real use. The numbers before the round (Josh's decks: 105
-  stale-version requests, 98 written) are in Results, below; the hardening rounds' are in their sections above.
+- **Stale requests and notes.** A request on an older version is carried exactly through Blueline's own writes;
+  across another program's change it is written only by the uniqueness rule (F-1, "The uniqueness rule" above): its
+  text in one place before, after and in between, the run mapped exactly onto that place, and the text on both sides
+  confirming it. It becomes a verbatim note when its text is in two places (a shadow value, such as the `<title>` or
+  an attribute, counts), a change overlaps its run or comes within its anchors (at least 128 characters on each side),
+  its version is no longer known, or the diff runs past its time limit. So a page left open while another program
+  changes the deck gives a note for any repeated text, however far the change: worth watching in real use. The
+  numbers before the hardening rounds (Josh's decks: 105 stale-version requests, 98 written) are in Results, below;
+  the rounds' and F-1's are in their sections above.
 - **`<pre>`, `<listing>` and `<textarea>` with a character reference right after the dropped leading newline**:
   parse5 8 places the text node late, so the mapper leaves the run unaligned (not editable) and the queue refuses to
   create that state (core-edit). A mapper fix would make such runs editable.
@@ -1170,9 +1171,15 @@ The gate: Josh finishes 3 real decks using only Edit for text changes (Mac build
   `edit-lane` in `test/unit/app/`, `test/e2e/edit-fix-stale.spec.ts`); for the two flaky tests, the new cases of
   `test/unit/app/ipc-guard.test.ts` and `render-service.test.ts`, and the tightened `test/security/forged-ipc.spec.ts`
   (flood) and `test/e2e/render-products-pdf.spec.ts` (a PDF running when its document closes).
-- The second hardening round's: `packages/editor/src/records.ts` and the changes to `place.ts`, `write-queue.ts` and
-  `undo.ts`; `test/unit/editor/queue-stale-round2.test.ts`, `test/e2e/edit-fix-hardening2.spec.ts`; for the two tests
+- The second hardening round's: `packages/editor/src/records.ts` (removed by the uniqueness rule) and the changes to
+  `place.ts`, `write-queue.ts` and `undo.ts`; `test/unit/editor/queue-stale-round2.test.ts`, `test/e2e/edit-fix-hardening2.spec.ts`; for the two tests
   that failed by chance and the deck IPC budget (`window.ts` `capturedNav`, `ipc-guard.ts` `DECK_SENDER_RATE`), the
   new cases of `test/e2e/views-reload-twice.spec.ts`, `test/unit/app/recent.test.ts` and `ipc-guard.test.ts`,
   `test/e2e/ipc-legit-rates.spec.ts`, the polling `views-open.spec.ts` and the rewritten flood of
   `test/security/forged-ipc.spec.ts`.
+- The uniqueness rule's (F-1): `packages/editor/src/place.ts` (rewritten: `placesOf`, `runsHolding`, `placeStale`),
+  `write-queue.ts` (`carryRange`'s `foreign`, `holderOf`, `undoPlace`, `foreignLog`/`foreignSince`/`oneOnTheWay`, the
+  hold times), `undo.ts` (`planUndo` takes only the queue's place), `anchors.ts` (comment), `index.ts` (exports
+  `placesOf`, `runsHolding`); `test/unit/editor/queue-unique.test.ts`; and the tests it changed (`write-queue`,
+  `queue-phase2`, `queue-stale-anchors`, `queue-stale-copies`, `queue-stale-position`, `queue-stale-round2`, `undo`
+  and `fuzz` in `test/unit/editor/`, `edit-lane-pins` in `test/unit/app/`).

@@ -25,13 +25,13 @@ beforeAll(() => {
 });
 afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
 
-// Two cards, each with a role line "Owner".
-const deck = (one: string, rev: number) =>
+// Two cards, each with a role line ("Owner" in both unless `two` says otherwise).
+const deck = (one: string, rev: number, two = 'Owner') =>
   [
     '<!doctype html>',
     '<html><head><title>Team</title></head><body>',
     `<section class="card"><h2>Alice Anderson</h2><p class="role">${one}</p></section>`,
-    '<section class="card"><h2>Bob Brown-Baker</h2><p class="role">Owner</p></section>',
+    `<section class="card"><h2>Bob Brown-Baker</h2><p class="role">${two}</p></section>`,
     // Far from the cards: a stale edit is written only where the text on both sides is unchanged (anchors.ts, E-1).
     ...Array.from({ length: 4 }, (_, i) => `<p>Filler line ${i}: words that stay as they are.</p>`),
     `<p>rev ${rev}</p>`,
@@ -39,11 +39,11 @@ const deck = (one: string, rev: number) =>
     '',
   ].join('\n');
 
-async function rig() {
+async function rig(two = 'Owner') {
   const dir = path.join(root, `d${n++}`);
   fs.mkdirSync(dir);
   const file = path.join(dir, 'deck.html');
-  fs.writeFileSync(file, deck('Owner', 0));
+  fs.writeFileSync(file, deck('Owner', 0, two));
   const bytes = new Uint8Array(fs.readFileSync(file));
   const doc = new BlDocument({ docId: 'abcdef0123456789', path: file, realpath: file, bytes, trust: { trust: 'trusted', reason: null, marker: null }, received: false });
   const session = emptySession({ path: file, realpath: file, fileKey: doc.fileKey, sha256: doc.contentHash, title: doc.title });
@@ -105,22 +105,31 @@ describe('a field open across many external versions (findings 1 and 22)', () =>
     });
   }
 
-  it('9 external saves elsewhere: the field\'s version is still held, so the edit lands on card one by position', async () => {
-    const r = await rig();
-    const v0 = r.doc.version;
-    const cardOne = r.doc.map.runs.filter((x) => x.value === 'Owner')[0];
-    r.s.onInput('mouseDown');
-    r.s.onBegin({ fieldId: 1, version: v0, runIds: [cardOne.id] });
-    expect(r.lane.versions.pinned(v0)).toBe(1);
-    for (let i = 1; i <= 9; i++) await r.save(deck('Owner', i));
-    expect(r.lane.versions.get(v0)).not.toBeNull();
-    r.s.onInput('keyDown');
-    await r.s.onCommit({ fieldId: 1, version: v0, result: { kind: 'edit', runId: cardOne.id, beforeText: 'Owner', afterText: 'Owner/Lead' }, target: target(cardOne.stamp), slide: 0, alsoPlaces: 0 });
-    expect(r.result()).toMatchObject({ outcome: 'written' });
-    expect(r.roles()).toEqual(['Owner/Lead', 'Owner']);
-    // Answered: the field's hold ends.
-    expect(r.lane.versions.pinned(v0)).toBe(0);
-  });
+  for (const two of ['Lead', 'Owner']) {
+    it(`9 external saves elsewhere: the field's version is still held, so the edit is placed by position: ${two === 'Lead' ? 'on card one' : 'a note while both cards say Owner (F-1)'}`, async () => {
+      const r = await rig(two);
+      const v0 = r.doc.version;
+      const cardOne = r.doc.map.runs.filter((x) => x.value === 'Owner')[0];
+      r.s.onInput('mouseDown');
+      r.s.onBegin({ fieldId: 1, version: v0, runIds: [cardOne.id] });
+      expect(r.lane.versions.pinned(v0)).toBe(1);
+      for (let i = 1; i <= 9; i++) await r.save(deck('Owner', i, two));
+      expect(r.lane.versions.get(v0)).not.toBeNull();
+      r.s.onInput('keyDown');
+      await r.s.onCommit({ fieldId: 1, version: v0, result: { kind: 'edit', runId: cardOne.id, beforeText: 'Owner', afterText: 'Owner/Lead' }, target: target(cardOne.stamp), slide: 0, alsoPlaces: 0 });
+      if (two === 'Lead') {
+        expect(r.result()).toMatchObject({ outcome: 'written' });
+        expect(r.roles()).toEqual(['Owner/Lead', 'Lead']);
+      } else {
+        // Text in two places is never placed across another program's change; the version was known (not `stale`).
+        expect(r.result()).toMatchObject({ outcome: 'verbatim' });
+        expect(r.roles()).toEqual(['Owner', 'Owner']);
+        expect(r.notes.notes.map((x) => [x.kind, x.verbatim])).toEqual([['verbatim', { before: 'Owner', after: 'Owner/Lead' }]]);
+      }
+      // Answered: the field's hold ends.
+      expect(r.lane.versions.pinned(v0)).toBe(0);
+    });
+  }
 
   it('a field dropped without a commit (no field open, a page load) lets go of its version; the page\'s version is held while shown', async () => {
     const r = await rig();

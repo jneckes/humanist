@@ -1,12 +1,13 @@
-// A stale edit on text that is in several places is written only where the text around every copy confirms the
-// diff's placement (packages/editor/src/place.ts; E-1, review finding 0 re-verification). Placing by position
-// alone wrote into ANOTHER copy when another program moved a templated slide, or inserted one and changed the
-// edited slide's subtitle: a minimal diff aligns the edited heading with another slide's heading with no change
-// overlapping it. Those cases are verbatim notes now; the model fuzz below moves, copies, deletes and changes
-// templated slides and checks that nothing is ever written into a slide other than the one the author edited.
+// A stale edit on text that is in several places is never written across another program's change (lead decision
+// F-1, packages/editor/src/place.ts). Placing by position alone wrote into ANOTHER copy when another program moved a
+// templated slide, or inserted one and changed the edited slide's subtitle (review finding 0 re-verification); two
+// hardening rounds then confirmed the diff's choice among copies by the text around them, and each confirmation was
+// got past. Now any stale edit whose text is in two places in the version it was made on, or in the current one, is a
+// verbatim note. The model fuzz below moves, copies, deletes and changes templated slides and checks that nothing is
+// ever written into a slide other than the one the author edited, and that only text in one place is written.
 import { describe, expect, it } from 'vitest';
-import { createWriteQueue } from '@blueline/editor';
-import { MemIO } from './helpers';
+import { createWriteQueue, placesOf } from '@blueline/editor';
+import { MemIO, mapOf } from './helpers';
 
 interface Slide {
   uid: number;
@@ -83,7 +84,7 @@ describe('moved and inserted templated slides (finding 0 re-verification, S-B an
     }
   });
 
-  it('a change two slides away still lands on the slide the author typed on', async () => {
+  it('a change two slides away: a note while the heading is in every slide (F-1); a heading of its own is written there', async () => {
     const ss = [slide(0, 's1', 'Body text 1'), slide(1, 's2', 'Body text 2'), slide(2, 's3', 'Body text 3'), slide(3, 's4', 'Body text 4')];
     for (const [which, changed] of [
       [1, 3],
@@ -92,13 +93,23 @@ describe('moved and inserted templated slides (finding 0 re-verification, S-B an
       const cur = ss.map((s) => (s.uid === changed ? { ...s, sub: 'Agent rewrote this subtitle', body: 'Agent body' } : s));
       const C = render(cur);
       const { out, io } = await staleHeadingEdit(render(ss), C, which);
-      expect(out.ok).toBe(true);
-      expect(io.text).toBe(render(cur.map((s) => (s.uid === which ? { ...s, head: EDITED } : s))));
+      expect(out).toMatchObject({ ok: false, code: 'ambiguous', verbatim: { before: 'Key takeaways', after: EDITED } });
+      expect(io.text).toBe(C);
+      // The edited slide's heading in one place: written where the author typed.
+      const own = ss.map((s) => (s.uid === which ? { ...s, head: 'Key results' } : s));
+      const C2 = render(own.map((s) => (s.uid === changed ? { ...s, sub: 'Agent rewrote this subtitle', body: 'Agent body' } : s)));
+      const io2 = new MemIO(render(own));
+      const q2 = createWriteQueue(io2);
+      const m2 = await q2.refresh();
+      io2.external(C2);
+      const run = m2.runs.find((r) => r.value === 'Key results')!;
+      expect((await q2.edit({ version: m2.version, runId: run.id, beforeText: 'Key results', afterText: 'Key results two' })).ok).toBe(true);
+      expect(io2.text).toBe(C2.replace('Key results', 'Key results two'));
     }
   });
 });
 
-describe('a copy another program adds (rule 2 of place.ts)', () => {
+describe('a copy another program adds (F-1: the text in two places now)', () => {
   const intro = '<section id="s0">\n  <h2 class="title">Welcome</h2>\n  <p class="sub">A deck about the quarter, for the whole team</p>\n</section>\n';
   const outro = '<section id="s9">\n  <h2 class="title">Thank you</h2>\n  <p class="sub">Questions and answers come at the very end</p>\n</section>\n';
   const deck = (pre: string, sub = 'Hire two engineers', post = '') =>
@@ -113,8 +124,15 @@ describe('a copy another program adds (rule 2 of place.ts)', () => {
     return { out: await q.edit({ version: mA.version, runId: run.id, beforeText: 'Agenda', afterText: 'Agenda today' }), io };
   }
 
-  it('the same words pasted into a new paragraph elsewhere: the edit is written on the heading', async () => {
+  it('the same words pasted into a new paragraph elsewhere: a note, the text is in two places now (F-1)', async () => {
     const C = deck('', 'Hire two engineers', '<p>Agenda</p>\n');
+    const { out, io } = await edit(C);
+    expect(out).toMatchObject({ ok: false, code: 'ambiguous' });
+    expect(io.text).toBe(C);
+  });
+
+  it('control: other words pasted into a new paragraph elsewhere: the edit is written on the heading', async () => {
+    const C = deck('', 'Hire two engineers', '<p>Agenda for the offsite</p>\n');
     const { out, io } = await edit(C);
     expect(out.ok).toBe(true);
     expect(io.text).toBe(C.replace('<h2 class="title">Agenda</h2>', '<h2 class="title">Agenda today</h2>'));
@@ -135,10 +153,11 @@ describe('a copy another program adds (rule 2 of place.ts)', () => {
   });
 });
 
-describe('repeated markup around copies the diff left unchanged (rule 2)', () => {
+describe('repeated markup around copies the diff left unchanged', () => {
   // The same item in two lists whose markup repeats: what tells the copies apart ('class="a"' or 'class="b"' right
   // before the text) is also found further out around the other copy. Another program changes only the end of the
-  // file, so the text around both copies is as it was: each is written where the author typed, not a note.
+  // file, so the text around both copies is as it was: before F-1 each was written where the author typed; now the
+  // text is in two places, so each is a note.
   const L1 = '<ul><li class="a">Item</li><li class="b">Other</li></ul>\n';
   const L2 = '<ul><li class="a">Other</li><li class="b">Item</li></ul>\n';
   const filler = Array.from({ length: 4 }, (_, i) => `<p>Filler line ${i}: words that stay as they are.</p>\n`).join('');
@@ -146,7 +165,7 @@ describe('repeated markup around copies the diff left unchanged (rule 2)', () =>
     `<!doctype html><html><head><meta charset="utf-8"><title>T</title></head><body>\n` +
     `${first}${second}<ul><li class="b">Other</li></ul>\n${filler}${tail}</body></html>\n`;
   for (const which of [0, 1]) {
-    it(`an unrelated change at the end of the file: copy ${which + 1} of two is written where the author typed`, async () => {
+    it(`an unrelated change at the end of the file: copy ${which + 1} of two is a note (F-1)`, async () => {
       const io = new MemIO(lists());
       const q = createWriteQueue(io);
       const m = await q.refresh();
@@ -154,9 +173,8 @@ describe('repeated markup around copies the diff left unchanged (rule 2)', () =>
       const C = lists('<!-- another program -->\n');
       io.external(C);
       const out = await q.edit({ version: m.version, runId: run.id, beforeText: 'Item', afterText: 'Item two' });
-      expect(out.ok).toBe(true);
-      const at = C.split('Item');
-      expect(io.text).toBe(which === 0 ? `${at[0]}Item two${at[1]}Item${at[2]}` : `${at[0]}Item${at[1]}Item two${at[2]}`);
+      expect(out).toMatchObject({ ok: false, code: 'ambiguous', verbatim: { before: 'Item', after: 'Item two' } });
+      expect(io.text).toBe(C);
     });
   }
 
@@ -186,10 +204,10 @@ function rng(seed: number): () => number {
 
 /**
  * One case of the model fuzz: templated slides (unique ids or all the same id; bodies distinct, or 1 in 5 left
- * bare), then 1 to 4 operations by another program (copy a slide anywhere, delete one, move one, change a
- * subtitle, kicker, body or id, the edited slide's included). The true place of the edited heading is its slide's
- * uid. `twin`: the edited slide was byte-identical to another in A, so which one it was cannot be seen once slides
- * move (any outcome is accepted then).
+ * bare; headings 'Key takeaways' in about half of them, a heading of their own in the rest), then 1 to 4 operations
+ * by another program (copy a slide anywhere, delete one, move one, change a subtitle, kicker, body or id, the edited
+ * slide's included). The true place of the edited heading is its slide's uid. `twin`: the edited slide was
+ * byte-identical to another in A. `places`: how many places hold the edited heading's text in A and in C.
  */
 function makeCase(seed: number, uniqueIds: boolean) {
   const r = rng(seed);
@@ -197,7 +215,11 @@ function makeCase(seed: number, uniqueIds: boolean) {
   let uid = 0;
   const n = 2 + Math.floor(r() * 4);
   const slides: Slide[] = [];
-  for (let i = 0; i < n; i++) slides.push(slide(uid++, uniqueIds ? `s${i + 1}` : 'slide', r() < 0.2 ? 'Body text' : `Body text ${i + 1}`));
+  for (let i = 0; i < n; i++) {
+    const s = slide(uid++, uniqueIds ? `s${i + 1}` : 'slide', r() < 0.2 ? 'Body text' : `Body text ${i + 1}`);
+    if (r() < 0.5) s.head = `Topic ${i + 1}`;
+    slides.push(s);
+  }
   const ti = Math.floor(r() * n);
   const target = slides[ti];
   const cur = slides.map((s) => ({ ...s }));
@@ -220,35 +242,47 @@ function makeCase(seed: number, uniqueIds: boolean) {
     else if (x < 0.9) pick(cur).body += ' x';
     else pick(cur).id += 'b';
   }
+  const head = target.head;
+  const edited = `${head} two`;
   const A = render(slides);
   const C = render(cur);
-  const right = render(cur.map((s) => (s.uid === target.uid ? { ...s, head: EDITED } : s)));
+  const right = render(cur.map((s) => (s.uid === target.uid ? { ...s, head: edited } : s)));
   const t = cur.find((s) => s.uid === target.uid)!;
   // Also right: a slide that is byte-identical to the edited one now (nothing tells them apart).
-  const same = cur.filter((s) => s.uid !== target.uid && one(s) === one(t)).map((alt) => render(cur.map((s) => (s.uid === alt.uid ? { ...s, head: EDITED } : s))));
+  const same = cur.filter((s) => s.uid !== target.uid && one(s) === one(t)).map((alt) => render(cur.map((s) => (s.uid === alt.uid ? { ...s, head: edited } : s))));
   const twin = slides.some((s) => s.uid !== target.uid && one(s) === one(target));
-  return { A, C, ti, right, same, twin };
+  const index = slides.filter((s) => s.head === head).indexOf(target);
+  return { A, C, head, edited, index, right, same, twin };
 }
 
-describe('model fuzz: another program moves, copies, deletes and changes templated slides (E-1)', () => {
+describe('model fuzz: another program moves, copies, deletes and changes templated slides (E-1, F-1)', () => {
   for (const uniqueIds of [true, false]) {
-    it(`${uniqueIds ? 'unique' : 'identical'} section ids, 1500 seeds: never written into another slide`, async () => {
-      const counts = { note: 0, right: 0, twin: 0 };
+    it(`${uniqueIds ? 'unique' : 'identical'} section ids, 1500 seeds: never written into another slide, and only text in one place is written`, async () => {
+      const counts = { note: 0, right: 0, copiesNoted: 0 };
       const wrong: number[] = [];
       for (let seed = 1; seed <= 1500; seed++) {
         const c = makeCase(seed, uniqueIds);
         if (c.A === c.C) continue;
-        const { out, io } = await staleHeadingEdit(c.A, c.C, c.ti);
+        const io = new MemIO(c.A);
+        const q = createWriteQueue(io);
+        const mA = await q.refresh();
+        const run = mA.runs.filter((x) => x.value === c.head)[c.index];
+        io.external(c.C);
+        const out = await q.edit({ version: mA.version, runId: run.id, beforeText: c.head, afterText: c.edited });
+        const unique = placesOf(mA, c.head) === 1 && placesOf(mapOf(c.C), c.head) === 1;
         if (!out.ok) {
           counts.note++;
+          if (!unique) counts.copiesNoted++;
           expect(io.text).toBe(c.C);
-        } else if (io.text === c.right || c.same.includes(io.text)) counts.right++;
-        else if (c.twin) counts.twin++;
+        } else if (!unique || c.twin) wrong.push(seed); // F-1: text in two places is never written
+        else if (io.text === c.right || c.same.includes(io.text)) counts.right++;
         else wrong.push(seed);
       }
-      expect(wrong, `wrong-place writes (seeds); counts ${JSON.stringify(counts)}`).toEqual([]);
-      // Some stale edits are still written by position (the gate's concurrency rule: right place or a note).
+      expect(wrong, `wrong-place writes or writes among copies (seeds); counts ${JSON.stringify(counts)}`).toEqual([]);
+      // Stale edits of text in one place are still written by position (the gate's concurrency rule: right place or
+      // a note), and copies are never written.
       expect(counts.right).toBeGreaterThan(100);
+      expect(counts.copiesNoted).toBeGreaterThan(100);
     }, 120_000);
   }
 });

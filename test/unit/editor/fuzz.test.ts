@@ -28,7 +28,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createWriteQueue } from '@blueline/editor';
+import { createWriteQueue, placesOf } from '@blueline/editor';
 import { commitField, liftPick, type CommitResult, type FieldRun } from '@blueline/core/edit-commit';
 import { buildMap } from '@blueline/core/mapper';
 import { normalizeForMatch } from '@blueline/core/matcher';
@@ -596,8 +596,9 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
           expect(bytesEqual(d.io.bytes, newBytes), qctx()).toBe(true);
           if (r.chance(0.3)) {
             // Undo in a changed file (case 2): an external change away from the edit. Case 2 is placed by position
-            // and written only where the text on both sides of the write confirms it (E-1, the hardening round):
-            // a change inside that text refuses it by rule (case 3, the file untouched), never a write elsewhere.
+            // and written only where the text on both sides of the write confirms it (E-1, the hardening round),
+            // and only when the run's text is in one place before and after the change (F-1): otherwise it is
+            // refused by rule (case 3, the file untouched), never a write elsewhere.
             const src = decodeDeck(d.io.bytes).src;
             const body = /<body[^>]*>/i.exec(src);
             const at = body ? body.index + body[0].length : 0;
@@ -612,8 +613,15 @@ describe('fuzz: seeded random edits through commitField and the write protocol',
               } else {
                 expect(u2, `${qctx()} undo case 2 refused ${u2.why}`).toMatchObject({ code: 'stale', canMakeNote: true });
                 expect(bytesEqual(d.io.bytes, extBytes), `${qctx()} undo case 2 refused but the file changed`).toBe(true);
-                // Refused only when the change is near the write: within the floor of what must stay unchanged.
-                expect(rec.start - at, `${qctx()} undo case 2 refused with the change ${rec.start - at} characters away`).toBeLessThan(2048);
+                // Refused only when the change is near the write (within the floor of what must stay unchanged), or
+                // when the text of the run the undo replaces is in more than one place (F-1).
+                const m2 = buildMap(src, { version: sha256(newBytes), utf8: true });
+                const h = [...m2.runs, ...m2.literals]
+                  .filter((x) => x.aligned !== false && x.start <= rec.start && rec.start + rec.rawAfter.length <= x.end)
+                  .sort((a, b) => a.end - a.start - (b.end - b.start))[0];
+                if (h && placesOf(m2, h.value) === 1) {
+                  expect(rec.start - at, `${qctx()} undo case 2 refused with the change ${rec.start - at} characters away`).toBeLessThan(2048);
+                }
                 stats.undoCase2Refused++;
               }
             }

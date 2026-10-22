@@ -8,21 +8,23 @@
 //      `pin`, unpin; SPEC 9.2 step 1: "Main keeps the map for each version a client still holds"): the LRU of
 //      `keepVersions` never evicts a pinned version.
 //   2. Queue and version check. One operation at a time. Each re-reads the file and hashes it. If the hash is
-//      not the client's version, the edit is placed by POSITION (lead decision E-1): the run's raw range in the
-//      client's version is mapped to the current source through a diff (core/locked-spans mapRange: diff_main with
-//      a time limit, no clean-up, as the locked spans are moved), and only a run of the same kind (parsed text or
-//      a literal) at exactly that range, holding beforeText, with no change overlapping it, is the edit's run, and
-//      only when the text on both sides of it confirms the place and the place's record holds what the author's did
-//      (place.ts, anchors.ts, records.ts; the hardening rounds). The run is first carried through the changes the
-//      queue saw between the two versions (carryRange): its own edits, undos and redos move it exactly by their
-//      splices, and another program's change, or a restore (a whole other version, not a splice), is placed that way,
-//      between the versions around it. When that fails and Blueline wrote anything in between, the edit is a note:
-//      one diff over the whole span cannot see Blueline's own writes, which can make another copy read as the
-//      author's did (the second hardening round).
-//      Text alone never picks a copy, and neither does the 32 characters of context around it. Anything else is a
-//      verbatim note: `ambiguous` when another run still holds beforeText, `stale` when none does, when the diff
-//      timed out, or when the queue does not know the client's version (it cannot be checked against what the
-//      client saw). Stale offsets are never applied.
+//      not the client's version V, the run is carried to the current version C through the changes the queue saw
+//      (carryRange). When every one of them is Blueline's own edit, undo or redo, the run moves exactly by their
+//      splices: nothing to guess. When another program changed the file (or a restore, a whole other version, lies
+//      in between; judged by time, not by the route: a change the queue saw since the oldest hold of V counts
+//      even when the bytes came back), the uniqueness rule decides (lead decision F-1; place.ts): beforeText must be
+//      the value of exactly one run in V and exactly one in C (shadow values count as copies, as the matcher counts
+//      them), and of at most one in each version another program made in between, the run must land exactly on that
+//      one run, and the text on both sides must confirm it (anchors.ts). Each other
+//      program's change is placed that way, between the versions around it, with the run's value at that step.
+//      When the queue did not see every change, one diff over the whole span places it the same way, and only when
+//      Blueline wrote nothing since V (one diff cannot see Blueline's own writes); a carry that a step refused is a
+//      note, never placed again across the whole span (the queue saw the text in two places on the way: a slide
+//      duplicated, then its original deleted).
+//      No path ever chooses one copy among several across another program's change. Anything else is a verbatim
+//      note: `ambiguous` when the text is in more than one place in V or C, `stale` when it is in one place but the
+//      mapping or the anchors fail, when no run holds it, when the diff timed out, or when the queue does not know
+//      the client's version (it cannot be checked against what the client saw). Stale offsets are never applied.
 //   3. Re-check before writing: the run must hold beforeText exactly (planEdit), and the splice is planned on
 //      the file as just read. A picked candidate (EditRequest.pick) must lift to the run exactly (P2-8).
 //   4. Atomic write through DeckIO.atomicWrite, which re-hashes the file on disk against the hash read in
@@ -48,10 +50,10 @@ import { buildMap } from '@blueline/core/mapper';
 import { decodeDeck, encodeDeck } from '@blueline/core/text';
 import type { DeckIO, RestoreOutcome, UndoOutcome, WriteKind, WriteQueue, WriteQueueOptions } from '@blueline/core/capabilities';
 import type { DeckMap, EditRequest, HtmlRun, LiteralRun, RefusalCode, WriteOutcome, WriteRecord } from '@blueline/core/types';
-import { placeStale } from './place';
+import { NOT_PLACED, placeStale, placesOf } from './place';
 import { findRun, planEdit, type EditPlan } from './plan';
 import { applySplice } from './splice';
-import { isWriteRecord, makeRecord, planUndo, swapRecord } from './undo';
+import { CANT_UNDO, isWriteRecord, makeRecord, planUndo, swapRecord } from './undo';
 import { verifyEdit, verifyUndo } from './verify';
 
 /** Options beyond the contract's WriteQueueOptions. */
@@ -114,6 +116,14 @@ interface Version {
   map: DeckMap;
   /** How many writes of its own the queue had made when it first met this version (resolve, doUndo). */
   ownAt?: number;
+  /**
+   * On the queue's clock (foreignSince): when it first met this version, when main last told it about the version
+   * (know: a page shown, a field opened, a version taken from the watcher), and when Blueline's own edit, undo or
+   * redo last made it.
+   */
+  metAt?: number;
+  toldAt?: number;
+  madeAt?: number;
 }
 
 /** A version just read from disk, with the bytes read (what beforeWrite snapshots). */
@@ -143,8 +153,14 @@ interface Step {
   own: boolean;
 }
 
-/** A range carried through the recorded changes (carryRange), or why not; `own`: Blueline wrote in the span. */
-type Carried = { kind: 'ok'; start: number; end: number; own: boolean } | { kind: 'refused'; own: boolean } | { kind: 'unknown' };
+/**
+ * A range carried through the recorded changes (carryRange), or why not. `own`: Blueline wrote in the span;
+ * `foreign`: another program's change or a restore lies in it (each placed by the uniqueness rule, F-1).
+ */
+type Carried =
+  | { kind: 'ok'; start: number; end: number; own: boolean; foreign: boolean }
+  | { kind: 'refused'; own: boolean; why?: string; code?: RefusalCode }
+  | { kind: 'unknown' };
 
 /**
  * How many changes are remembered, the longest chain of them a stale edit is carried through, and how many of
@@ -193,7 +209,7 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
   /** Recent versions by hash, least recently used first. */
   const versions = new Map<string, Version>();
   /** How many holders pinned each version (know with `pin`): such a version is never evicted (9.2 step 1). */
-  const pins = new Map<string, number>();
+  const pins = new Map<string, number[]>();
   let current: Version | null = null;
   let tail: Promise<unknown> = Promise.resolve();
   /**
@@ -212,6 +228,15 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
   let aroundForeign: string[] = [];
   /** How many writes landed through this queue (edits, undos, redos and restores). */
   let ownWrites = 0;
+  /**
+   * When the queue met each version and saw each change not carried exactly (another program's, a restore), on one
+   * clock: whether another program changed the file since a version is a question of time, not of the route between
+   * the two versions (a change that was later undone, a slide duplicated and its original deleted, leaves a route of
+   * Blueline's own writes alone). `foreignFrom`: entries before it were dropped.
+   */
+  let clock = 0;
+  const foreignLog: { at: number; child: string }[] = [];
+  let foreignFrom = 0;
 
   /** The per-deck serial queue (9.2 Write protocol step 2): each job starts when the previous one settles. */
   function enqueue<T>(job: () => Promise<T>): Promise<T> {
@@ -224,6 +249,11 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
     // The first time the queue met a version counts (a write that returns to a version already seen).
     const was = versions.get(v.version);
     v.ownAt = Math.min(v.ownAt ?? ownWrites, was?.ownAt ?? ownWrites);
+    const now = ++clock;
+    v.metAt = Math.min(v.metAt ?? now, was?.metAt ?? now);
+    const latest = (a?: number, b?: number) => (a === undefined ? b : b === undefined ? a : Math.max(a, b));
+    v.toldAt = latest(v.toldAt, was?.toldAt);
+    v.madeAt = latest(v.madeAt, was?.madeAt);
     versions.delete(v.version);
     versions.set(v.version, v);
     // Least recently used first, skipping what a client still holds; pinned versions may exceed `keep`.
@@ -292,6 +322,7 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
     const decoded = decodeDeck(bytes);
     // Not the version the queue last read or wrote: another program changed the file in between.
     if (current && current.version !== version) {
+      noteForeign(version);
       if (noteStep(version, { parent: current.version, splice: null, own: false })) keepAround(current.version, version);
     }
     const known = versions.get(version);
@@ -341,7 +372,48 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
 
   /** Records an own write that landed (`next` made from `cur` by one splice, or a restore: null). */
   function noteOwn(cur: Version, next: Version, splice: Splice | null): void {
+    if (splice === null) noteForeign(next.version);
     if (noteStep(next.version, { parent: cur.version, splice, own: true }) && splice === null) keepAround(cur.version, next.version);
+  }
+
+  /** A change not carried exactly (another program's, or a restore) that produced `child`, seen now. */
+  function noteForeign(child: string): void {
+    foreignLog.push({ at: ++clock, child });
+    while (foreignLog.length > STEPS_KEPT) foreignFrom = foreignLog.shift()!.at;
+  }
+
+  /**
+   * The versions that another program's changes (and restores) produced since `t`, whatever the route between the
+   * versions; a change that produced `v` itself does not count. Null when the queue no longer remembers them all.
+   * The time of a stale edit's version is when the oldest client still holding it began to (editTime); the time of
+   * an undo's or redo's is when Blueline's own write last made it (undoTime).
+   */
+  function foreignSince(v: Version, t: number): string[] | null {
+    if (t < foreignFrom) return null;
+    return [...new Set(foreignLog.filter((f) => f.at > t && f.child !== v.version).map((f) => f.child))];
+  }
+  /**
+   * A stale edit's version: since the oldest hold of it that main has not let go (a field held open across another
+   * program's changes keeps its time even when another page shows the same bytes later), else since main last told
+   * the queue about it, else since the queue first met it.
+   */
+  const editTime = (v: Version): number => pins.get(v.version)?.[0] ?? v.toldAt ?? v.metAt ?? 0;
+  /** The time of the write an undo or redo record names: when its result (`made`) was last made, else `base` met. */
+  const undoTime = (made: Version | undefined, base: Version): number => made?.madeAt ?? base.metAt ?? 0;
+
+  /**
+   * F-1 (a) on the way: `text` is in at most one place in each version another program made since the version an
+   * operation was made on (`made`, from foreignSince). A copy the queue saw there is a copy, even when a later change
+   * took it away again (a slide duplicated, then its original deleted, reads as the slide alone). A version the queue
+   * no longer holds cannot be checked: false.
+   */
+  function oneOnTheWay(made: string[] | null, text: string): boolean {
+    if (made === null) return false;
+    for (const h of made) {
+      const x = versions.get(h);
+      if (!x || !x.utf8 || placesOf(x.map, text) > 1) return false;
+    }
+    return true;
   }
 
   /**
@@ -387,26 +459,35 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
   }
 
   /**
-   * [s, e) of `a` placed in `b` across one change by another program (or a restore): the run that holds it is placed
-   * as a stale edit made on `a` would be (place.ts), and the range keeps its offset in it, which needs the run's raw
-   * text unchanged (the whole run itself needs only its text). `kind`: the run must be of that kind.
+   * The run of `v` that holds [s, e): a mapped one (a literal's shadow run has the same range and is never written),
+   * the innermost when one holds another; none when two of the same size hold it. `kind`: of that kind.
    */
-  function placeRange(a: Version, s: number, e: number, b: Version, kind?: string): { start: number; end: number } | null {
-    if (!a.utf8 || !b.utf8) return null;
-    // The run that holds the range: a mapped one (a literal's shadow run has the same range and is never written),
-    // the innermost when one holds another.
-    const holders = [...a.map.runs, ...a.map.literals]
+  function holderOf(v: Version, s: number, e: number, kind?: string): HtmlRun | LiteralRun | null {
+    const holders = [...v.map.runs, ...v.map.literals]
       .filter((r) => (kind === undefined || r.id.slice(0, 2) === kind) && r.start <= s && e <= r.end && r.aligned !== false)
       .sort((x, y) => x.end - x.start - (y.end - y.start));
     if (holders.length === 0 || (holders.length > 1 && holders[1].end - holders[1].start === holders[0].end - holders[0].start && holders[1].start !== holders[0].start)) return null;
-    const r = holders[0];
+    return holders[0];
+  }
+
+  /**
+   * [s, e) of `a` placed in `b` across one change by another program (or a restore): the run that holds it is placed
+   * as a stale edit made on `a` would be (place.ts: its value in one place in `a` and in `b`, the diff landing on it,
+   * both sides confirming it), and the range keeps its offset in it, which needs the run's raw text unchanged (the
+   * whole run itself needs only its text). `kind`: the run must be of that kind.
+   */
+  function placeRange(a: Version, s: number, e: number, b: Version, kind?: string): { ok: true; start: number; end: number } | { ok: false; why: string; code: RefusalCode } {
+    const no = (why: string, code: RefusalCode = 'stale') => ({ ok: false as const, why, code });
+    if (!a.utf8 || !b.utf8) return no('the deck is not UTF-8 on one side of the change');
+    const r = holderOf(a, s, e, kind);
+    if (!r) return no('the edited place is in no run Blueline can place (9.2 Write protocol step 2)');
     const placed = placeStale(a, r, b, r.value, diffTimeoutSec);
-    if (!placed.ok) return null;
+    if (!placed.ok) return placed;
     const got = findRun(b.map, placed.runId);
-    if (!got) return null;
-    if (s === r.start && e === r.end) return { start: got.start, end: got.end };
-    if (b.src.slice(got.start, got.end) !== a.src.slice(r.start, r.end)) return null;
-    return { start: got.start + (s - r.start), end: got.start + (e - r.start) };
+    if (!got) return no(NOT_PLACED.gone);
+    if (s === r.start && e === r.end) return { ok: true, start: got.start, end: got.end };
+    if (b.src.slice(got.start, got.end) !== a.src.slice(r.start, r.end)) return no(NOT_PLACED.moved);
+    return { ok: true, start: got.start + (s - r.start), end: got.start + (e - r.start) };
   }
 
   /**
@@ -414,13 +495,15 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
    * exactly by its splice: one before it shifts it, one inside it (Blueline's own write in the range, or at an empty
    * range: the write that made it, or a later one the final check then refuses) leaves the range holding its result,
    * one across its edge refuses. Another program's change and a restore are placed between the versions around them
-   * (placeRange). `unknown`: the queue did not see every change between the two (or too many of them must be placed).
+   * (placeRange, the uniqueness rule F-1). `unknown`: the queue did not see every change between the two (or too many
+   * of them must be placed).
    */
   function carryRange(from: Version, s: number, e: number, to: Version, kind?: string): Carried {
-    if (from.version === to.version) return { kind: 'ok', start: s, end: e, own: false };
+    if (from.version === to.version) return { kind: 'ok', start: s, end: e, own: false, foreign: false };
     const path = chain(from.version, to.version);
     if (!path || path.filter((st) => st.splice === null).length > FOREIGN_STEPS_MAX) return { kind: 'unknown' };
     const own = path.some((st) => st.own);
+    const foreign = path.some((st) => st.splice === null);
     for (const st of path) {
       const sp = st.splice;
       if (sp) {
@@ -441,13 +524,13 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
       }
       const va = versions.get(st.parent);
       const vb = versions.get(st.child);
-      if (!va || !vb) return { kind: 'refused', own };
+      if (!va || !vb) return { kind: 'refused', own, why: 'a version around another program\'s change is no longer known, so the place cannot be found (9.2 Write protocol step 2)', code: 'stale' };
       const placed = placeRange(va, s, e, vb, kind);
-      if (!placed) return { kind: 'refused', own };
+      if (!placed.ok) return { kind: 'refused', own, why: placed.why, code: placed.code };
       s = placed.start;
       e = placed.end;
     }
-    return { kind: 'ok', start: s, end: e, own };
+    return { kind: 'ok', start: s, end: e, own, foreign };
   }
 
   /** Whether Blueline wrote since the queue first met `v` (when the changes in between are not all known). */
@@ -457,13 +540,21 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
 
   /**
    * Step 2: which run of the current version the request means. The same version: the request's run id. Another
-   * version (E-1): the run at the position the client's run maps to through a diff of the client's version to the
-   * current one, when it is of the same kind and holds beforeText, no change overlaps it, and the text on both sides
-   * confirms the place (place.ts); anything else is a verbatim note. The client's version must be known (main pins
-   * every version an open page or field holds).
+   * version: the run carried through the changes the queue saw; Blueline's own writes alone move it exactly, and when
+   * another program changed the file in between, the uniqueness rule must hold (F-1, place.ts): beforeText in one
+   * place in the client's version and in the current one, and the run landing exactly there. Anything else is a
+   * verbatim note. The client's version must be known (main pins every version an open page or field holds).
    */
   function resolve(cur: Version, req: EditRequest): Resolved {
-    if (req.version === cur.version) return { ok: true, runId: req.runId };
+    if (req.version === cur.version) {
+      // The same bytes: the run is the request's own, unless another program changed the file in between and put it
+      // back as it was (a slide duplicated and its original deleted reads the same): then F-1 (a) holds over that time.
+      const made = foreignSince(cur, editTime(cur));
+      if ((made === null || made.length > 0) && (placesOf(cur.map, req.beforeText) !== 1 || !oneOnTheWay(made, req.beforeText))) {
+        return { ok: false, why: NOT_PLACED.copies, code: 'ambiguous' };
+      }
+      return { ok: true, runId: req.runId };
+    }
     const kind = req.runId.slice(0, 2);
     if (kind !== 'h:' && kind !== 'l:') return { ok: false, why: 'unknown run id', code: 'refused' };
     const old = versions.get(req.version);
@@ -474,19 +565,38 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
     if (!oldRun || oldRun.value !== req.beforeText) {
       return { ok: false, why: 'the request does not match the version it names', code: 'refused' };
     }
-    // Through the changes the queue saw: its own writes move the run exactly, another program's is placed alone.
+    // The note's code: `ambiguous` when the text is in more than one place on either side, else `stale`.
+    const code = (): RefusalCode => (placesOf(old.map, req.beforeText) > 1 || placesOf(cur.map, req.beforeText) > 1 ? 'ambiguous' : 'stale');
+    // Through the changes the queue saw: its own writes move the run exactly, another program's are placed by F-1.
     const c = carryRange(old, oldRun.start, oldRun.end, cur, kind);
     if (c.kind === 'ok') {
       const hit = runAt(cur.map, kind, c.start, c.end, req.beforeText);
-      if (hit) return { ok: true, runId: hit.id };
+      const made = foreignSince(old, editTime(old));
+      if (hit && !c.foreign && made !== null && made.length === 0) return { ok: true, runId: hit.id };
+      // F-1 (a) on the two ends and in every version another program made in between; each placed step was checked
+      // with the run's value at that step.
+      if (hit && placesOf(old.map, req.beforeText) === 1 && placesOf(cur.map, req.beforeText) === 1 && oneOnTheWay(made, req.beforeText)) {
+        return { ok: true, runId: hit.id };
+      }
+      if (hit) return { ok: false, why: NOT_PLACED.copies, code: 'ambiguous' };
+      return {
+        ok: false,
+        why: c.own
+          ? 'the deck changed around the edited place, by Blueline\'s own writes and by another program, so its place cannot be confirmed (9.2 Write protocol step 2)'
+          : NOT_PLACED.moved,
+        code: code(),
+      };
     }
-    // One diff over the whole span cannot see Blueline's own writes in it: never placed so.
-    if (c.kind === 'unknown' ? ownSince(old) : c.own) {
-      const copies = [...cur.map.runs, ...cur.map.literals].some((r) => r.value === req.beforeText);
+    // A step refused: never placed again across the whole span, which could not see the copies the queue saw on the
+    // way (a slide duplicated, then its original deleted).
+    if (c.kind === 'refused') return { ok: false, why: c.why ?? NOT_PLACED.moved, code: c.code === 'ambiguous' ? 'ambiguous' : code() };
+    // The queue did not see every change: one diff over the whole span, only when Blueline wrote nothing since (one
+    // diff cannot see Blueline's own writes).
+    if (ownSince(old)) {
       return {
         ok: false,
         why: 'the deck changed around the edited place, by Blueline\'s own writes and by another program, so its place cannot be confirmed (9.2 Write protocol step 2)',
-        code: copies ? 'ambiguous' : 'stale',
+        code: code(),
       };
     }
     return placeStale(old, oldRun, cur, req.beforeText, diffTimeoutSec);
@@ -550,11 +660,13 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
       hookError(e);
       ownWrites++;
       current = remember(next);
+      if (step) next.madeAt = ++clock;
       noteOwn(cur, next, step);
       return { kind: 'written' };
     }
     ownWrites++;
     current = remember(next);
+    if (step) next.madeAt = ++clock;
     noteOwn(cur, next, step);
     // P2-1: read the file back. A different hash means another writer landed right after the rename; restoring
     // the previous bytes would destroy that change, so the queue leaves it to the watcher, which sees a hash that
@@ -645,16 +757,36 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
     return { ok: true, next: { version, src: decoded.src, utf8: true, map } };
   }
 
-  /** Where the write's range [start, start + rawAfter) of `base` (the version it made) is in `cur`, or null. */
-  function undoPlace(base: Version, record: WriteRecord, cur: Version): { start: number; end: number } | null {
+  /**
+   * Where the write's range [start, start + rawAfter) of `base` (the version it made) is in `cur`, or null (case 3).
+   * Carried through the changes the queue saw: Blueline's own later writes exactly. When another program changed
+   * the file since (or a restore lies in between), the uniqueness rule holds too (F-1): the text the undo replaces
+   * lies in a run whose value is in one place in `base` and in `cur`, each other program's change is placed by that
+   * rule (carryRange), and the place lies in that one run of `cur`, at the same offset. When the queue did not see
+   * every change, one diff over the whole span places it so, only when Blueline wrote nothing since.
+   */
+  function undoPlace(base: Version, record: WriteRecord, cur: Version, t: number): { start: number; end: number } | null {
     const s = record.start;
     const e = record.start + record.rawAfter.length;
     if (e > base.src.length || base.src.slice(s, e) !== record.rawAfter) return null;
     const c = carryRange(base, s, e, cur);
     let at: { start: number; end: number } | null = null;
-    if (c.kind === 'ok') at = c;
-    else if (!(c.kind === 'unknown' ? ownSince(base) : c.own)) at = placeRange(base, s, e, cur);
+    let foreign = true;
+    const made = foreignSince(base, t);
+    if (c.kind === 'ok') {
+      at = c;
+      foreign = c.foreign || made === null || made.length > 0;
+    } else if (c.kind === 'unknown' && !ownSince(base)) {
+      const p = placeRange(base, s, e, cur);
+      if (p.ok) at = p;
+    }
     if (!at || cur.src.slice(at.start, at.end) !== record.rawAfter) return null;
+    if (foreign) {
+      const hb = holderOf(base, s, e);
+      const hc = holderOf(cur, at.start, at.end);
+      if (!hb || !hc || hb.id.slice(0, 2) !== hc.id.slice(0, 2) || hb.value !== hc.value || s - hb.start !== at.start - hc.start) return null;
+      if (placesOf(base.map, hb.value) !== 1 || placesOf(cur.map, hc.value) !== 1 || !oneOnTheWay(made, hb.value)) return null;
+    }
     return at;
   }
 
@@ -671,11 +803,22 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
       const cur = loaded.v;
       if (!cur.utf8) return { ok: false, why: 'not-utf8: the deck is not UTF-8 and is never written', canMakeNote: true, code: 'not-utf8' };
       // Case 2 is placed by position from the version the write made (E-1), when the queue still has it: the
-      // write's range carried through every change since (its own later writes exactly), or, when the queue did not
-      // see them all and Blueline wrote nothing since, placed across the whole span. Anything else is case 3.
+      // write's range carried through every change since (its own later writes exactly; another program's change
+      // by the uniqueness rule, F-1), or, when the queue did not see them all and Blueline wrote nothing since,
+      // placed across the whole span by that rule. Anything else is case 3.
       const base = versions.get(record.versionAfter);
-      const place = cur.version === record.versionAfter || !base || !base.utf8 ? null : undoPlace(base, record, cur);
-      const p = planUndo(cur.src, record, cur.version, null, { timeoutSec: diffTimeoutSec, place });
+      // Since when another program's change counts: the time the write was made (a redo's record is swapped, so the
+      // write's result is its versionBefore).
+      const t = base ? undoTime(versions.get(label === 'redo' ? record.versionBefore : record.versionAfter), base) : 0;
+      const place = cur.version === record.versionAfter || !base || !base.utf8 ? null : undoPlace(base, record, cur, t);
+      // Case 1 with another program's change in between that put the bytes back as they were (a slide duplicated and
+      // its original deleted reads the same): the text it replaces must be in one place (F-1), else case 3.
+      const made = cur.version === record.versionAfter ? foreignSince(cur, t) : [];
+      if (made === null || made.length > 0) {
+        const h = holderOf(cur, record.start, record.start + record.rawAfter.length);
+        if (!h || placesOf(cur.map, h.value) !== 1 || !oneOnTheWay(made, h.value)) return { ok: false, why: CANT_UNDO, canMakeNote: true, code: 'stale' };
+      }
+      const p = planUndo(cur.src, record, cur.version, { place });
       if (!p.ok) return { ok: false, why: p.why, canMakeNote: p.canMakeNote, code: p.code };
       const newSrc = applySplice(cur.src, p.start, p.start + p.rawBefore.length, p.rawAfter);
       const bytes = encodeDeck(newSrc);
@@ -761,8 +904,9 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
     // Keep the map already built for this source (complete, or completed later by its first reader, D-9).
     const known = versions.get(version);
     if (known && known.src === src && known.utf8 === map.utf8) {
-      if (o.pin === true) pins.set(version, (pins.get(version) ?? 0) + 1);
       remember(known);
+      known.toldAt = ++clock;
+      if (o.pin === true) pins.set(version, [...(pins.get(version) ?? []), known.toldAt]);
       return;
     }
     try {
@@ -770,16 +914,20 @@ export function createWriteQueue(io: DeckIO, opts: EditorQueueOptions = {}): Wri
     } catch {
       return;
     }
-    if (o.pin === true) pins.set(version, (pins.get(version) ?? 0) + 1);
-    remember({ version, src, utf8: map.utf8, map });
+    const v = remember({ version, src, utf8: map.utf8, map });
+    v.toldAt = ++clock;
+    if (o.pin === true) pins.set(version, [...(pins.get(version) ?? []), v.toldAt]);
   }
 
-  /** One holder of `version` let it go (know with `pin`); the LRU may evict it once nobody holds it. */
+  /**
+   * One holder of `version` let it go (know with `pin`); the LRU may evict it once nobody holds it. Which holder is
+   * not said, so the newest hold goes: the oldest one still held keeps its time (editTime).
+   */
   function unpin(version: string): void {
     const n = pins.get(version);
     if (n === undefined) return;
-    if (n <= 1) pins.delete(version);
-    else pins.set(version, n - 1);
+    if (n.length <= 1) pins.delete(version);
+    else pins.set(version, n.slice(0, -1));
   }
 
   // An unexpected exception never escapes as a rejection: nothing was written before the atomic write

@@ -216,20 +216,20 @@ one run of the version it shows, and only right after the user pressed a key or 
   away, stopped being UTF-8 or became Protected is kept as a verbatim note with its exact texts (app data only).
   The picker's request and the toast's Undo need Edit and a press within 2 s too.
 - **What a write can be.** Main turns a commit into an `EditRequest` (version, run id, the run's text before and
-  after); the write queue re-reads the file and places the run by position: when the file changed since that version,
-  a diff of that version to the current bytes maps the run's range, and the run must be unchanged there (neither its
-  text nor the 32 characters of context around it ever chooses between copies). The text on both sides of that place
-  must then be the run's old surroundings, out past what made them unique in that version and at least 128 characters,
-  found nowhere else in the file now, and no copy the other program added may carry those surroundings
-  (editor/anchors.ts, editor/place.ts; the hardening round): a moved, copied, re-wrapped or respelled copy, or one
-  slid next to the author's changed text, is a note, never a write into another slide. The place's record (its slide,
-  card or data record) must also hold what told the author's record apart, as no other copy's record does
-  (editor/records.ts; the second hardening round): a generator that renumbers slides by position, or a new card
-  modelled on the author's beside it, is a note. Undo and redo case 2 are placed the same way, from the version the write
-  made. (Blueline's own edits, undos and redos in between move the run exactly by their splices; another program's
-  change and a restore are placed this way; when that fails and Blueline wrote anything in between, it is a note.) A
-  version the queue does not hold, a diff that runs out of time, a change that overlaps the run, or a place the text
-  around it does not confirm makes the commit a verbatim note. A deck that no longer ends as a whole document, when it
+  after); the write queue re-reads the file. When the file changed since that version only by Blueline's own edits,
+  undos and redos, their splices move the run exactly. When another program changed it (or a restore lies between),
+  the uniqueness rule decides (lead decision F-1; editor/place.ts): the run's text must be the text of exactly one
+  place in that version and in the current file (a run of either kind; text the page may show that Blueline never
+  writes, such as the `<title>` or an attribute value, counts as another place) and of at most one place in every
+  version the other program made in between; the run, mapped through the queue's recorded steps or a diff, must land
+  exactly on that one run with no change over it; and the text on both sides of the place must be the run's old
+  surroundings, out past what made them unique and at least 128 characters, found nowhere else now
+  (editor/anchors.ts). Text in two places is never placed across another program's change, so no copy is ever chosen
+  among several; neither the text nor its 32 characters of context ever chooses. Undo and redo case 2 follow the same
+  rule for the run whose text they replace. Whether another program changed the file is judged by time: a change the
+  queue saw since the field opened (or the write landed) counts even when the bytes came back. A version the queue
+  does not hold, a diff that runs out of time, a change that overlaps the run, or a place the text around it does not
+  confirm makes the commit a verbatim note. A deck that no longer ends as a whole document, when it
   did before (another program writing it in place), is waited for up to 5 s and otherwise not written: the commit is a
   verbatim note. Right before the write, the file's trust must still be the window's (D-1): a write that would replace bytes
   Blueline has not decided may be edited (a marked download saved over the deck while a field was open), or one made
@@ -346,11 +346,15 @@ Known limits added by Phase 2:
   otherwise writes nothing (the commit is a verbatim note, an undo or redo is refused). A deck that never ended so is
   not waited for, so such a writer's rest can still be lost; a version without its end that stands for 30 s is taken
   as the deck (the second hardening round).
-- **Copies no byte tells apart.** When another program leaves the author's slide or record and a copy of it that
-  read the same byte for byte (two identical slides swapped or moved, the author's deleted with an identical one at
-  its place, a copy made and the original deleted), a stale edit, an undo or a redo can land on the copy: nothing in
-  the file tells the two apart. Every case the attackers of both hardening rounds found that text could tell apart is
-  a verbatim note (docs/PHASE2-RESULTS.md).
+- **Changes no byte shows.** Across another program's change, text in two places is a verbatim note now (F-1), so
+  the copies the hardening rounds could not tell apart (two identical slides swapped or moved, the author's slide
+  deleted while an identical one stands at its place, a slide duplicated and its original deleted, identical divider
+  slides) are notes, not writes. What no rule on the file can see remains: a change by another program that leaves
+  the bytes Blueline reads exactly as they were (two identical slides swapped, a slide duplicated and its original
+  deleted in one save) is no change to Blueline, and an edit, undo or redo then lands on the bytes the author typed
+  in, which are byte for byte the same; and a save that deletes the author's slide and puts a byte-identical slide at
+  its place while changing something else reads as a save that left the slide alone, so the edit lands there
+  (docs/PHASE2-RESULTS.md, "The uniqueness rule").
 - **History snapshots on Linux** carry no marker (Linux has none), so a Protected document's snapshot opened
   directly from the history folder opens Trusted there, as an unmarked download does.
 
