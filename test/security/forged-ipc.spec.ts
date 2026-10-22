@@ -17,7 +17,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { DeckToMain, ShellToMain } from '../../packages/core/src/ipc';
 import { EditDeckToMain } from '../../packages/core/src/ipc-edit';
-import { DECK_CHANNEL_RATES } from '../../packages/app/src/main/ipc-guard';
+import { DECK_CHANNEL_RATES, DECK_SENDER_RATE } from '../../packages/app/src/main/ipc-guard';
 import { Scratch, launchApp, resolveRunAs, sleep, type BlApp, type DeckView, type WinInfo } from '../helpers/app';
 import { openFixture, prepareFixtureFolder, uniqLabel, type NetConfig } from '../helpers/security';
 import { sharedDnsServer } from '../helpers/servers';
@@ -419,24 +419,43 @@ test('a flood is rate-limited, main stays responsive, and the document is never 
     // Protected deck may legitimately create notes (Review works in Protected), so session.json may grow —
     // that is not a document write and not a security violation.
     const folderSnap = snapshot(session.folder.dir);
-    // 10,000 messages as fast as the renderer can send them: the rate limiter must drop the great majority, and
-    // main must stay alive. Each deck channel has a token bucket per document with a fixed rate and burst, refilled
-    // by the clock (ipc-guard DECK_CHANNEL_RATES): note operations 50 a second with a burst of 100, focus 1,000.
+    // 15,000 messages on four channels as fast as the renderer can send them: the rate limiter must drop the great
+    // majority, and main must stay alive. Every message counts first against the sender's budget, all its deck
+    // channels together (ipc-guard DECK_SENDER_RATE: 9.1's 1,000 a second, a burst of 1,000), then against its
+    // channel's bucket (DECK_CHANNEL_RATES: note operations 50 a second with a burst of 100, the others 1,000), each
+    // refilled by the clock. The link and mode messages are malformed: they count, and are dropped as invalid.
     const noteRate = DECK_CHANNEL_RATES[DeckToMain.note];
+    const admitted = async (): Promise<number> =>
+      await session.app.electronApp.evaluate((_e, id) => (globalThis as unknown as { __blTest: { ipcAdmitted(d: string): number } }).__blTest.ipcAdmitted(id), session.docId);
+    const admittedBefore = await admitted();
     const t0 = Date.now();
     const result = await session.deck.isolated<string>(
       `(function(){
         var ipc = globalThis.__blTestIpc;
         if (!ipc) return 'no-ipc';
-        for (var i = 0; i < 5000; i++) ipc.send('bl:deck:focus', { textField: (i % 2) === 0 });
         for (var j = 0; j < 5000; j++) ipc.send('bl:deck:note', { op: 'create', clientId: 'f' + j, text: 'x', marks: [], slide: 0 });
+        for (var i = 0; i < 5000; i++) ipc.send('bl:deck:focus', { textField: (i % 2) === 0 });
+        for (var k = 0; k < 2500; k++) ipc.send('bl:deck:link', { href: 'not a link ' + k });
+        for (var m = 0; m < 2500; m++) ipc.send('bl:deck:mode', { mode: 'nonsense' });
         return 'flooded';
       })()`,
       999,
     );
     expect(result).toBe('flooded');
-    await sleep(1000);
-    // Main is alive and answering (polled a while for the burst: a loaded machine may still be on the backlog).
+    // Main got to the whole flood once what it admitted stops growing (a loaded machine may still be on the backlog);
+    // `busy` is from the flood's start to the last poll that saw the count grow.
+    let count = await admitted();
+    let lastGrowth = Date.now();
+    for (const end = Date.now() + 20_000; Date.now() < end && Date.now() - lastGrowth < 1500; ) {
+      await sleep(100);
+      const c = await admitted();
+      if (c !== count) {
+        count = c;
+        lastGrowth = Date.now();
+      }
+    }
+    const busy = (lastGrowth - t0) / 1000;
+    // Main is alive and answering.
     let w = await session.app.win(session.docId);
     for (const end = Date.now() + 15_000; w.state.notes.length < noteRate.burst && Date.now() < end; ) {
       await sleep(100);
@@ -444,17 +463,29 @@ test('a flood is rate-limited, main stays responsive, and the document is never 
     }
     const elapsed = (Date.now() - t0) / 1000;
     expect(w.trust).toBe('protected');
-    // The flood was throttled by the clock, however fast or slowly main got to the messages: at most the burst
-    // plus the rate times the time since the flood began (main took every create it counted within that time),
-    // far fewer than the 5,000 creates and never up to the 2,000-note cap (the old limiter, refilled while main
-    // fell behind on a push of every note per create, let them through up to the cap in many runs).
+    const total = count - admittedBefore;
     const notes = w.state.notes.length;
-    test.info().annotations.push({ type: 'flood', description: `${notes} of 5,000 note creates in ${elapsed.toFixed(2)} s (limit ${noteRate.burst} + ${noteRate.perSecond}/s)` });
+    test.info().annotations.push({
+      type: 'flood',
+      description: `${total} of 15,000 messages within the limits by ${busy.toFixed(2)} s (sender limit ${DECK_SENDER_RATE.burst} + ${DECK_SENDER_RATE.perSecond}/s); ${notes} of 5,000 note creates in ${elapsed.toFixed(2)} s (limit ${noteRate.burst} + ${noteRate.perSecond}/s)`,
+    });
+    // The sender's whole flood, every channel together, was held to 9.1's figure by the clock, however fast or
+    // slowly main got to the messages: at most the burst plus the rate times the time main took (the hardening
+    // round's per channel buckets alone let each of the four channels through up to its own limit).
+    expect(total, `flood not throttled across channels: ${total} messages by ${busy.toFixed(2)} s`).toBeLessThanOrEqual(Math.floor(DECK_SENDER_RATE.burst + DECK_SENDER_RATE.perSecond * busy));
+    expect(total, `flood not throttled: ${total} messages`).toBeLessThan(15_000);
+    // Note creates are held to their own channel's limit as well: at most its burst plus its rate times the time since
+    // the flood began (main took every create it counted within that time), far fewer than the 5,000 creates and
+    // never up to the 2,000-note cap (the limiter before the hardening round, refilled while main fell behind on a
+    // push of every note per create, let them through up to the cap in many runs).
     expect(notes, `flood not throttled: ${notes} notes in ${elapsed.toFixed(1)} s`).toBeLessThanOrEqual(Math.floor(noteRate.burst + noteRate.perSecond * elapsed));
     expect(notes, `flood not throttled: ${notes} notes`).toBeLessThan(2000);
-    // Positive control: the flood did reach main, and the focus flood before it took no note tokens (the
-    // channels' buckets are separate): the whole burst of creates got through.
+    // Positive control: the flood did reach main, and the creates, sent first, found the sender's budget full: the
+    // whole burst of creates got through.
     expect(notes, 'the burst of note creates did not reach main').toBeGreaterThanOrEqual(noteRate.burst);
+    // The other channels got through too, on what the clock refilled: the creates had spent the sender's burst (a
+    // create the note bucket drops still takes the sender's token).
+    expect(total, 'only note creates got through').toBeGreaterThan(notes);
     // The document file and its siblings were never written.
     expect(diff(folderSnap, snapshot(session.folder.dir)), 'the document folder changed under a flood').toHaveLength(0);
     expect(session.app.logsMatching(/ipc drop .*rate/).length, 'expected rate-limit drops').toBeGreaterThan(0);

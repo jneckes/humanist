@@ -279,18 +279,33 @@ one run of the version it shows, and only right after the user pressed a key or 
   commit its open field; before a close or a quit it waits for the answer (at most 3 s). The answer is an ordinary
   `commit`, checked as above, and taken for 5 s after the request even when the field's authorisation otherwise
   ended (Known limits).
-- **Rate limits** (9.1; changed in the hardening round). Every message from a deck, render or diagnostics view counts,
-  valid or not, against a token bucket per document, view kind and channel, refilled by a monotonic clock
-  (`ipc-guard.ts` `DECK_CHANNEL_RATES`): a note operation 50 a second with a burst of 100, every other deck channel
-  1,000 a second with a burst of 1,000; a message without a token is dropped. A flood of note creates gets at most 100
-  plus 50 a second through, however slowly main handles them. Before the round there was one bucket of 1,000 a second
-  per view, shared by every channel and refilled while main was busy, so a flood could run to the 2,000-note cap (it
-  did in 5 of 10 runs of the round's baseline). A person stays far below the note limit: card text is sent at most
-  every 300 ms and a drawing sends one operation per finished stroke. Because the buckets are per channel, a view's
-  channels together may pass more than 9.1's example of 1,000 messages a second; each channel alone keeps it. The
-  shell's router keeps one bucket of 1,000 a second per shell. `forged-ipc.spec.ts` floods 5,000 note creates and
-  requires at most 100 plus 50 a second of the flood's length to get through (`test/unit/app/ipc-guard.test.ts` checks
-  the buckets with a fake clock that main's work advances).
+- **Undo of edits** (E-3 as amended in the hardening round; accepted by the lead). Edit › Undo and Redo (Cmd+Z and
+  Cmd+Shift+Z outside a field) are main's menu items over the window's stack of Blueline's own writes; the deck never
+  sends a record. They wait behind the document's writes in flight. Cmd+Z pressed while the newest commit is in
+  flight is for that commit: once it is answered the undo takes it, and when that commit became a verbatim note or
+  was refused nothing is undone ("Nothing undone: your last edit was kept as a note"). It never reaches past it to
+  an earlier edit, on another slide or anywhere else.
+- **Rate limits** (9.1; changed in both hardening rounds). Every message from a deck, render or diagnostics view
+  counts, valid or not, first against one token bucket per document and view kind for all its deck channels together
+  (`ipc-guard.ts` `DECK_SENDER_RATE`: 9.1's 1,000 messages a second, with a burst of 1,000), then against a bucket
+  per document, view kind and channel (`DECK_CHANNEL_RATES`): a note operation 50 a second with a burst of 100, every
+  other deck channel 1,000 a second with a burst of 1,000. All are refilled by a monotonic clock; a message that finds
+  either bucket empty is dropped. So one sender gets at most 2,000 messages through in any one second (the burst and a
+  second's refill) and 61,000 in a minute, whatever channels it uses, and a flood of note creates at most 100 plus 50
+  a second, however slowly main handles them. Before the first round there was one bucket of 1,000 a second per view,
+  refilled while main was busy, so a flood could run to the 2,000-note cap (5 of 10 runs of that round's baseline);
+  the first round's per channel buckets alone let a view's 20 channels together pass many times 9.1's figure, which
+  the second round's budget per sender closes. A person stays far below it. Measured in the app, the busiest second
+  of each, all channels together (`test/e2e/ipc-legit-rates.spec.ts`, sampled in main every 10 ms, idle machine): ten
+  strokes drawn back to back and a note card typed into at about 150 characters a second, 5 messages (15 in 6.8 s;
+  card text goes at most every 300 ms, a drawing one operation per finished stroke); 23 slide steps 30 ms apart, 6;
+  typing in an edit field at the same speed and Enter, 5; a wheel pan of 250 events a second over a deck view larger
+  than the window, 61 (one pan a frame; 120 on a 120 Hz display); the background renders of a 24-slide deck's
+  thumbnails, 28 from its render views (226 in 43 s). The shell's router keeps one bucket of 1,000 a second per
+  shell. `forged-ipc.spec.ts` floods 15,000 messages on four channels (note creates first, then focus reports and
+  malformed link and mode messages) and requires at most 1,000 plus 1,000 a second of the time main took to be
+  admitted, and at most 100 plus 50 a second of the 5,000 creates to make notes (`test/unit/app/ipc-guard.test.ts`
+  checks the buckets with a fake clock that main's work advances).
 
 `test/security/edit-forged.spec.ts` forges every edit message from a Trusted deck in Edit (begin, commit with an
 edit, a verbatim note, a pick and a no-op, candidates, undo tokens, busy) and from a Protected one right after a

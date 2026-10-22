@@ -52,7 +52,8 @@ and the code that holds them. Every fix has a regression test that failed on the
   to commit (waiting at most 3 s before a close or quit); the mode is checked when a commit is accepted, not at the
   write; a commit that can no longer be written (file moved, deleted, not UTF-8, Protected) is a verbatim note.
 - **Undo during a write** (14; E-3): Cmd+Z, Cmd+Shift+Z and the toast's Undo wait behind the document's writes in
-  flight and act on the newest write that landed.
+  flight and act on the newest write that landed. E-3 as amended in the hardening round, and accepted by the lead:
+  Cmd+Z pressed while the newest commit is in flight is for that commit, and if it becomes a note nothing is undone.
 - **Edit authorisation** (4; E-4): a field's authorisation now ends when it closes, when the view leaves Edit, or
   after 10 minutes without trusted input; only the one commit main asks for outlives the last two (5 s).
 - **The Saved toast** (8; E-5): the shell shows it, its "· also changes N other places" and its Undo, so the reload
@@ -209,8 +210,8 @@ anything uncertain is a verbatim note and the file is left as it is.
   the window's (`window.ts` `writeTrust`).
 - **Cmd+Z right after an Enter that became a note** (1 finding) undid the author's previous edit, on another slide.
   Cmd+Z pressed while the newest commit is in flight is now for that commit, and when it becomes a note nothing is
-  undone ("Nothing undone: your last edit was kept as a note"; `undo-stack.ts`). docs/spec-amendments/README.md proposes
-  this as E-3 amended, for the lead to confirm.
+  undone ("Nothing undone: your last edit was kept as a note"; `undo-stack.ts`). This is E-3 as amended
+  (docs/spec-amendments/README.md), which the lead accepted in the second hardening round.
 - **The flood rate-limit test** (`forged-ipc.spec.ts`; 5 of 10 runs failed in the round's baseline). The deck router had
   one bucket of 1,000 messages a second per view, shared by every channel and refilled while main was busy, and each
   note create cost main more as the notes added up, so a flood could run to the 2,000-note cap. The buckets are now per
@@ -338,20 +339,39 @@ since these pages were written while they ran). The repair's runs (`test-results
 
 Known after the final runs; none is a write to the wrong place or a lost change.
 
-- **Deck IPC limits are per channel now** (the hardening round's fix of the flood test; a decision to record): a token
-  bucket per document, view kind and channel, note operations 50 a second with a burst of 100 and every other deck
-  channel 1,000 a second with a burst of 1,000 (SECURITY.md, Rate limits; docs/spec-amendments/README.md, 9.1). So a
-  view's 20 deck channels together can pass more than 9.1's example of 1,000 messages a second per sender; each one
-  alone keeps it. Only the note operations' pushes to the deck and the shell are coalesced: other deck handlers still
-  push the shell's state once per accepted message, so a flood of slide reports costs main one push per message (1,000 a
-  second after a burst of 1,000).
-- **Two E2E tests failed by chance in the hardening round's final runs, once each**, in code the round did not change
-  (each passed in the other two full runs, and its file passed 40 of 40 tests when run ten times alone):
-  `views-reload-twice.spec.ts` "two saves 300, 400 and 600 ms apart …" saw one reload, not two, for two saves 400 ms
-  apart (cause not found; the file also passed 40 of 40 beside 4 CPU-bound processes, on this tree and on the tree
-  without the round's placement and timing fixes), and `views-open.spec.ts` "File › Open Recent …" read `recent.json`
-  while the atomic write of the second open had not landed yet, though the menu already listed it (the test reads the
-  file once instead of waiting for it).
+- **Deck IPC limits: closed by the second hardening round.** The first round's buckets per document, view kind and
+  channel (note operations 50 a second with a burst of 100, every other deck channel 1,000 a second with a burst of
+  1,000) let a view's 20 deck channels together pass many times 9.1's example of 1,000 messages a second per sender.
+  Every deck message now also takes a token from one budget per document and view kind for all its channels together,
+  checked first: 1,000 a second with a burst of 1,000 (`ipc-guard.ts` `DECK_SENDER_RATE`; SECURITY.md, Rate limits;
+  docs/spec-amendments/README.md, 9.1). The busiest second of what a person does, measured in the app
+  (`ipc-legit-rates.spec.ts`), is 61 messages (a wheel pan, one a frame); drawing, typing in a card or an edit field
+  and stepping through slides 30 ms apart take 5 or 6. Only the note operations' pushes to the deck and the shell are
+  coalesced: other deck handlers still push the shell's state once per accepted message, so a flood of slide reports
+  costs main one push per message, now at most 1,000 a second after a burst of 1,000 for all channels together.
+  `forged-ipc.spec.ts`, whose flood now sends 15,000 messages on four channels and requires at most 1,000 plus 1,000
+  a second of the time main took to be admitted, passed 50 of 50 tests run 10 times, alone and beside 4 CPU-bound
+  processes (363 to 499 messages admitted, by 0.46 to 0.67 s; 109 to 114 of the 5,000 note creates).
+- **Two E2E tests that failed by chance in the hardening round's final runs: both explained by the second round.**
+  `views-reload-twice.spec.ts` "two saves 300, 400 and 600 ms apart …" saw one reload for two saves 400 ms apart.
+  That is correct: when main is about 200 ms late (a loaded machine), the watcher's settled reads (9.2 Watcher step 2)
+  see only the second save, and one reload shows it with the saved view state; no save is missed (the watcher reads
+  again whenever its two reads disagree or the path changed after them, and polls every second). The test now waits
+  for the outcome (the page shows the version on disk, with its slide) and allows one to two reloads for two saves; a
+  new test holds main's event loop across both saves and requires exactly one reload, on the second version, on the
+  slide. Running the file 30 times beside 4 CPU-bound processes then found a real loss, in 2 of 144 tests: the page
+  ended on slide 1 of 6 instead of 5. A reload that starts while the reload before it still restores sends the same
+  view state again, and main decided whether to replay an index deck's slide from the last slide report, which was
+  the replaced page's first one: generic-index.html first reports a scroll page (its slides are still fading in),
+  and the late-deck test's page a single one. Main now takes the deck's kind from the page the state was taken from
+  (`window.ts` `capturedNav`), and starts the replay at once when the new page already reported itself. The new
+  late-deck test (an index deck that shows its slides 1.5 s after it loads) failed 10 of 10 runs before the fix and
+  passes after it. `views-open.spec.ts` "File › Open Recent …" read `recent.json` once, while the coalesced atomic
+  write of the second open had not landed; the menu never depended on the file (`recent.ts` rebuilds it from the list
+  in memory before scheduling the write; a unit test holds the write and checks the menu), and the test now polls the
+  file. After the fixes, both files 30 times beside 4 CPU-bound processes (2 workers): 300 of 300 tests pass, 180 of
+  `views-reload-twice.spec.ts` and 120 of `views-open.spec.ts`, 27 min; once two saves 400 ms apart were shown by one
+  reload, on the slide.
 - **A PDF whose document closes between two stages of its job** (after one stage ends, before the next asks for a
   renderer) ends as `RenderCancelled` in a unit test only: in the stressed E2E runs every close landed on a busy view.
 - **Real use has not started** (the fourth criterion): it needs the Mac build. The checklist is below and in the
@@ -392,10 +412,10 @@ Known after the final runs; none is a write to the wrong place or a lost change.
   title, whose only candidate was text the deck's script replaces at load, but D10 was not driven by hand again.
 - **Small windows the review left.** Cmd+Z pressed before the commit's message reaches main undoes the previous edit
   (the commit's undo slot is reserved only when main accepts it); once main has it, Cmd+Z is for that commit, and does
-  nothing when it becomes a note (the hardening round's E-3 amendment, which the lead has to confirm). While a press waits for the answer to the commit it
-  triggered (at most the commit timeout), the keys typed are held and typed into the field when it opens; from a key
-  that cannot be replayed (a shortcut, an arrow, a composition) on, the rest are dropped, and a toast says to check
-  the text.
+  nothing when it becomes a note (E-3 as amended in the hardening round, accepted by the lead). While a press waits
+  for the answer to the commit it triggered (at most the commit timeout), the keys typed are held and typed into the
+  field when it opens; from a key that cannot be replayed (a shortcut, an arrow, a composition) on, the rest are
+  dropped, and a toast says to check the text.
 - **A deck that cannot answer before close or quit.** Before a window closes or the app quits, main asks the deck to
   commit its open field and waits at most 3 s. If the deck cannot answer (a hung page), the window closes anyway:
   nothing is written, and main keeps nothing it did not receive (SECURITY.md, Known limits added by Phase 2).

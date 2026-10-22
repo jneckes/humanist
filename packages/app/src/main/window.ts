@@ -573,6 +573,17 @@ export class DocWindow {
   private restoreWaits = { page: false, keys: false };
   /** The deck's kind was known when the restore was sent (a reload in place), not a window opened again. */
   private restoreKindKnown = true;
+  /**
+   * The slide navigation of the page each view state was taken from, as its last report said when it answered (6.6;
+   * review finding 20). A reload that starts while the last restore runs sends that same state again, and the page
+   * it replaces may not have said yet what kind of deck it is: a page's first reports come before its script and
+   * styles have settled (a slide still fading in, or not built yet, is not shown), so the last report alone could
+   * take an index deck for a single page and skip the key replay (generic-index.html's first report after a load
+   * says a scroll page: the second hardening round's stress run lost the slide that way in 2 of 144 tests).
+   */
+  private readonly capturedNav = new WeakMap<DeckViewState, SlideState['navKind']>();
+  /** The handshake (`inits`) of the page the last SlideState came from. */
+  private slidesInit = 0;
 
   // ----- render products (6.7, 6.9)
   private indexJob: IndexJob | null = null;
@@ -825,7 +836,13 @@ export class DocWindow {
     this.viewRequests = new ViewStateRequests((q) => this.sendDeck(MainToDeckFiles.captureViewState, q));
     this.reload = new ReloadCoordinator(
       {
-        capture: () => this.viewRequests.capture(),
+        capture: async () => {
+          const state = await this.viewRequests.capture();
+          if (!state) deps.log(`view state of ${this.doc.fileName} not answered: the reload starts from the top`);
+          // The kind of deck the answering page said it is (its own report, not the page before it).
+          else if (this.slides && this.slidesInit === this.inits) this.capturedNav.set(state, this.slides.navKind);
+          return state;
+        },
         // D-1: a trust change reopens the file instead (under the same deferral rules: the old content keeps
         // running under the old trust until then, and the new content never runs under it).
         reload: (_version, state) => (this.trustChange ? this.reopenFile(state) : this.chainReload(() => this.reloadDeck(state?.hash ?? ''))),
@@ -1092,6 +1109,7 @@ export class DocWindow {
   private onSlides(p: SlideState): void {
     const before = this.slides;
     this.slides = p;
+    this.slidesInit = this.inits;
     // 6.7 Index replay: the keys that moved this deck, kept as Session.deckNav. The guard checked them
     // (ipc-guard DECK_NAV_KEYS); forward is stored as soon as it is known, back defaulting (learnDeckNav).
     const s = this.deps.session.session;
@@ -1108,17 +1126,24 @@ export class DocWindow {
     }
     this.pushState();
     for (const w of this.slideWaiters.splice(0)) w(p);
-    // 6.6: after a reload of an index deck, main's keys bring it back to its slide. The restore counts as done
-    // only when that replay has ended (review finding 20).
-    // (A page's first reports can say another kind while its own script has not run yet: only 'index' counts.)
-    if (this.restoreSlide !== null && p.navKind === 'index' && p.count > this.restoreSlide) {
-      const target = this.restoreSlide;
-      this.restoreSlide = null;
-      if (p.current !== target) {
-        const token = ++this.navToken;
-        void this.replayKeys(target, token).finally(() => this.keysRestored(token));
-      } else this.keysRestored(this.navToken);
-    }
+    this.replayRestoreSlide();
+  }
+
+  /**
+   * 6.6: after a reload of an index deck, main's keys bring it back to its slide, once the page shown now reports
+   * itself an index deck that has that slide. The restore counts as done only when that replay has ended (review
+   * finding 20). (A page's first reports can say another kind while its own script has not run yet: only 'index'
+   * counts, and only the current page's.)
+   */
+  private replayRestoreSlide(): void {
+    const p = this.slides;
+    if (this.restoreSlide === null || !p || this.slidesInit !== this.inits || p.navKind !== 'index' || p.count <= this.restoreSlide) return;
+    const target = this.restoreSlide;
+    this.restoreSlide = null;
+    if (p.current !== target) {
+      const token = ++this.navToken;
+      void this.replayKeys(target, token).finally(() => this.keysRestored(token));
+    } else this.keysRestored(this.navToken);
   }
 
   /** FilesDeckToMain.viewStateApplied: the page restored the view state (review finding 20). */
@@ -2488,10 +2513,15 @@ export class DocWindow {
    */
   private applyViewState(state: DeckViewState): void {
     this.sendDeck(MainToDeckFiles.applyViewState, state);
-    const nav = this.slides?.navKind;
+    // The kind of the page the state was taken from (capturedNav): the last report may be an unsettled page's, the
+    // one this reload replaced before it showed its slides. A state from another window (D-1) falls back to the last
+    // report, or to nothing known yet (onViewStateApplied decides).
+    const nav = this.capturedNav.get(state) ?? this.slides?.navKind;
     this.restoreKindKnown = nav !== undefined;
     this.restoreSlide = state.slide !== null && (nav === 'index' || nav === undefined) ? state.slide : null;
     this.restoreWaits = { page: true, keys: this.restoreSlide !== null };
+    // A page whose load main waited for (loadURL) may have reported its slides already: the replay starts now then.
+    this.replayRestoreSlide();
   }
 
   /**
