@@ -372,45 +372,51 @@ below), and every piece of the commit path that a reader-only build or the fuzz 
 | `edit-commit.ts` | `commitField(field, {smartPunctuation})`: the field's text before and after, its recorded runs (offsets in the field's `textContent`) and the caret's run → an edit of one run (`{runId, beforeText, afterText}`, the run's whole text), a `verbatim` note with a typed reason (`VerbatimWhy`), or a no-op. Clean-up, then the changed span, then the run rule (one run; an insertion at a boundary goes to the caret's run), then smart punctuation on that run (6.3). `liftToRun`/`liftPick` lift a picked substring or whitespace/NFC-normalized candidate to its run's whole text (P2-8); `pickKindFor` says which matcher reasons the picker offers (never `split` or `short`). The overlay and both fuzz harnesses call it: "the same path as a typed edit" is the same code |
 | `locked-spans.ts` | Section 8 locks: `transformLockedSpans(prev, cur, spans)` for external changes and restores (`diff_main` with a time limit, `diff_xIndex`, no semantic clean-up; a timeout only over-reports a violation), `applyOwnWrite(spans, record, {noteId})` for Blueline's own writes (shift; a write inside a span updates it; an undo drops its note's span), `lockForRun`, and `mapRange(prev, cur, start, end, {timeoutSec})` for the write queue (a run's range in a newer version, or `changed`/`timeout`), with `mapRangesClean` (several ranges through one diff, each with how far the diff leaves the text around it unchanged) for the stale placement and undo case 2. `LockedSpan.text` is the raw source slice |
 | `ipc-edit.ts` | The edit channels (`EditDeckToMain`, `MainToDeckEdit`, and `MainToDeckEditRequest.commitNow`: main asks the deck to commit its open field), their payloads, `EDIT_LIMITS` (UTF-8 bytes), the id/version/token formats, `candidateContext` (±40 characters on one line) |
-| `capabilities.ts` (changed) | `WriteQueueOptions` gains `beforeWrite(prev, next)` (the exact bytes about to be replaced, right before the rename: the history snapshot), `afterWrite(map, record, next)` with `next.basedOn` (the hash the queue read), `canWrite()` (checked at the moment of the write, 9.1), `onHookError`, `maxRetries`; `WriteQueue` gains `know(version, src, map, {pin})` and `unpin(version)` (P2-3: the versions the page and its open fields hold; a pinned one is never evicted), `restore(bytes, expectVersion)` and `currentMap()`. Refusals carry a typed `RefusalCode`; a written outcome says whether it `merged` an external change |
+| `capabilities.ts` (changed) | `WriteQueueOptions` gains `beforeWrite(prev, next)` (the exact bytes about to be replaced, right before the rename: the history snapshot), `afterWrite(map, record, next)` with `next.basedOn` (the hash the queue read), `canWrite()` (checked at the moment of the write, 9.1), `onHookError`, `maxRetries`; `WriteQueue` gains `know(version, src, map, {pin, onDisk})` and `unpin(version)` (P2-3: the versions the page and its open fields hold; a pinned one is never evicted; `onDisk`: main has just read that version from the file, at open or from the watcher, F-1), `restore(bytes, expectVersion)` and `currentMap()`. Refusals carry a typed `RefusalCode`; a written outcome says whether it `merged` an external change |
 | `dom-walk.ts` (changed) | `describeNode(node, tracker)` for the overlay, `ScriptTouchTracker.ownChanges(fn)` and `ownRegion(el)` so the overlay's own changes never count as a script's (P2-6) |
 
 ### editor
 
-`write-queue.ts` implements the new options: `know` (checked against its sha256; pins counted), the stale request
-carried through the changes the queue saw between the request's version V and the current one C (`write-queue.ts`
-`steps`, every change that produced each version, searched for the shortest route, newest first; `carryRange`): its
-own edits, undos and redos move the run exactly by their splices, and when they are all there is, the run is written
-where they carry it. Whether another program changed the file is judged by time, not by the route: a change the queue
-saw (or a restore) since the oldest hold of V that main has not let go (`know` with `pin`: a page showing V, a field
-opened on it; an unpinned version, since main last told the queue about it) counts even when the route is Blueline's own writes alone or the bytes came back to V (`foreignLog`,
-`foreignSince`), and then the text must be in at most one place in every version that change made (`oneOnTheWay`: a
-slide duplicated and its original deleted reads as the slide alone). Another program's change, or a restore (a whole
-other version), is placed by the uniqueness rule
-(lead decision F-1; `place.ts` `placeStale`), between the two versions around it (kept for the last 3 such changes,
-`aroundForeign`): (a) the run's value is the value of exactly one place in each of the two versions (`placesOf`: HTML
-text and literal runs, a literal's shadow run too, and one more for each shadow value equal to it, as the matcher
-counts copies), (b) the run's range mapped through a diff lands exactly on that one run, of the same kind, with no
-change over it, and (c) `anchors.ts` `confirmPlace` confirms the place on BOTH sides (the run's old context, from its
-edge out to its unique depth in the old version plus 32 characters and at least 128, sits unchanged right next to the
-place, occurs nowhere else in the current version, and its distinguishing part occurs no more often than before). V
-and C themselves must hold `beforeText` in one place each too. When the queue did not see every change, one diff over
-the whole span places it by the same rule, only when Blueline wrote nothing since V; a step that refuses makes the
-edit a note, never a placement across the whole span (which could not see a copy the queue saw on the way: a slide
-duplicated, then its original deleted). Notes are `ambiguous` when the text is in more than one place in V or C,
-`stale` otherwise. No path chooses one copy among several across another program's change. The hardening rounds'
-copy heuristics (the repair's three rules, rule 2 on added copies, rule 3 on records, `records.ts`) decided only among
-copies and are gone; their cases are notes by rule (a). Undo and redo case 2 (`write-queue.ts` `undoPlace`, `undo.ts`
-`planUndo` with `place`) carry the write's range from the version it made in the same way; when another program
-changed the file since the write landed (by time, as above; case 1 too, when the bytes came back), the run that holds
-the text they replace must be the one place of its value in that version, in C and in every version another program
-made in between, and the place must lie in that run at the same offset; and the needle (prefix, rawAfter, suffix)
-must occur once in C, exactly there; else case 3.
-`readWhole` waits up to 5 s for a deck that stopped ending as a whole document (another program writing it in place),
-else refuses (`conflict`)),
+`write-queue.ts` implements the new options: `know` (checked against its sha256; pins counted; with `onDisk`, the
+version main has just read from the file), and keeps one log, in order, of what the file became (`log`, `Seen`): each
+version the queue read, each of its own writes (an edit, undo or redo with its splice; a restore, a whole other
+version), and each version main read itself (`know` with `onDisk`: at open, and every external change main takes from
+the watcher, `EditLane.attach` and `takeExternal`). A version that is not the one seen last, and that the queue did not
+write, is another program's change. A stale request is carried along the log from where the file was the request's
+version V for its client (the last entry of V at or before the oldest hold of V that main has not let go: a page
+showing V, a field opened on it; `startOf`) to the current version C (`carryAlong`): its own edits, undos and redos
+move the run exactly by their splices, and when they are all there is, the run is written where they carry it. Any
+other entry is another program's change (or a restore): it is placed by the uniqueness rule (lead decision F-1;
+`place.ts` `placeStale`), between the two versions around it (kept for the last 3 such changes, `aroundForeign`), with
+the run's value at that step: (a) the run's value is the value of exactly one place in each of the two versions
+(`placesOf`: HTML text and literal runs, a literal's shadow run too, and one more for each shadow value equal to it,
+as the matcher counts copies), (b) the run's range mapped through a diff lands exactly on that one run, of the same
+kind, with no change over it, and (c) `anchors.ts` `confirmPlace` confirms the place on BOTH sides (the run's old
+context, from its edge out to its unique depth in the old version plus 32 characters and at least 128, sits unchanged
+right next to the place, occurs nowhere else in the current version, and its distinguishing part occurs no more often
+than before). V and C themselves must hold `beforeText` in one place each too. Because the log is in order, a change
+that was later undone, a slide duplicated and then its original deleted, or bytes put back, still lie in the span. When
+the queue does not hold the versions around those changes (or more than 3 lie in the span), one diff of V to C places
+it by the same rule, only when Blueline wrote nothing in the span and the text was in at most one place in every
+version another program made in it (`onTheWay`, from each entry's `copies`, kept when the version itself is not); a
+step that refuses makes the edit a note, never a placement across the whole span. Notes are `ambiguous` when the text
+is in more than one place, `stale` otherwise. No path chooses one copy among several across another program's change.
+The hardening rounds' copy heuristics (the repair's three rules, rule 2 on added copies, rule 3 on records,
+`records.ts`) decided only among copies and are gone; their cases are notes by rule (a). Undo and redo
+(`write-queue.ts` `undoPlace`, `undo.ts` `planUndo` with `place`) carry the write's range along the log from the entry
+that made the write (`lastMade`: the write itself, or a redo or undo of it in case 1; for a redo, also the version
+right before the write) in the same way; when another program changed the file in that span (case 1 too, when the
+bytes came back: `planUndo` `byHash: false`), the run that holds the text they replace must be the one place of its
+value in the version the write made and in C, each other program's change is placed by the rule, and the place must
+lie in that run at the same offset; and the needle (prefix, rawAfter, suffix) must occur once in C, exactly there; else
+case 3.
+`readWhole` waits up to 5 s for a deck that stopped ending as a whole document (another program writing it in place;
+`endsWhole`: only white space and comments after the last `</html>` the HTML parser reads as an end tag, so a
+`</html>` inside an attribute value, a script or a comment does not count), else refuses (`conflict`)),
 `beforeWrite` with the bytes read in step 2, `canWrite` before and after it, verify on the exact bytes before the rename (P2-1), a read-back after the
 rename, `restore` serialized and conflict-checked, typed refusals. `plan.ts` refuses by rule what the HTML parser
-reports as an error and the `<pre>` character-reference case parse5 mislocates.
+reports as an error and the `<pre>` cases parse5 mislocates (a character reference, or a change of whether white space
+follows the dropped leading newline).
 
 ### app main
 

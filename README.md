@@ -8,15 +8,15 @@ one-pagers that AI tools produce. Think Adobe Acrobat Reader, but for HTML.
 - **Edit:** click text and type; the change is written straight into the HTML, nothing else touched.
 - **Hand off to Claude Code:** notes go to the agent as an anchored change list.
 
-Status: **Phase 2 (Edit) built.** Its exit gate is measured in
-[docs/PHASE2-RESULTS.md](docs/PHASE2-RESULTS.md): the fuzz, concurrency and reader-only criteria are met (the extra
-fuzz run on Josh's decks has 1 failure, 2 before the hardening rounds, from a known limit of the probe on one deck's
-ticker); the one left is Josh finishing 3 real decks with Edit on a Mac build (see
-[Real use of Edit on a Mac](#real-use-of-edit-on-a-mac)). Phase 1 (Reader) is measured in
-[docs/PHASE1-RESULTS.md](docs/PHASE1-RESULTS.md); its week of real use is also Mac work
-(see [Dogfooding on a Mac](#dogfooding-on-a-mac)). See [SPEC.md](SPEC.md) for the build spec,
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for module boundaries,
-[docs/PHASE0-FINDINGS.md](docs/PHASE0-FINDINGS.md) for what the spike settled,
+Status: **Phase 2 (Edit) is ready for Josh's real use on the Mac.** Build from the commit that brings this status line
+(the uniqueness rule's final runs, on top of 1554149), as in [Real use of Edit on a Mac](#real-use-of-edit-on-a-mac).
+Its exit gate is measured in [docs/PHASE2-RESULTS.md](docs/PHASE2-RESULTS.md): the fuzz, concurrency and reader-only
+criteria are met (the extra fuzz run on Josh's decks has 1 failure, from the known limit of the probe's reach on a CSS
+marquee, which the lead accepted for D5's ticker and which this run met on D11's: not a wrong write, and not counted
+as a pass); the one left is Josh finishing 3 real decks with Edit on a Mac build. Phase 1 (Reader) is measured in
+[docs/PHASE1-RESULTS.md](docs/PHASE1-RESULTS.md); its week of real use is also Mac work (see [Dogfooding on a
+Mac](#dogfooding-on-a-mac)). See [SPEC.md](SPEC.md) for the build spec, [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+for module boundaries, [docs/PHASE0-FINDINGS.md](docs/PHASE0-FINDINGS.md) for what the spike settled,
 [docs/spec-amendments/](docs/spec-amendments/README.md) for where the code differs from SPEC.md, and
 [SECURITY.md](SECURITY.md) for the security model and its known limits.
 
@@ -231,8 +231,8 @@ npm run dist                 # → release/Blueline-0.0.0-arm64.dmg and release/
 
 ## Real use of Edit on a Mac
 
-Phase 2's last exit criterion: Josh finishes 3 real decks using only Edit for text changes. Build and install as in
-[Dogfooding on a Mac](#dogfooding-on-a-mac), then:
+Phase 2's last exit criterion: Josh finishes 3 real decks using only Edit for text changes. Build and install from
+the commit named in Status above, as in [Dogfooding on a Mac](#dogfooding-on-a-mac), then:
 
 1. For each of the 3 decks, make every text change in Edit (Cmd+3, click the text, type, Enter): no text editor and
    no agent for text. Use the picker when it appears, and Cmd+Z outside a field.
@@ -306,9 +306,9 @@ became a note undoes nothing. Each finding has a regression test that fails befo
 the attackers' property tests find no wrong write that the text could tell apart. A second round of three attackers
 found 7 more (docs/PHASE2-RESULTS.md, "The second hardening round"): a generator that renumbers slides, a new card
 modelled on the author's, a program writing the deck in place, and three ways Blueline's own writes were not seen when
-placing a later write. All are fixed: a write must also agree with the author's slide or record
-(`packages/editor/src/records.ts`), Blueline's own writes are carried exactly and everything else placed, and a deck
-still being written is waited for or left alone. The first round also fixed the two tests
+placing a later write. All are fixed: a write must also agree with the author's slide or record (a rule the
+uniqueness rule below has since replaced), Blueline's own writes are carried exactly and everything else placed, and a
+deck still being written is waited for or left alone. The first round also fixed the two tests
 that failed by chance: the flood rate limit (note operations are now limited to 50 a second per document, SECURITY.md)
 and a PDF cancelled by its document's close. From a clean build after the round (logs in
 `test-results/p2-harden-final/`): all 2,100 unit tests pass (112 files, the Node fuzz's 1,200 edits among them, 0
@@ -329,6 +329,41 @@ round; on Josh's decks 913 written edits pass (one stale edit on D9 is a note no
 own writes) and 1 fails, D5's ticker again. The cost on copies of Josh's decks, case for case against the attackers'
 runs: 2.0% fewer stale edits written (7,128 of 17,091 realistic changes near repeated text) and 2.7% fewer undos and
 redos done (7,296 of 22,166).
+
+The uniqueness rule (lead decision F-1, 2026-10-22; docs/PHASE2-RESULTS.md, "The uniqueness rule"): instead of
+telling copies of a text apart after another program changed the deck, Blueline no longer chooses among them. A stale
+edit, an undo or a redo across another program's change is written only when its text is in exactly one place before
+and after (text Blueline never writes, such as the `<title>` or an attribute value, counts as a place), the run maps
+exactly onto that place, and the text on both sides confirms it; anything else is a verbatim note (or "Can't undo in
+place"). Blueline's own writes in between are still carried exactly. Re-run at full size, the attack suites of both
+hardening rounds write into another copy only where the other program's change left the bytes exactly as they were
+(identical slides swapped, or duplicated and deleted in one save), and in one structural case where a save replaced
+the author's slide by a byte-identical one at the same place; the byte-identical classes the rounds had accepted
+(identical slides swapped or moved, an identical copy at the author's deleted slide's place, a slide duplicated and
+its original deleted, identical dividers) are notes. The cost: a stale edit, undo or redo of text in more than one place is a note across any change by another program, however
+far away. The Node fuzz writes 831 of 1,200 edits (912 before); the fuzz gate in Chromium writes 891 of 1,000 on the
+committed decks with **0 failures** (894 before); on copies of Josh's decks, whose campaigns target repeated text, no
+stale edit of it is written (7,128 of 17,091 before), and undos of the author's own edits still are (4,798 of 10,830).
+A third round attacked the rule's first implementation and found nine ways to a write it forbids (docs/PHASE2-RESULTS.md,
+"The uniqueness rule, attacked"): external saves main took from the watcher did not count as changes, an undo was timed
+by when its bytes were last made, and a deck still being written that paused after a `</html>` inside an iframe's
+`srcdoc` passed for a whole one. All are fixed: main tells the queue every version it reads from the file, the queue
+carries an edit along a log of what the file became, in order, an undo starts from the write it undoes, and the HTML
+parser says where a deck ends. In every attack suite of the three rounds, the writes left on another copy are where the
+other program's changes left the bytes exactly as Blueline last saw them, and the one save that replaced the author's
+slide by a byte-identical slide at its place.
+
+The final runs of the uniqueness rule (2026-10-22, Linux, Electron 44.7.2, from a clean build, logs in
+`test-results/p2-unique-final/`; docs/PHASE2-RESULTS.md, "The uniqueness rule's final runs"): all 2,202 unit tests
+pass (116 files; the Node fuzz's 1,200 edits among them write 818, 0 failures); the fuzz and parity harnesses add 55
+and 37 that pass; the E2E suite runs 316 tests, and in each of three runs 315 pass and 1 is the expected failure; the
+security suite, run twice, 65 tests, 59 pass and 6 are the expected failures; `blueline check --auto` passes 6 of 6,
+`npm run package:smoke` 17 of 17, the parity Playwright suite 9 of 9, and `npm run test:reader-only` passes (1,015 s).
+The fuzz gate in Chromium writes 891 of 1,000 edits on the committed decks with **0 failures**, every edit as on the
+first F-1 tree; on Josh's decks 878 written edits pass, 92 are notes by rule (36 of them the rule's own: repeated text
+after another program's change, against 1 in the second round's run) and 1 fails: an item of D11's CSS marquee that
+held its new text and the probe's sentinel but was out of view at every stop, the same limit of the probe's reach as
+D5's ticker, which the lead accepted as a known limit (reported as that, not as a pass).
 
 Phase 1 results (2026-10-18, Linux, Electron 44.7.2, from a clean build, after review round 1): 1,639 unit
 tests pass (84 files; the exit-gate parity harness adds 37 more); the E2E suite runs 194 tests, 193 pass and 1 is

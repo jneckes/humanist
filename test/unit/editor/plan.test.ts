@@ -199,6 +199,30 @@ describe('planEdit: html-text (9.2 Strategy 1 step 5)', () => {
     expect(edit(flat, 'Plan', '&Plan').out).toContain('<pre>&amp;Plan</pre>');
   });
 
+  it('refuses an edit that changes whether white space follows the dropped newline of <pre> (parse5 moves the node)', () => {
+    // The Node fuzz (third F-1 round): parse5 starts the text node at the dropped newline when white space follows
+    // it, and after it otherwise, so such an edit moved the run and only verify refused it.
+    for (const nl of ['\n', '\r\n']) {
+      for (const [body, after] of [
+        ['npm run build', ' x run'],
+        [' npm run build', 'npm run build'],
+        ['npm run', '\tnpm run'],
+      ]) {
+        const src = `<!doctype html><body><p>Head</p><pre class="code">${nl}${body}</pre></body>`;
+        const map = mapOf(src);
+        const run = map.runs.find((r) => r.tagName === 'pre')!;
+        expect(planEdit(src, map, requestFor(map, run.id, after)), JSON.stringify([nl, body, after])).toMatchObject({ ok: false, code: 'escape' });
+      }
+      // Keeping the leading white space (or its absence) is written and verifies.
+      const src = `<!doctype html><body><p>Head</p><pre class="code">${nl} npm run</pre></body>`;
+      expect(edit(src, ' npm run', ' npm run build').out).toContain(`<pre class="code">${nl} npm run build</pre>`);
+      const src2 = `<!doctype html><body><p>Head</p><pre class="code">${nl}npm run</pre></body>`;
+      expect(edit(src2, 'npm run', 'npm run build').out).toContain(`<pre class="code">${nl}npm run build</pre>`);
+    }
+    // Without a dropped newline white space at the start is fine.
+    expect(edit('<!doctype html><body><pre>npm run</pre></body>', 'npm run', ' npm run').out).toContain('<pre> npm run</pre>');
+  });
+
   it('lets a literal carry C0 controls (escaped as \\u00XX) but not C1 controls or noncharacters', () => {
     const src = doc('<div id="app"></div>', "<script>var a = 'Line';</script>");
     const map = mapOf(src);

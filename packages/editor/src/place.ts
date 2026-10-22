@@ -20,8 +20,9 @@
 // moved, an identical copy at the place of the author's deleted slide, a slide duplicated and the original deleted,
 // identical divider slides: each has the text in two places on one side, so each is a note.
 //
-// The queue applies this to each change another program made between V and C (write-queue.ts carryRange), with the
-// value of the run at that step, and to V and C themselves; Blueline's own writes are carried exactly, not placed.
+// The queue applies this to each change another program made between V and C, in the order the queue saw them
+// (write-queue.ts carryAlong), with the value of the run at that step, and to V and C themselves; Blueline's own
+// writes are carried exactly, not placed.
 
 import { mapRangesClean } from '@blueline/core/locked-spans';
 import type { DeckMap, HtmlRun, LiteralRun, RefusalCode } from '@blueline/core/types';
@@ -62,6 +63,18 @@ export function placesOf(map: DeckMap, text: string): number {
   let n = runsHolding(map, text).length;
   for (const s of map.shadows ?? []) if (s.value === text) n++;
   return n;
+}
+
+/** The texts in more than one place of a version (placesOf above 1), counted as placesOf counts them. */
+export function copiesOf(map: DeckMap): Set<string> {
+  const n = new Map<string, number>();
+  const add = (text: string): void => void n.set(text, (n.get(text) ?? 0) + 1);
+  for (const r of map.runs) add(r.value);
+  for (const r of map.literals) add(r.value);
+  for (const s of map.shadows ?? []) add(s.value);
+  const out = new Set<string>();
+  for (const [text, k] of n) if (k > 1) out.add(text);
+  return out;
 }
 
 /**

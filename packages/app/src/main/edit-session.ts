@@ -893,10 +893,10 @@ export class EditLane {
     return this.lane.run(async () => {
       const doc = host.doc;
       const queue = this.ensureQueue();
-      if (doc.decoded.utf8) {
-        queue?.know(doc.version, doc.decoded.src, doc.map);
-        this.versions.put(doc.version, doc.decoded.src, doc.map);
-      }
+      // F-1: what main read from the file is in the queue's log (onDisk), so a change since counts as another
+      // program's even when the queue never reads the version in between; a deck that is not UTF-8 too.
+      queue?.know(doc.version, doc.decoded.src, doc.map, { onDisk: true });
+      if (doc.decoded.utf8) this.versions.put(doc.version, doc.decoded.src, doc.map);
       const known = host.known();
       const locks = host.locks();
       if (known && known.version !== doc.version && locks.length > 0 && doc.decoded.utf8) {
@@ -997,10 +997,11 @@ export class EditLane {
         this.log(`external change not taken: ${e instanceof Error ? e.message : String(e)}`);
         return 'failed';
       }
-      if (doc.decoded.utf8) {
-        this.queue?.know(doc.version, doc.decoded.src, doc.map);
-        this.versions.put(doc.version, doc.decoded.src, doc.map);
-      }
+      // F-1: another program's change, in the queue's log even when the queue never reads this version itself (a
+      // field held open across two saves, an undo after them): a slide duplicated and its original deleted, or the
+      // bytes put back, still count as changes. A deck that is not UTF-8 too: it is never written, but it was there.
+      this.queue?.know(doc.version, doc.decoded.src, doc.map, { onDisk: true });
+      if (doc.decoded.utf8) this.versions.put(doc.version, doc.decoded.src, doc.map);
       host.taken({ previous: prev.version, version: doc.version });
       host.noteVersion({ version: doc.version, contentHash: doc.contentHash, title: doc.title });
       if (host.locks().length > 0 && prev.utf8 && doc.decoded.utf8) {

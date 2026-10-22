@@ -6,29 +6,39 @@ and the results of each harness, what the runs found, what must be checked again
 real-use checklist. Josh's 12 decks are called D1 to D12 only, as in docs/PHASE0-FINDINGS.md. The machine-readable
 results are written by the scripts (paths under each section); they are not committed.
 
-The gate item first ran its harnesses in the Linux dev container on 2026-10-19, while the other build items were
-still at work in the tree (its sections below say what each run saw). The integration step then made the pieces
-fit (the open contract requests, its fixes, the `@edit` tags) and ran everything again (commit 91b58dc). An
-adversarial review of that tree confirmed 29 findings, and their fixes changed the write queue, main's edit
-session, the overlay, the clean-up and both fuzz harnesses (section "Review round 1"). A re-verification of
-those fixes found some incomplete and some new problems, which a repair step fixed ("The re-verification and the
-repair"). A measurement step then added two duplicated-text cases to the concurrency gate and ran every harness and
-suite once more on the repaired tree, from a clean build, on 2026-10-21 ("The final runs"); the table and every
-result below come from those runs, unless a section says it describes an earlier one. A hardening round then
-had three attackers look for wrong-place writes in that build; it fixed all 13 they found and the two tests that
-failed by chance, and ran every suite and harness again from a clean build ("The hardening round", below; its
-numbers are the ones that section gives, and the paragraph under the table sums them up). A second hardening round,
-three more attackers on that build, fixed the 7 wrong-place writes and lost outputs they found and ran every suite
-and harness once more from a clean build, on 2026-10-22 ("The second hardening round"; the second paragraph under
-the table).
+The gate item first ran its harnesses in the Linux dev container on 2026-10-19, while the other build items were still
+at work in the tree (its sections below say what each run saw). The integration step then made the pieces fit (the
+open contract requests, its fixes, the `@edit` tags) and ran everything again (commit 91b58dc). An adversarial review
+of that tree confirmed 29 findings, and their fixes changed the write queue, main's edit session, the overlay, the
+clean-up and both fuzz harnesses (section "Review round 1"). A re-verification of those fixes found some incomplete
+and some new problems, which a repair step fixed ("The re-verification and the repair"). A measurement step then added
+two duplicated-text cases to the concurrency gate and ran every harness and suite once more on the repaired tree, from
+a clean build, on 2026-10-21 ("The final runs"); every result below comes from those runs, unless a section says it
+describes another one (the table gives the last runs, below). A hardening round then had three attackers look for
+wrong-place writes in that build; it fixed all 13 they found and the two tests that failed by chance, and ran every
+suite and harness again from a clean build ("The hardening round", below; its numbers are the ones that section gives,
+and the second paragraph under the table sums them up). A second hardening round, three more attackers on that build,
+fixed the 7 wrong-place writes and lost outputs they found and ran every suite and harness once more from a clean
+build, on 2026-10-22 ("The second hardening round"; the third paragraph under the table). The lead's decision F-1 then
+replaced telling copies apart after another program's change with not choosing among them ("The uniqueness rule"; the
+fourth paragraph under the table). A third round attacked the rule's first implementation and fixed the nine ways to a
+forbidden write it found ("The uniqueness rule, attacked"), and every suite and harness then ran once more from a
+clean build, on 2026-10-22 ("The uniqueness rule's final runs"): **the table gives those runs**; the paragraphs
+under it sum up the earlier ones (first the measurement step's, which the table showed before) and then these.
 
-| Criterion | Gate (SPEC 10 Phase 2) | Result here |
+| Criterion | Gate (SPEC 10 Phase 2) | Result here (the uniqueness rule's final runs, 2026-10-22) |
 |---|---|---|
-| Fuzz, committed fixtures | 1,000 seeded edits, the typed path, notes only by rule, every written edit through the checks and the mutation probe in Chromium, zero failures | **met**: 1,000 edits over the 47 UTF-8 committed decks: 903 written (90.3%), 72 notes by rule (7.2%), 25 no-ops (2.5%), **0 failures**; every written edit passed the mutation probe on the node the author typed in (none probed on its own, none unprobed); 18 min. The same 1,000 records as the gate item's, the integration's, the review's and the repair's runs |
-| Fuzz, Josh's decks | the extra run | **2 failures, both the method's D5 limit; no wrong write**: 1,000 edits over D1–D12: 917 written and passed (91.7%), 55 notes by rule (5.5%), 26 no-ops (2.6%), **2 failures**: two D5 edits written exactly, whose node held the new text and the sentinel, but D5's CSS marquee kept it out of view at every stop of the probe (an open lead decision, Open issues); 0 unprobed; 74 picked candidates (64 written); 105 stale-version requests, 98 written by position with every copy confirmed and none `ambiguous`; 28 min |
-| Concurrency | an external write 50 ms before the commit: the edit lands on the right text or becomes a verbatim note; the external change survives | **met**: through the app, `test/e2e/edit-gate-concurrency.spec.ts` (an unrelated change, the same text rewritten, an element inserted before the target, duplicated text whose neighbour changes on the edited copy, in two places, a change while the field stays open, a write inside the atomic write before the re-hash): 7 of 7 in the final E2E run, and with the typed-edit spec 30 of 30 run three times; the inserted element's edit landed on its heading in all 4 runs, and each duplicated-text edit on the copy the author typed in, in all 4 runs (on commit 91b58dc both of those cases wrote the edit into the other copy, 3 runs of 3 each); below the app, the queue's unit tests (stale requests next to moved and inserted copies among them) and the fuzz's external writes (none lost, every edit on its run or a note by rule). The window between the re-hash and the rename is the protocol's stated limit |
-| Reader-only | `npm run test:reader-only` passes with `packages/editor` removed | **met**: `PASSED` in 16 min (951 s): the copy without `packages/editor`, the reader-only build, the bundle check, tsc, vitest (96 files, 1,883 tests), the reader-only `map`, the E2E suite without `@edit` (168 tests, 1 the known note-card ordering limit, an expected failure) and the security suite without `@edit` (57 tests, 6 expected failures, the known limits) all pass |
-| Real use | Josh finishes 3 real decks using only Edit for text changes | **not started**: needs the Mac build; checklist below |
+| Fuzz, committed fixtures | 1,000 seeded edits, the typed path, notes only by rule, every written edit through the checks and the mutation probe in Chromium, zero failures | **met**: 1,000 edits over the 47 UTF-8 committed decks: 891 written (89.1%), 83 notes by rule (8.3%; 6 `ambiguous`, 10 `stale`), 26 no-ops (2.6%), **0 failures**; every written edit passed the mutation probe on the node the author typed in (891 probed, none on its own, none unprobed); 71 stale-version requests, 61 written; 18 min. The same 1,000 records as the first F-1 tree's run and the third round's |
+| Fuzz, Josh's decks | the extra run | **1 failure, the probe's accepted reach limit; no wrong write**: 1,000 edits over D1–D12: 878 written and passed (87.8%), 92 notes by rule (9.2%; 36 `ambiguous`, the uniqueness rule's notes on repeated text after another program's change), 29 no-ops (2.9%), **1 failure**: a D11 edit written exactly, whose node, an item of the CSS marquee on D11's cover slide, held the new text and the sentinel but was out of view at every stop of the probe: the limit of the probe's reach that the lead accepted as a documented known limit for D5's ticker (Open issues), reported as that, not as a pass; 0 unprobed; 66 picked candidates (58 written); 98 stale-version requests, 83 written; 28 min |
+| Concurrency | an external write 50 ms before the commit: the edit lands on the right text or becomes a verbatim note; the external change survives | **met**: through the app, `test/e2e/edit-gate-concurrency.spec.ts` (an unrelated change, the same text rewritten, an element inserted before the target, duplicated text whose neighbour changes on the edited copy, in two places, a change while the field stays open, a write inside the atomic write before the re-hash): 7 of 7 in each of the three E2E runs: the unrelated change, the change while the field stays open and the write inside the atomic write land on the heading with the external change kept, and the same text rewritten, the element inserted before the heading and both duplicated-text cases are verbatim notes in every run, as since the first hardening round's anchors (the duplicated text is in two places, which F-1 makes a note by rule; on commit 91b58dc both of those cases wrote into the other copy, 3 runs of 3); below the app, the queue's unit tests (stale requests next to moved and inserted copies, the uniqueness rule's cases among them) and the fuzz's external writes (87 that landed on the committed decks and 67 on Josh's: none lost, every edit on its run or a note by rule). The window between the re-hash and the rename is the protocol's stated limit |
+| Reader-only | `npm run test:reader-only` passes with `packages/editor` removed | **met**: `PASSED` in 17 min (1,015 s): the copy without `packages/editor`, the reader-only build, the bundle check, tsc, vitest (96 files, 1,896 tests), the reader-only `map`, the E2E suite without `@edit` (173 tests, 1 the known note-card ordering limit, an expected failure) and the security suite without `@edit` (57 tests, 6 expected failures, the known limits) all pass |
+| Real use | Josh finishes 3 real decks using only Edit for text changes | **pending**: Phase 2 is ready for it; needs the Mac build (README, Status, names the commit); checklist below |
+
+At the measurement step (2026-10-21, "The final runs") the table read: on the committed decks 903 written, 72 notes by
+rule, 25 no-ops, **0 failures**; on Josh's decks 917 written and passed, 55 notes, 26 no-ops and 2 failures, both D5's
+ticker; the concurrency spec 7 of 7, and with the typed-edit spec 30 of 30 over three repeats, the inserted element's
+edit and each duplicated-text edit landing on the heading and the copy the author typed in (on commit 91b58dc both
+duplicated-text cases wrote into the other copy, 3 runs of 3); `npm run test:reader-only` PASSED in 951 s.
 
 After the hardening round (its final runs, on the tree with every fix of the round): the fuzz gate on the committed
 decks wrote 894 of its 1,000 edits with **0 failures** (81 notes by rule, 25 no-ops, every written edit probed); on
@@ -41,6 +51,21 @@ rule, 25 no-ops, **0 failures**, every written edit probed); on Josh's decks 913
 notes, 28 no-ops and **1 failure**, D5's ticker again (one stale edit on D9 is a note now, by the round's rule on
 Blueline's own writes, and D9's later edits differ from then on). The E2E suite (316 tests) ran three times with no
 failure but its expected one, the security suite twice as expected, and `npm run test:reader-only` PASSED in 1,019 s.
+
+After the uniqueness rule (lead decision F-1, 2026-10-22): a stale edit, an undo or a redo across another program's
+change is written only when its text is in one place before and after; the attack suites of both rounds, re-run at
+full size, write into another copy only where the other program's change left the bytes as they were (and one save
+that replaced the author's slide by a byte-identical one at its place). The fuzz gate on the committed decks wrote 891
+of its 1,000 edits with **0 failures** (83 notes by rule, 26 no-ops, every written edit probed); the Node fuzz writes
+831 of 1,200 edits (912 before), and on copies of Josh's decks no stale edit of repeated text is written any more
+(details and the suites in "The uniqueness rule").
+
+After the third round, from a clean build (the uniqueness rule's final runs, the table): the fuzz gate on the
+committed decks gave every one of its 1,000 edits the outcome it had on the first F-1 tree (891 written, **0
+failures**); on Josh's decks, the rule's first run there, 878 written edits passed, 92 were notes by rule (36
+`ambiguous`, where the second round's run had 1) and 29 no-ops, with **1 failure**, the probe's reach on an item of
+D11's marquee; the Node fuzz wrote 818 of 1,200 edits. The E2E suite (316 tests) ran three times with no failure but
+its expected one, and the security suite twice as expected; `npm run test:reader-only` PASSED in 1,015 s.
 
 ## Review round 1 (the Phase 2 review)
 
@@ -433,6 +458,312 @@ aside, and it was the same after the runs). No run needed a fix.
 | `npm run test:security`, twice | 65 tests: 59 pass and 6 are the expected failures (SECURITY.md), none unexpected, none flaky, 5.2 min each; the flood test admitted 454 and 443 of its 15,000 messages, by 0.58 and 0.62 s, and let 111 and 113 of its 5,000 note creates through, in 2.14 and 2.19 s |
 | `npx playwright test -c test/parity/playwright.config.ts` | 9 of 9, 9.0 min |
 
+### The uniqueness rule (lead decision F-1)
+
+**Why.** Two hardening rounds found 13 and then 7 ways for a stale edit, or an undo or redo case 2, to land on another
+copy of the same text when another program had changed the file, and each was fixed by one more placement heuristic
+(the both-sided anchors, the record rule). Each round also left a class that no byte tells apart: identical slides
+swapped or moved, an identical copy at the place of the author's deleted slide, a slide duplicated and its original
+deleted, identical divider slides. The lead's decision F-1 replaces telling copies apart with not choosing among them.
+
+**The rule.** When every change between the edit's version V (the field's version; for undo and redo, the version
+the write made) and the current file C is one of Blueline's own recorded writes, the run is carried exactly by their
+splices, as before. Otherwise another program changed the file, and the edit is written only when all of these hold
+(`packages/editor/src/place.ts`, `write-queue.ts`):
+
+- (a) beforeText is the decoded value of exactly one place in V and exactly one in C: one run, HTML text or a script
+  literal (a literal's shadow run too), and no shadow value. Text the page may show that Blueline never writes (the
+  `<title>`, an attribute value, a `<template>`'s text, a number in a script) counts as a copy, as the matcher counts
+  copies (D-a). It must also be in at most one place in every version another program made in between (the run's
+  value at that version).
+- (b) The run, carried along what happened (Blueline's own writes exactly; each other program's change placed by this
+  same rule, with the run's value at that step, between the two versions around it) or, when the queue does not hold
+  the versions around those changes (or more than 3 lie between) and Blueline wrote nothing in that time, mapped
+  through one diff of V to C, lands exactly on that one run of C, of the same kind, with no change over it.
+- (c) The checks that only turn writes into notes do not object: the text on both sides of the place (`anchors.ts`),
+  the wait for a program still writing the deck, and the trust check at the write.
+
+Anything else is a verbatim note: `ambiguous` when the text is in more than one place in V or in C, `stale` when it
+is in one place and the mapping or the anchors fail. A carry that a step refuses is a note; it is never placed again
+by one diff over the whole span, which cannot see a copy the queue saw on the way. Undo and redo case 2 follow the same
+rule for the run that holds the text they replace (its value in one place in the version the write made, in C and in
+every version another program made in between, the place in that run at the same offset), and the needle (prefix,
+rawAfter, suffix) must still occur once in C, exactly there; otherwise case 3. A picked candidate follows the rule on
+its run's value.
+
+Whether another program changed the file is judged by what happened, in order, not by the bytes: the queue keeps a
+log of what the file became (`write-queue.ts`, `log`): each version it read, each of its own writes, and each version
+main read itself (main tells the queue the version it opened and every external change it takes from the watcher,
+`know` with `onDisk`; `EditLane.attach` and `takeExternal`). A stale edit is carried along that log from where the
+file was V when its client began to hold it (the oldest hold of V that main has not let go: main holds a version while
+a page shows it and while a field is open on it) to C; an undo or redo from the entry that made the write (the write
+itself, or a redo or undo of it in case 1). Every change in that span counts, even when the bytes came back to V, when
+the queue never read a version in it, or when Blueline's own write later made the same bytes again. Without that, a
+slide duplicated and its original deleted left the very bytes of V, or a route of own writes, and the edit was carried
+onto the copy. Undo case 1 (the hash says the file is the version the write made) follows the rule too when another
+program's change came and went in between.
+
+**What went.** The record rule (`records.ts`, the second hardening round's rule 3) and the repair's rule 2 (copies the
+other program added) decided only among copies; under (a) there is never more than one, so both are removed with their
+parse5 and acorn parses (a stale edit no longer parses both versions). `planUndo` no longer has its own diff path:
+case 2 needs the queue's carried place. The anchors stay, as clause (c): with the text in one place, a minimal diff can
+still line the author's run up with a run another program changed to hold its text (a list item deleted and the one
+before it set to the same value), and both sides tell those apart.
+
+**Tests.** `test/unit/editor/queue-unique.test.ts` (30 cases): each clause, shadow values as copies, HTML text against
+a script literal, picked candidates, own writes only (copies or not), the byte-identical classes (identical slides
+swapped and moved, the author's slide deleted while an identical one stands at its place, identical dividers, a slide
+duplicated and its original deleted with the queue reading the deck in between, the same with the bytes coming back,
+and with a field held open across it), undo and redo (case 2 and the formerly accepted twins, case 1 after a change
+that came and went), and a restore in between; 16 of the 30 fail on the editor of commit c8e2445 (written there, or
+another note code), the rest are controls that pass on both. Every regression test of both hardening rounds still
+passes; the ones that asserted a WRITE among copies under another program's change now assert the note, each with a
+control whose text is in one place so the intent (placed by position, carried through own writes, the version held)
+is still tested:
+
+- `write-queue.test.ts`: two copies of "Owner" with a change far away (both copies were written); copies with
+  different context (written); a literal whose text a `<template>` added also shows (a shadow value; written). Two
+  code checks are `stale` now, not `ambiguous`: the text in one place with a change next to it, and a run rewritten
+  while its text stands elsewhere once.
+- `queue-phase2.test.ts`: a version told with `know` placed by position (the copies of "Owner" are a note; the case is
+  kept with unique text); the fixture undo test (a redo across another program's change of a title-slide heading that
+  is also the `<title>`, a shadow value, is case 3 now); the refusal-code test gains an `ambiguous` case.
+- `queue-stale-anchors.test.ts`: "what is still written" (two "Key takeaways" slides with a change far away, and a
+  slide inserted far before: written into the right copy) and the undo case 2 control (the edit made the heading
+  equal its twin's); the three "own writes and another program's change" tests run with the text in one place
+  (written) and in two (a note).
+- `queue-stale-copies.test.ts`: a change two slides away, the same words pasted into a new paragraph, the two list
+  copies with an unrelated change; the model fuzz now mixes shared and own headings and fails on any write among copies
+  (1,500 seeds per id mode).
+- `queue-stale-position.test.ts`: either copy written after a far change; the pin and diff-timeout tests use text in
+  one place (their subject is the pin and the time limit, not copies).
+- `queue-stale-round2.test.ts`: its three controls (a slide appended; a card with the same label inserted below; an own
+  write elsewhere and a far change) wrote into one of two copies; each is a note now, with a one-place control.
+- `test/unit/app/edit-lane-pins.edit.test.ts`: "9 external saves elsewhere" wrote card one's "Owner" while card two
+  also said "Owner"; it now runs with card two saying "Lead" (written) and "Owner" (a note).
+- `test/unit/editor/fuzz.test.ts` (the Node fuzz): an undo case 2 refused far from the change is allowed when the text
+  is in more than one place.
+
+**The attack suites, re-run at full size** on the final editor (a snapshot of `packages/core` and `packages/editor`,
+the attackers' scripts unchanged; before: the second round's final runs on commit c8e2445's editor):
+
+| Suite | Before (wrong writes) | After |
+|---|---|---|
+| Round 1, structural model fuzz (20,000 seeds, 18,210 cases) | 1 (seed 11375), and 3 writes the fuzz accepts as twins; 3,128 written | **1** (seed 11375, below); 447 written, 17,762 notes |
+| Round 1, table and list fuzz (6,000 seeds) | 0; 457 written | 0; 0 written (every case has the cell text in several places) |
+| Round 1, literal model fuzz (1,000 seeds × 15 formats) | 0; 669 written | 0; 117 written |
+| Round 1, the repro tests (structural, literals, timing) | 2 (E4n, two identical records) | 0; nothing written (156 notes; `b9-w4` runs without its trace helper, which no longer loads, as before) |
+| Round 1, timing sequence fuzz (4,000 × 14 steps) | 53 edits + 8 undos into another slide | 43 edits + 9 undos (below: the file never changed) |
+| Round 2, anchors sequence fuzz (11,000 sequences, 4 variants) | 48 | 22 (below: no change the queue saw) |
+| Round 2, biased undo fuzz (3,000 seeds) | 0 (2,677 refused) | 0 (2,677 refused) |
+| Round 2, random undo fuzz (4,000 seeds) | 6 | 5 (below: case 1, the file never changed) |
+| Round 2, tools (Jinja2, BeautifulSoup, grid, formatters, sed, git, agent, marp, pandoc, exposure) | marp's 4 identical dividers | 0; nothing written (2,708 notes): every target is a text in several places; the half-written file still refuses the edit, the undo and the redo |
+| Round 2, decks p4 (new element, 6,564 cases) | 40 (exact copies) | **0**; 6,564 notes |
+| Round 2, decks c1, c2, u1, s1 | 0 | 0 in all 47,993 cases; no write changed a byte outside the typed run and no note changed the file |
+
+What is left is outside any rule on the file:
+
+- **The file never changed.** In the timing sequence fuzz (43 edits, 9 undos and redos), the anchors fuzz (22) and
+  the random undo fuzz (5), every remaining write happened where the other program's changes left the bytes exactly as
+  they were: two identical slides swapped or moved, or a slide duplicated and its original deleted in the same save.
+  The queue read the same hash (or, between two versions it saw, only Blueline's own writes), so to Blueline nothing
+  changed; the write lands on the bytes the author typed in, which are byte for byte the bytes it would land on had
+  the other program done nothing. Traced case by case (`classify.txt` in the run folders): same version, undo case 1,
+  or a route of own writes, each with no change by another program seen since the version was held or the write made.
+  With the page held from the start as main holds it (the anchors fuzz's own harness does not hold the first page),
+  15 such cases remain, all of the same kind.
+- **Structural seed 11375.** One save deletes the author's slide and inserts a byte-identical slide at the same
+  place, while it also changes another slide. The author's slide's bytes and everything around them are unchanged,
+  the text is in one place before and after, and the diff maps the run onto itself: all three clauses hold and the
+  edit is written where the author typed, which no reading of the bytes can tell from the other slide.
+
+**The cost.** Every stale edit, undo or redo of text that is in more than one place is a note once another program has
+changed the file, however far away, and so is text equal to a shadow value (on the committed decks 61 of 673 editable
+runs whose text is in one run are also a shadow value, 49 of them an attribute and 11 the `<title>`; on D1–D12 420 of
+8,326, 360 of them attributes).
+
+- Node fuzz (`test/unit/editor/fuzz.test.ts`, the same seed): 831 written of 1,200 (69.3%) where it wrote 912
+  (76.0%); stale-version edits 49 of 127 written where 85 of 121 were; undo case 2 177 restored and 6 refused by
+  rule, where 180 and 5 were; 0 failures. Without the shadow-value clause (a measurement build only) it writes 836.
+- Chromium fuzz gate on the committed decks (`node scripts/fuzz.mjs --committed`, the same seed and 1,000 edits):
+  891 written (89.1%) where the second round's final run wrote 894, 83 notes by rule where it had 81 (6 `ambiguous` and
+  10 `stale` where it had 10 `ambiguous`), 26 no-ops (25), **0 failures**, every written edit probed (891; 0 on its own,
+  0 unprobed); stale-version requests 61 of 71 written where 69 of 78 were. 983 of the 1,000 edits have the outcome they
+  had; 8 written edits are notes now and, as the seed's later draws shift, 6 notes are written and 3 edits move between
+  written and no-op. 19 min, beside two campaign processes (`scripts/fuzz.mjs`'s `fuzz.json`).
+- On copies of Josh's decks, case for case against the second round's final runs (every target of c1, c2, u1 and s1
+  is a text in several places, chosen to be): c1 writes none of its 17,091 stale edits (7,128 before), c2 none of its
+  5,507 (758), and the own-write sequences s1 none of 3,229 (1,498). The undo and redo campaign u1 still does 4,798 of
+  its 10,830 undos (4,880 before: after the author's edit the run's text is usually in one place) and none of its 11,336
+  redos (2,416 before: a redo puts back text that is in several places). The new-element campaign p4 makes all 6,564
+  cases notes, where 40 were written into the copy. No case of any campaign wrote into another copy.
+- The attackers' fuzzers, built to put another program's change near repeated text, write far less: the structural
+  fuzz 447 of 18,210 cases (3,128 before), the literal fuzz 117 (669), the table fuzz none (457), the sequence fuzzes'
+  edits 27,108 of 45,568 (32,055 of 44,725) and 8,273 of 18,188 (10,234 of 18,163, variant A).
+
+**Suites.** `npx vitest run`: 114 files, 2,169 tests, all pass, 95 s (the Node fuzz among them, above); `vitest -c
+test/fuzz/vitest.config.mts`: 55 tests pass; `npx tsc -p tsconfig.json --noEmit` and `tsconfig.reader.json`: 0 errors;
+`npm run build`: exit 0 (`dist/editor.cjs` holds no record rule); `npx playwright test -c test/e2e/playwright.config.ts
+test/e2e/edit-`: the 16 `edit-*.spec.ts` files, 116 tests, all pass, 3.7 min (the concurrency gate's inserted-element
+and duplicated-text cases are notes, as they were since the first hardening round's anchors); `npm run test:security`:
+65 tests, 59 pass and 6 are the expected failures (SECURITY.md), none unexpected, 5.1 min. Logs, run folders (with
+`classify.txt` for each remaining case) and the snapshot the suites ran on are in the build's scratch folder, not
+committed; the editor in the tree is that snapshot's, comments aside.
+
+### The uniqueness rule, attacked (the third round)
+
+An attacker (the built app and the queue) and a reviewer (the code and the docs) went at the first F-1 implementation
+(the tree above). They found nine ways to a write the rule forbids, from five causes; each is fixed at its cause, with
+a regression test that fails on that tree and passes now. When in doubt the rule wins: a note.
+
+1. **Main's sightings were not changes** (the attack's findings 1 and 2, the review's C4). The queue judged "another
+   program changed the file" only from the versions it read itself; main takes every external save from the watcher
+   (`EditLane.takeExternal`) and told the queue with `know`, which counted for nothing. In the built app a field held
+   open while another program duplicated the author's slide and then deleted the original (two saves the watcher
+   took) was written into the copy; with two identical dividers, one deleted and an identical one put back, the edit
+   was written into one of two copies, against F-1's letter (text in two places in V and C); and Cmd+Z after either
+   said "Undone". The attack's app-mode sequence fuzz (each external save told as main tells it) found 35 writes among
+   copies in 4,000 sequences, 213 with reverts. **Fix:** main tells the queue every version it reads from the file,
+   at open and from the watcher, a deck that is not UTF-8 too (`know(…, { onDisk: true })`), and the queue keeps one
+   log, in order, of what the file became (`write-queue.ts` `log`): the versions it read, its own writes, and main's
+   sightings. A version that is not the one seen last and that the queue did not write is another program's change.
+2. **One diff over the whole span skipped the copies seen on the way** (finding 3, C1). With more than 3 changes by
+   another program between V and C, or with V not where the queue saw the file, one diff placed the edit checking V and
+   C only: a slide duplicated (read), two saves far away (read) and the original deleted wrote into the copy, where one
+   save far away gave a note. **Fix:** that path needs the text in at most one place in every version another program
+   made in the span too (`onTheWay`); each log entry keeps the texts in more than one place in its version (`copies`,
+   a small set), so the check holds after the version itself was evicted.
+3. **An undo was timed by its bytes** (finding 4, C2). An undo's "since when" was when any own write last made the
+   bytes its write made: an own edit elsewhere and its undo, a redo cycle, the undo of a later write (plain Cmd+Z
+   order), or the author fixing a far heading back, moved it past another program's change, and an evicted version
+   met again took the time of that meeting. Case 1 was then written into a copy, and case 2 with the text in two places
+   in the version the write made and now (F-1's letter). **Fix:** an undo or redo is carried along the log from the
+   entry that made the write (the write itself, or a redo or undo of it in case 1; `lastMade`), never from when the
+   bytes were last made; when another program changed the file in that span, case 1 by the hash follows case 2's rules
+   (`planUndo` `byHash: false`).
+4. **beforeText instead of the run's value on the way** (C3). The versions another program made were checked for
+   beforeText, which missed copies of the run's value when Blueline's own writes had renamed it in between (two fields
+   on one run). **Fix:** the carry walks the log in order, so each other program's change is placed with the run's
+   value at that step.
+5. **A `</html>` that is not the end** (the attack's finding 5). The wait for a program writing the deck in place took a
+   prefix that stopped right after a `</html>` inside an iframe's `srcdoc`, a script string or a comment for a whole
+   deck: in the built app the edit was written on 886 of 1,764 bytes and the rest of the other program's output was
+   lost. **Fix:** a deck ends whole when only white space and comments follow the last `</html>` that the HTML
+   parser reads as an end tag, not as text in an attribute value, a script or a comment (`endsWhole`), parsed once
+   per version (an own splice keeps its parent's answer).
+
+**What the log replaces.** The route search over recorded steps (`chain`: the shortest route, newest step first), the
+time stamps on byte-versions (`madeAt`, `toldAt`, `ownAt`), `foreignLog`, `foreignSince`, `CHAIN_MAX` and `STEPS_KEPT`
+are gone. The carry walks what happened, in order (`carryAlong`), so it can no longer take an own step for another
+program's change that made the same bytes, skip a version on the way, or start an undo from the wrong write. A stale
+edit starts where the file was V when its client began to hold it (`startOf`: the last entry of V at or before the
+oldest pin of V); a version no client pins (main pins every version a page or field holds) is taken to have been held
+since the queue first met it, the earliest time, as nothing says otherwise.
+
+**Found on the way.** The Node fuzz's random stream shifted with the queue's outcomes and reached a `<pre>` whose text
+follows the dropped leading newline: an edit that made it start with a space was planned, and verify refused it
+(parse5 starts the text node at the newline when white space follows it). `plan.ts` now refuses that by rule
+(`escape`), as it did the character-reference case; nothing was ever written.
+
+**Tests.** `test/unit/editor/queue-unique-log.test.ts` (25 cases: main's sightings, with the dup-and-delete,
+identical-divider, undo and not-UTF-8 cases; the whole-span path with 1, 2, 3 and 6 saves far away and a version told
+only with `know`; undo after an own edit and its undo, a redo cycle, the plain Cmd+Z order, a fixed far heading, an
+evicted version; the run's value on the way; the nested `</html>` in a srcdoc, a script and a comment, and
+`endsWhole`'s cases; with controls): 21 fail on the first F-1 tree, the 4 controls pass on both.
+`test/unit/app/edit-lane-sightings.edit.test.ts` (7 cases through main's real wiring: a `BlDocument` on a real file,
+`EditLane.takeExternal`, `EditSession` commits and `appUndo`): the 5 bug cases fail on the first F-1 tree, the 2
+controls pass on both. `queue-stale-position.test.ts` now tells the queue its external saves as main does
+(`onDisk`). The attack's and the review's repros, with main's calls as main makes them now: every one a note, "Can't
+undo in place" or a `conflict`; the implementer's 30 `queue-unique` cases with main's call in place of the queue's
+reads: 30 pass (5 failed before).
+
+**The re-runs**, at full size, on the fixed editor (a snapshot of `packages/core` and `packages/editor` equal to the
+tree; the attackers' scripts unchanged, except that this round's app-mode harness tells external saves to the queue as
+main now does), against the first F-1 tree's runs above:
+
+| Suite | First F-1 tree (wrong writes) | Fixed |
+|---|---|---|
+| This round, built app (`e1-dup-delete`, `e2-copies-back`, `e3-cut-srcdoc`: 7 tests) | 7 (written into the copy, among copies, "Undone", half a deck lost) | **0**: 5 notes or "Can't undo in place"; the half-written deck waited for, then the edit written on the whole deck, nothing lost |
+| This round, queue repros (attack 21, review 17) | 9 kinds of write the rule forbids | 0: notes, case 3 or `conflict`; 12 far saves with the bytes back is written now (it was an `ambiguous` note with no copy anywhere) |
+| This round, app-mode sequence fuzz (4,000 × 16 steps; every external save told as main tells it) | 35 writes among copies after another program's change (213 with reverts) | **0** (0); identity: 5 writes on a byte-identical twin; with reverts 5 and one where two identical slides were swapped and an own write then changed one (seed 1740) |
+| Round 1, structural model fuzz (20,000 seeds) | 1 (seed 11375) | 1 (seed 11375, unchanged: one save replaced the author's slide by a byte-identical one at its place, above); 447 written |
+| Round 1, table, literal fuzz, repro tests | 0 | 0; 0, 117 and 0 written |
+| Round 1, timing sequence fuzz (4,000 × 14) | 43 edits + 9 undos | 42 edits + 9 undos and redos |
+| Round 2, anchors sequence fuzz (11,000 sequences, 4 variants) | 22 | 14 |
+| Round 2, biased and random undo fuzz | 0 and 5 | 0 (2,677 refused) and 5 |
+| Round 2, tools (Jinja2, BeautifulSoup, grid, formatters, sed, git, agent, marp, pandoc, exposure) | 0; nothing written | 0; nothing written, the same 971 notes; the half-written file still refuses the edit, the undo and the redo |
+| Round 2, decks p4, c1, c2, u1, s1 (copies of D1–D12) | 0 | 0 in all 54,557 cases, each with the outcome it had on the first F-1 tree: no stale edit of repeated text written, 4,798 of 10,830 undos done (5 undos on D5 and D11 whose diff ran out of time while the fuzz gate ran beside them were case 3, and were undone as before when run again alone) |
+
+Every write left in the sequence fuzzes (this round's three, the timing fuzz, the anchors fuzz, the undo fuzz) was
+traced (`classify.txt` in the run folders): the span the queue carried had no change by another program in it, own
+writes only or nothing; the other program's changes left the bytes exactly as Blueline last saw them (identical slides
+swapped or moved), so to Blueline nothing changed. This round's fuzz without main's sightings (the queue reading 60% of
+the external saves, as no app does) still writes 36 times among copies after a change it never saw (317 on the first
+F-1 tree), the same class.
+
+**The cost.** The Node fuzz (`test/unit/editor/fuzz.test.ts`, the same seed; its stream follows the outcomes) writes
+818 of 1,200 edits (68.2%; 831 on the first F-1 tree), stale-version edits 55 of 129 (49 of 127), undo case 2 168 with
+7 refused by rule (177 and 6), 0 failures. The Chromium fuzz gate on the committed decks (`node scripts/fuzz.mjs
+--committed`, the same seed and 1,000 edits): 891 written, 83 notes by rule (6 `ambiguous`, 10 `stale`), 26 no-ops,
+**0 failures**, all 891 written edits probed, the same totals as on the first F-1 tree (18 min, beside two campaign
+processes). In the attackers' sequence fuzzes the own writes from a "fresh page" are notes more often (seq2-A: 1,374
+of 11,114, 118 before): that page tells its version without a pin, which now counts from when the queue first met
+those bytes; main pins every page and field, so the app never meets it.
+
+**Suites** (the final tree): `npx vitest run`: 116 files, 2,202 tests, all pass, 99 s (the Node fuzz among them);
+`vitest -c test/fuzz/vitest.config.mts`: 55 pass; `npx tsc -p tsconfig.json --noEmit` and `tsconfig.reader.json`: 0
+errors; `npm run build`: exit 0; `npx playwright test -c test/e2e/playwright.config.ts test/e2e/edit-`: the 16
+`edit-*.spec.ts` files, 116 tests, all pass, 4.1 min; the security suite: 65 tests, 59 pass and 6 are the expected
+failures (SECURITY.md), none unexpected, 5.5 min; this round's three built-app attack specs: 7 of 7 pass. Logs, run
+folders (with `classify.txt`) and the snapshot the suites ran on are in the build's scratch folder, not committed.
+
+### The uniqueness rule's final runs
+
+Linux, Electron 44.7.2, 2026-10-22, on the tree with every fix of the third round (commit 1554149 and the round's
+changes on top of it), from a clean build (`rm -rf packages/app/dist packages/cli/dist`, `npm run build:reader-only`,
+`npm run build`), each suite in turn and the two fuzz runs side by side; logs and reports in
+`test-results/p2-unique-final/` (not committed; `tree.txt` fingerprints the tree, Markdown aside, and `tree-after.txt`
+is the same). The exit-gate table at the top of this page gives these runs. No run needed a fix; the one failure, on
+D11 (below), was traced to its cause.
+
+| Suite | Result (`test-results/p2-unique-final/`) |
+|---|---|
+| `npm run build:reader-only`, then `npm run build` | both exit 0: no `dist/editor.cjs` after the first, `dist/editor.cjs` after the second |
+| `npx tsc -p tsconfig.json --noEmit` | 0 errors; `tsconfig.reader.json` too |
+| `npx vitest run` | 116 files, 2,202 tests, all pass, 81 s; the Node fuzz among them: 1,200 edits over 44 documents, 818 written (68.2%), 338 notes by rule (28.2%), 44 no-ops (3.7%), **0 failures**; 55 of its 129 stale-version edits written; 75 picked candidates, 55 written; undo case 2 168 restored and 7 refused by rule (as in the third round's run) |
+| `vitest -c test/fuzz/vitest.config.mts` and `-c test/parity/vitest.config.mts` | 55 and 37 tests pass, 4 files each |
+| `node scripts/fuzz-selftest.mjs` | all 14 cases as expected: the 11 it must fail fail, the 3 it must pass pass |
+| `node packages/cli/dist/blueline.cjs check --auto` | 6 of 6 PASS |
+| `npm run package:smoke` | 17 of 17 PASS, 0 FAIL |
+| `node scripts/fuzz.mjs --committed` (the gate) | exit 0: 1,000 edits over the 47 UTF-8 committed decks, 891 written (89.1%), 83 notes by rule (8.3%: markup 33, escape 28, `stale` 10, `ambiguous` 6, placeholder 3, commitField 3), 26 no-ops (2.6%), **0 failures**, 891 probed in 163 probe loads (0 on their own, 0 unprobed); 71 stale-version requests, 61 written; 52 external writes just before an edit and 35 inside the atomic write (all 35 landed before the re-hash), the external change kept every time; 217 written edits undone and redone byte for byte; the same 1,000 records as the first F-1 tree's run and the third round's; 18 min (1,086 s; `fuzz.json`) |
+| `node scripts/fuzz.mjs --local` (the extra run) | **exit 1**: 1,000 edits over D1–D12, 879 written: 878 passed (87.8%), 1 failed the probe; 92 notes by rule (9.2%: `ambiguous` 36, escape 33, markup 8, commitField 12, placeholder 2, a pick that could not be lifted 1), 29 no-ops (2.9%); **1 failure**, D11 edit 869, the probe's reach on D11's marquee (below), not a wrong write and not a pass; 879 probed in 49 probe loads (2 on their own: a D5 edit, which passed, and the failure), 0 unprobed; 98 stale-version requests, 83 written; 66 picked candidates, 58 written; 33 external writes just before an edit and 36 inside the atomic write (34 landed), the external change kept every time; 28 min (1,683 s; `fuzz-local.json`) |
+| `npm run test:reader-only` | **PASSED** in 1,015 s: vitest 96 files, 1,896 tests; the E2E suite without `@edit`, 173 tests (1 the note-card ordering limit, an expected failure), 13.0 min; the security suite without `@edit`, 57 tests (the 6 known limits, expected failures), 3.4 min |
+| `npm run test:e2e`, three times | 316 tests, as after the second round: in each run 315 pass and 1 is the expected failure (the note-card ordering limit), none unexpected, none flaky, none skipped; 17.9, 17.8 and 17.7 min. The concurrency spec's 7 tests pass in each run: the unrelated change, the change while the field stays open and the write inside the atomic write land on the heading with the external change kept; the same text rewritten, the element inserted before the heading and both duplicated-text cases are verbatim notes |
+| `npm run test:security`, twice | 65 tests: 59 pass and 6 are the expected failures (SECURITY.md), none unexpected, none flaky, 5.1 min each; the flood test admitted 408 and 452 of its 15,000 messages, by 0.56 and 0.57 s, and let 112 and 111 of its 5,000 note creates through, in 2.12 and 2.13 s |
+| `npx playwright test -c test/parity/playwright.config.ts` | 9 of 9, 8.9 min |
+
+**The fuzz gate on Josh's decks under the rule.** This is the rule's first run there. Against the second round's final
+run of the same seed (`test-results/p2-harden2-final/fuzz-local.json`: 913 written and passed, 58 notes by rule with 1
+`ambiguous`, 28 no-ops, 1 failure on D5's ticker), 770 of the 1,000 records are the same. In ten decks the records are
+the same up to the first edit the rule made an `ambiguous` note (written then, on its run: repeated text after another
+program's change), and the deck's later draws differ from there; D6's records are the same throughout, and D5's differ
+from its first edit (332) on, as in every run: its ticker changes what its walks see (411 exact nodes then, 415 now).
+The 36 `ambiguous` notes are the rule's cost: each is text in more than one place after another program changed the
+deck, 11 stale-version requests, 16 edits after one of the fuzz's external writes (6 just before the edit, 10 inside
+its atomic write) and 9 later edits of a round in which an earlier edit's external write had changed the deck. Written
+per deck, then and now: D1 83 and 80, D2 79 and 75, D3 68 and 68, D4 71 and 64, D5 70 and 69, D6 75 and 75, D7 65 and
+63, D8 76 and 77, D9 82 and 76, D10 79 and 76, D11 86 and 78 (and the failure), D12 79 and 77. Every written edit
+landed on the run it was made on.
+
+**D11's failure.** The run the edit wrote is a `<span>` in the first track of the marquee on D11's cover slide (its
+closing slide has another), a CSS animation that the deck does not stop for reduced motion: the same kind as D5's
+ticker. Probed on its own (the walk after its round did not show the node), the node held exactly the new text and its
+sentinel, laid out, but the track had carried it out of the viewport at every stop of its slide. Every check of the
+bytes passed. No D11 edit was probed on its own in the second round's run; the rule's notes shift D11's draws from
+edit 825 on, and this one, in round 3, was. It is the limit the lead accepted for D5's ticker (Open issues), counted
+here as a failure, not as a pass. Run alone (`node scripts/fuzz.mjs --decks D11 --edits 91`, the same seed), D11 gives
+the same 91 outcomes, this failure included (the same run, written exactly, out of view at every stop), in 126 s.
+
 ### The final runs
 
 Linux, Electron 44.7.2, 2026-10-21, on the tree with every fix of the review and of the repair in it (commit 9a735aa,
@@ -516,8 +847,8 @@ Known after the final runs; none is a write to the wrong place or a lost change.
   reload, on the slide.
 - **A PDF whose document closes between two stages of its job** (after one stage ends, before the next asks for a
   renderer) ends as `RenderCancelled` in a unit test only: in the stressed E2E runs every close landed on a busy view.
-- **Real use has not started** (the fourth criterion): it needs the Mac build. The checklist is below and in the
-  README.
+- **Real use is pending** (the fourth criterion): Phase 2 is ready for it, and it needs the Mac build (README,
+  Status, names the commit to build). The checklist is below and in the README.
 - **The caret can land in text Blueline cannot place.** A label whose element also holds an unmapped glyph (D3): End
   puts the caret after the glyph, and what is typed there lands outside every run, so it becomes a verbatim note by
   rule (the toast says so). Correct by rule, surprising in use.
@@ -527,19 +858,37 @@ Known after the final runs; none is a write to the wrong place or a lost change.
   confirming it. It becomes a verbatim note when its text is in two places (a shadow value, such as the `<title>` or
   an attribute, counts), a change overlaps its run or comes within its anchors (at least 128 characters on each side),
   its version is no longer known, or the diff runs past its time limit. So a page left open while another program
-  changes the deck gives a note for any repeated text, however far the change: worth watching in real use. The
-  numbers before the hardening rounds (Josh's decks: 105 stale-version requests, 98 written) are in Results, below;
-  the rounds' and F-1's are in their sections above.
+  changes the deck gives a note for any repeated text, however far the change: worth watching in real use (the fuzz on
+  Josh's decks: 36 `ambiguous` notes in 1,000 edits, where the second round's run had 1; "The uniqueness rule's final
+  runs"). The numbers before the hardening rounds (Josh's decks: 105 stale-version requests, 98 written) are in
+  Results, below; the rounds' and F-1's are in their sections above.
 - **`<pre>`, `<listing>` and `<textarea>` with a character reference right after the dropped leading newline**:
   parse5 8 places the text node late, so the mapper leaves the run unaligned (not editable) and the queue refuses to
-  create that state (core-edit). A mapper fix would make such runs editable.
-- **The run on Josh's decks fails on D5's ticker by chance, and the final run did.** An edit to an item of D5's CSS
-  marquee, probed on its own, holds exactly the new text and its sentinel but can be out of view at every stop, and
-  then fails (Limits, below). In the final run 2 of the 3 D5 edits probed on their own failed this way (edits 348 and
-  368), so that run exits 1; the repair's and the review's runs of the same seed passed by chance. Both hardening
-  rounds' final runs failed on one D5 edit each, the same way (edit 336 in the first, 360 in the second). It is a property
-  of the method, not a wrong write, and it needs the lead's decision. Options: accept it as a known limit, pass such
-  a node on its text and sentinel (counted apart), or pause animations for the probe's loads.
+  create that state (core-edit). A mapper fix would make such runs editable. Likewise parse5 starts the text node at
+  the dropped newline itself when white space follows it, and after it otherwise, so an edit that changes whether the
+  text after that newline starts with white space is refused by rule (`escape`; the third F-1 round, where the Node
+  fuzz reached it once its random stream shifted: verify had caught it, so nothing was written).
+- **Left by the third F-1 round, for the lead.** (1) Shadow values count as copies for an HTML run too, where the
+  matcher applies them to a lone literal only: a heading equal to the `<title>`, a caption equal to an image's `alt`,
+  button text equal to its `aria-label` is a note after any change by another program (61 of 673 editable runs on the
+  committed decks, 420 of 8,326 on D1–D12; F-1's "treating shadow values as copies, as the matcher does" reads either
+  way). (2) A literal equal to a JSON key: keys are a matcher ambiguity reason, not shadow values, so an equal pick of
+  it is written after a far change, into the literal the author picked. (3) Before F-1 and unchanged: when the atomic
+  write rejects after its rename and the read-back read itself fails, the commit is an `internal` note although the
+  file holds the edit (no record joins the undo stack). None writes into another copy.
+- **The probe's reach on a CSS marquee: a known limit, accepted by the lead.** An edit to an item of a deck's CSS
+  marquee, probed on its own (the walk after its round did not show its node), holds exactly the new text and its
+  sentinel but can be out of view at every stop, and then fails (Limits, below). The lead accepted this for D5's
+  ticker as a documented known limit of the probe's reach (2026-10-22): such a failure is reported as that limit,
+  never counted as a pass, and it is not a wrong write (every check of the bytes passed). The run on Josh's decks
+  therefore exits 1 whenever it probes such an item on its own and the track is elsewhere at every stop: the
+  measurement step's final run on 2 D5 edits (348 and 368), both hardening rounds' final runs on one D5 edit each
+  (336, 360); the repair's and the review's runs passed by chance. The uniqueness rule's final run failed on one
+  **D11** edit (869) instead, and its one D5 edit probed on its own passed: D11's cover and closing slides carry a
+  marquee of the same kind (a CSS animation that moves the track and that the deck does not stop for reduced motion),
+  which none of the earlier runs kept in `test-results/` had probed on its own. It is the same limit on another deck,
+  and the lead's acceptance covers it: any CSS marquee or ticker the deck keeps moving under reduced motion, on any
+  deck (D5's ticker, D11's cover and closing marquees), is the probe's reach limit, reported as such, never as a pass.
 - **Linux tested no marker copy**: the atomic writer copies no extended attributes on Linux, so neither the fuzz nor
   the E2E suite exercised the marker copy of a write, and history snapshots on Linux carry no marker. Recheck on the
   Mac (below).
@@ -838,7 +1187,8 @@ every check of the oracle (the exact splice in its run, the re-map, no new parse
 redo byte for byte), and on the probe's load its node held exactly the new text and the sentinel, laid out, but D5's
 ticker (a CSS marquee on the cover and closing slides) had carried it out of the viewport at every stop. The rule
 since the review (E-12) is that an edit no stop shows fails; whether to pass such a node on its text and sentinel, or
-pause animations for the probe's loads, is still the lead's decision. The repair's run of the same seed probed no
+pause animations for the probe's loads, was then the lead's decision (since accepted as a known limit of the probe's
+reach, reported as such and not as a pass: Open issues). The repair's run of the same seed probed no
 D5 edit on its own and the review's final run one (it passed), so those runs passed by chance where this one did
 not.
 
@@ -925,8 +1275,9 @@ page has it, and the probe.
   fails or passes by where the ticker is at each stop: in runs of D5 alone with other seeds while the review's fixes
   were made, such items failed in some runs and not in others. The review's final run probed one D5 edit on its own
   (it passed) and the repair's none; the final run probed three and two of them failed this way, so the run on
-  Josh's decks exits 1 (Results: Josh's decks). Whether such a node should pass on its text and sentinel, or
-  animations be paused for the probe's loads, is open (Open issues).
+  Josh's decks exits 1 (Results: Josh's decks). The lead has since accepted this as a known limit of the probe's
+  reach (Open issues): such a failure is reported as that limit, not as a pass. D11's cover and closing slides carry a
+  marquee of the same kind, which the uniqueness rule's final run met (edit 869).
 - Every committed deck opens Trusted from the work folder; Protected view changes the served copy and the network,
   not the write path.
 
@@ -1178,8 +1529,14 @@ The gate: Josh finishes 3 real decks using only Edit for text changes (Mac build
   `test/e2e/ipc-legit-rates.spec.ts`, the polling `views-open.spec.ts` and the rewritten flood of
   `test/security/forged-ipc.spec.ts`.
 - The uniqueness rule's (F-1): `packages/editor/src/place.ts` (rewritten: `placesOf`, `runsHolding`, `placeStale`),
-  `write-queue.ts` (`carryRange`'s `foreign`, `holderOf`, `undoPlace`, `foreignLog`/`foreignSince`/`oneOnTheWay`, the
-  hold times), `undo.ts` (`planUndo` takes only the queue's place), `anchors.ts` (comment), `index.ts` (exports
+  `write-queue.ts` (`holderOf`, `undoPlace`; its `carryRange`, `foreignLog`/`foreignSince`/`oneOnTheWay` and hold
+  times gave way to the third round's log, below), `undo.ts` (`planUndo` takes only the queue's place), `anchors.ts` (comment), `index.ts` (exports
   `placesOf`, `runsHolding`); `test/unit/editor/queue-unique.test.ts`; and the tests it changed (`write-queue`,
   `queue-phase2`, `queue-stale-anchors`, `queue-stale-copies`, `queue-stale-position`, `queue-stale-round2`, `undo`
   and `fuzz` in `test/unit/editor/`, `edit-lane-pins` in `test/unit/app/`).
+- The uniqueness rule's third round: `packages/editor/src/write-queue.ts` (the log: `Seen`, `sawOnDisk`, `sawOwn`,
+  `startOf`, `lastMade`, `carryAlong`, `onTheWay`; `endsWhole` by the parser; `know` with `onDisk`), `place.ts`
+  (`copiesOf`), `undo.ts` (`planUndo` `byHash`), `plan.ts` (the `<pre>` white-space rule),
+  `packages/core/src/capabilities.ts` (`know`'s `onDisk`), `packages/app/src/main/edit-session.ts` (`attach` and
+  `takeExternal` tell the queue with `onDisk`, for every version); `test/unit/editor/queue-unique-log.test.ts`,
+  `test/unit/app/edit-lane-sightings.edit.test.ts`, and `queue-stale-position.test.ts` (main's call).

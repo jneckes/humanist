@@ -121,7 +121,7 @@ describe('the versions a client holds are pinned; an unknown version is a note (
       last = i === n ? agenda(i, 'Plan for today') : agenda(i, 'Agenda');
       io.external(last);
       const m = mapOf(last);
-      q.know(m.version, last, m); // takeExternal
+      q.know(m.version, last, m, { onDisk: true }); // takeExternal
     }
     const out = await q.edit({ version: m0.version, runId: target.id, beforeText: 'Agenda', afterText: 'Agenda Monday' });
     return { out, io, last };
@@ -157,7 +157,7 @@ describe('the versions a client holds are pinned; an unknown version is a note (
         const s = cards('Owners', 'Owner', i);
         io.external(s);
         const m = mapOf(s);
-        q.know(m.version, s, m);
+        q.know(m.version, s, m, { onDisk: true }); // takeExternal
       }
       const out = await q.edit({ version: v0.version, runId: first.id, beforeText: 'Owner', afterText: 'Owner/Lead' });
       expect(out, `n=${n}`).toMatchObject({ ok: false, code: 'ambiguous' });
@@ -176,7 +176,7 @@ describe('the versions a client holds are pinned; an unknown version is a note (
       const s = agenda(i, 'Plan');
       io.external(s);
       const m = mapOf(s);
-      q.know(m.version, s, m);
+      q.know(m.version, s, m, { onDisk: true }); // takeExternal
     };
     // #b's heading in one place, so a known version is placed by position and written (F-1).
     const req = { version: m0.version, runId: m0.runs.find((r) => r.value === 'Plan')!.id, beforeText: 'Plan', afterText: 'Plan Monday' };

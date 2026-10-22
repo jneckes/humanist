@@ -161,9 +161,21 @@ function planHtml(src: string, map: DeckMap, run: HtmlRun, before: string, after
   if (run.tagName === 'pre' || run.tagName === 'listing') {
     const newRaw = raw.slice(0, sp.start) + sp.text + raw.slice(sp.end);
     const inside = run.textOpts?.dropLeadingNewline === true && /^(?:\r\n|\r|\n)&/.test(newRaw);
-    const before = /^&/.test(newRaw) && />(?:\r\n|\r|\n)$/.test(src.slice(Math.max(0, run.start - 3), run.start));
+    const nlBefore = />(?:\r\n|\r|\n)$/.test(src.slice(Math.max(0, run.start - 3), run.start));
+    const before = /^&/.test(newRaw) && nlBefore;
     if ((inside || before) && !/^(?:\r\n|\r|\n)?&/.test(raw)) {
       return refuse('escape', 'html-text: a character reference right after the dropped newline of <pre> cannot be mapped (parse5)');
+    }
+    // parse5 8 also starts the text node at the dropped newline itself when white space follows it, and after it
+    // otherwise: an edit that changes whether the text after that newline starts with white space moves the run, so
+    // it cannot be mapped again either (verify would refuse it).
+    const nlInside = run.textOpts?.dropLeadingNewline === true && /^(?:\r\n|\r|\n)/.test(raw);
+    if (nlInside || nlBefore) {
+      const afterNewline = (r: string): string => (nlInside ? r.replace(/^(?:\r\n|\r|\n)/, '') : r);
+      const leadingSpace = (r: string): boolean => /^[ \t\n\r\f]/.test(afterNewline(r));
+      if (leadingSpace(raw) !== leadingSpace(newRaw)) {
+        return refuse('escape', 'html-text: white space right after the dropped newline of <pre> moves the text (parse5), so the edit cannot be mapped');
+      }
     }
   }
   return finish(src, run.start + sp.start, run.start + sp.end, sp.text, {

@@ -115,20 +115,21 @@ export function isWriteRecord(r: unknown): r is WriteRecord {
  *
  * Case 2 is placed by POSITION (lead decisions E-1 and F-1): text and its 32 characters of context alone never pick a
  * place. The write queue passes `opts.place`: the write's range carried from the version it made to the current one
- * through every change the queue saw since, Blueline's own later writes exactly, and, when another program changed
- * the file, only where the run that holds it is the one place of its text in the version the write made and now
+ * along everything the queue saw since, Blueline's own later writes exactly, and, when another program changed the
+ * file, only where the run that holds it is the one place of its text in the version the write made and now
  * (write-queue.ts undoPlace). Case 2 needs the needle's one place to be exactly that range; without a place
- * (absent or null) it is case 3.
+ * (absent or null) it is case 3. `opts.byHash: false`: another program changed the file since the write, so even
+ * when the bytes came back to versionAfter the hash says nothing (F-1): case 2's rules apply.
  */
 export function planUndo(
   src: string,
   record: WriteRecord,
   currentVersion: string,
-  opts: { place?: { start: number; end: number } | null } = {},
+  opts: { place?: { start: number; end: number } | null; byHash?: boolean } = {},
 ): UndoPlan | UndoRefusal {
   if (!isWriteRecord(record)) return { ok: false, why: 'not a write record', canMakeNote: false, code: 'refused' };
   const { start, rawBefore, rawAfter, prefix, suffix } = record;
-  if (currentVersion === record.versionAfter) {
+  if (currentVersion === record.versionAfter && opts.byHash !== false) {
     if (start + rawAfter.length <= src.length && src.slice(start, start + rawAfter.length) === rawAfter) {
       return { ok: true, case: 1, start, rawBefore: rawAfter, rawAfter: rawBefore };
     }

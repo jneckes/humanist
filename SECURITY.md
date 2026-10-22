@@ -226,8 +226,9 @@ one run of the version it shows, and only right after the user pressed a key or 
   surroundings, out past what made them unique and at least 128 characters, found nowhere else now
   (editor/anchors.ts). Text in two places is never placed across another program's change, so no copy is ever chosen
   among several; neither the text nor its 32 characters of context ever chooses. Undo and redo case 2 follow the same
-  rule for the run whose text they replace. Whether another program changed the file is judged by time: a change the
-  queue saw since the field opened (or the write landed) counts even when the bytes came back. A version the queue
+  rule for the run whose text they replace. Whether another program changed the file is judged by what happened, in
+  order: every version the queue read and every external change main took from the watcher since the field opened (or
+  the write landed) counts, even when the bytes came back. A version the queue
   does not hold, a diff that runs out of time, a change that overlaps the run, or a place the text around it does not
   confirm makes the commit a verbatim note. A deck that no longer ends as a whole document, when it
   did before (another program writing it in place), is waited for up to 5 s and otherwise not written: the commit is a
@@ -342,19 +343,21 @@ Known limits added by Phase 2:
   Blueline re-hashed the deck and before it renamed its temp file over it is lost. A write any time before the
   re-hash is caught, and Blueline's write is requeued on top of it.
 - **A program that writes the deck in place** (a shell redirect, Python's `open('w')`) and pauses mid-file: when the
-  deck ended as a whole document (`</html>`) and the file no longer does, Blueline reads it again for up to 5 s and
+  deck ended as a whole document (only white space and comments after its last `</html>` that the HTML parser reads
+  as an end tag; a `</html>` inside an attribute value such as an iframe's `srcdoc`, a script or a comment does not
+  count) and the file no longer does, Blueline reads it again for up to 5 s and
   otherwise writes nothing (the commit is a verbatim note, an undo or redo is refused). A deck that never ended so is
   not waited for, so such a writer's rest can still be lost; a version without its end that stands for 30 s is taken
   as the deck (the second hardening round).
-- **Changes no byte shows.** Across another program's change, text in two places is a verbatim note now (F-1), so
-  the copies the hardening rounds could not tell apart (two identical slides swapped or moved, the author's slide
-  deleted while an identical one stands at its place, a slide duplicated and its original deleted, identical divider
-  slides) are notes, not writes. What no rule on the file can see remains: a change by another program that leaves
-  the bytes Blueline reads exactly as they were (two identical slides swapped, a slide duplicated and its original
-  deleted in one save) is no change to Blueline, and an edit, undo or redo then lands on the bytes the author typed
-  in, which are byte for byte the same; and a save that deletes the author's slide and puts a byte-identical slide at
-  its place while changing something else reads as a save that left the slide alone, so the edit lands there
-  (docs/PHASE2-RESULTS.md, "The uniqueness rule").
+- **Changes no byte shows.** Across another program's change, text in two places is a verbatim note now (F-1), so the
+  copies the hardening rounds could not tell apart (two identical slides swapped or moved, the author's slide deleted
+  while an identical one stands at its place, a slide duplicated and its original deleted, identical divider slides)
+  are notes, not writes. What no rule on the file can see remains: a change by another program that leaves the bytes
+  exactly as Blueline last saw them (two identical slides swapped, a slide duplicated and its original deleted in one
+  save, or in saves closer together than the watcher's settle) is no change to Blueline, and an edit, undo or redo
+  then lands on the bytes the author typed in, which are byte for byte the same; and a save that deletes the author's
+  slide and puts a byte-identical slide at its place while changing something else reads as a save that left the slide
+  alone, so the edit lands there (docs/PHASE2-RESULTS.md, "The uniqueness rule").
 - **History snapshots on Linux** carry no marker (Linux has none), so a Protected document's snapshot opened
   directly from the history folder opens Trusted there, as an unmarked download does.
 
@@ -383,6 +386,11 @@ If this matters for a file, keep it closed, or open it with networking off for t
 
 Both are tracked as expected failures in `test/security/network.spec.ts`, so a fix shows up as a passing
 test. Details: `docs/PHASE0-FINDINGS.md`.
+
+On the Phase 2 tree that goes to real use (the uniqueness rule's final runs, 2026-10-22, from a clean build;
+docs/PHASE2-RESULTS.md) the suite ran twice: 65 tests each time, 59 pass and 6 are the expected failures, which are
+these two channels and the two file-drop limits above (What Phase 1 added) in both trust states; nothing unexpected,
+nothing flaky. The reader-only build's run of the suite without `@edit` (57 tests) has the same 6.
 
 ## Known limits of the note card
 

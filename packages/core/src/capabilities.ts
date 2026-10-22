@@ -71,12 +71,14 @@ export interface WriteQueue {
   /**
    * Tells the queue about a version a client holds (P2-3): its source and map, so a stale edit made on it can be
    * placed by position, through a diff from it to the current version (9.2 Write protocol step 2; lead decision
-   * E-1). Call it at open and after every external change main takes. `pin`: the version is held (a page shows it,
-   * a field is open on it, or its commit is unanswered) and is never evicted until unpin is called as many times
-   * (9.2 step 1: "Main keeps the map for each version a client still holds"). Synchronous; it never reads or writes
-   * the file.
+   * E-1). Call it with `onDisk` at open and after every external change main takes (main has just read that version
+   * from the file: the queue logs it as the file's content then, so a change it did not read itself still counts as
+   * another program's, lead decision F-1; call it so for a version that is not UTF-8 too). `pin`: the version is held
+   * (a page shows it, a field is open on it, or its commit is unanswered) and is never evicted until unpin is called
+   * as many times (9.2 step 1: "Main keeps the map for each version a client still holds"). Synchronous; it never
+   * reads or writes the file.
    */
-  know(version: string, src: string, map: DeckMap, opts?: { pin?: boolean }): void;
+  know(version: string, src: string, map: DeckMap, opts?: { pin?: boolean; onDisk?: boolean }): void;
   /** Releases one pin of `version` (know with `pin`); unknown or unpinned versions are ignored. */
   unpin(version: string): void;
   /** The map of the file as of the last read or write through this queue, after the operations queued before it. */
