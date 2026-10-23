@@ -37,7 +37,7 @@ describe('findApp', () => {
 
   it('development: an unbuilt app or missing Electron is explained', () => {
     expect(findApp(ctx({ files: ['/repo/packages/app/package.json'] }))).toMatchObject({ ok: false, error: expect.stringMatching(/npm run build/) });
-    expect(findApp(ctx({ files: DEV_FILES.slice(0, 2), resolveElectron: () => null }))).toMatchObject({ ok: false, error: expect.stringMatching(/npm install/) });
+    expect(findApp(ctx({ files: DEV_FILES.slice(0, 2), resolveElectron: () => null }))).toMatchObject({ ok: false, error: expect.stringMatching(/npm run install:electron/) });
   });
 
   it('BLUELINE_ELECTRON wins, with BLUELINE_APP_DIR or the dev app folder', () => {

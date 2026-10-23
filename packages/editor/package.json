@@ -12,7 +12,6 @@
     "./*": "./src/*.ts"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "^2.3.1",
-    "magic-string": "^1.4.3"
+    "magic-string": "1.4.3"
   }
 }

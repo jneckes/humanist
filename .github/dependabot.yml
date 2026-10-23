@@ -1,0 +1,73 @@
+# Dependency updates (docs/DEPENDENCIES.md, "Updating dependencies").
+#
+# Version updates wait out a cooldown after a release, so a hijacked maintainer account's malicious version is
+# usually found and unpublished before it reaches a pull request here: 7 days for a patch or minor release, 14 for
+# a major one. Dependabot security updates (for a published advisory) skip the cooldown.
+# Electron has none: the app opens untrusted HTML, so its security releases land within 14 days (SPEC 9.6), in a
+# pull request of their own.
+version: 2
+updates:
+  - package-ecosystem: npm
+    # The root package-lock.json and package.json cover every workspace (packages/*); Dependabot updates the
+    # workspace that declares each dependency.
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    # Exact versions in, exact versions out (package.json pins them; scripts/check-lockfile.mjs checks it).
+    versioning-strategy: increase
+    # Electron, the two groups below and one major update at a time.
+    open-pull-requests-limit: 4
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 7
+      exclude:
+        - electron
+    groups:
+      # First: a dependency goes into the first group it matches.
+      electron:
+        patterns:
+          - electron
+      # Packages whose code is bundled into the app (npm run bundled lists them with what they pull in): review the
+      # package's own diff, not only the lockfile (docs/DEPENDENCIES.md).
+      shipped:
+        patterns:
+          - pdf-lib
+          - perfect-freehand
+          - parse5
+          - entities
+          - acorn
+          - acorn-walk
+          - approx-string-match
+          - diff-match-patch
+          - magic-string
+        update-types:
+          - minor
+          - patch
+      tooling:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - electron
+        update-types:
+          - minor
+          - patch
+      # Major updates are not grouped: one pull request each, after 14 days.
+
+  - package-ecosystem: github-actions
+    # Every workflow in .github/workflows. Actions are pinned by commit SHA with the version in a comment, which
+    # Dependabot updates together.
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 2
+    cooldown:
+      # GitHub Actions take only default-days (no per-semver-level days).
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"

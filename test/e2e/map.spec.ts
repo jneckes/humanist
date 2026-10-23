@@ -14,6 +14,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { electronBinary } from '../../scripts/electron-binary.cjs';
 
 const ROOT = path.resolve(__dirname, '../..');
 const CLI = path.join(ROOT, 'packages/cli/dist/blueline.cjs');
@@ -176,7 +177,7 @@ test('a reader-only build (no editor.cjs) reports without the probe and says so'
   const app = tmp('bl-reader-only-');
   fs.copyFileSync(path.join(ROOT, 'packages/app/package.json'), path.join(app, 'package.json'));
   fs.cpSync(APP_DIST, path.join(app, 'dist'), { recursive: true, filter: (src) => !/editor\.cjs(\.map)?$/.test(src) });
-  const electron = spawnSync(process.execPath, ['-e', "process.stdout.write(require('electron'))"], { cwd: path.join(ROOT, 'packages/app'), encoding: 'utf8' }).stdout;
+  const electron = electronBinary(path.join(ROOT, 'packages/app'));
   const deck = copyDeck('single');
   const r = map([deck, '--json'], { BLUELINE_ELECTRON: electron, BLUELINE_APP_DIR: app });
   expect(r.code, r.stderr.slice(-2000)).toBe(0);

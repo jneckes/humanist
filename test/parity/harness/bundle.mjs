@@ -39,9 +39,9 @@ export async function bundleHarness(outDir) {
   return { main, probe };
 }
 
-/** The Electron binary of the app workspace. */
+/** The Electron binary of the app workspace (scripts/electron-binary.cjs: never downloads it). */
 export function electronBinary() {
-  return createRequire(join(ROOT, 'packages/app/package.json'))('electron');
+  return createRequire(import.meta.url)('../../../scripts/electron-binary.cjs').electronBinary();
 }
 
 /**

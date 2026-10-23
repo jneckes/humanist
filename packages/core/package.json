@@ -12,11 +12,11 @@
     "./*": "./src/*.ts"
   },
   "dependencies": {
-    "acorn": "^8.19.0",
-    "acorn-walk": "^8.3.5",
-    "approx-string-match": "^2.0.1",
-    "diff-match-patch": "^1.0.5",
-    "entities": "^8.1.0",
-    "parse5": "^8.0.1"
+    "acorn": "8.19.0",
+    "acorn-walk": "8.3.5",
+    "approx-string-match": "2.0.1",
+    "diff-match-patch": "1.0.5",
+    "entities": "8.1.0",
+    "parse5": "8.0.1"
   }
 }

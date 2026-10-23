@@ -1,0 +1,48 @@
+# Fast checks on every push, on Linux (supply chain, docs/DEPENDENCIES.md): a bad lockfile, an unsigned package,
+# a type error or a failing unit test fails here in a few minutes, long before the Mac build would.
+name: Checks
+
+on:
+  workflow_dispatch:
+  push:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Check the lockfile (registry sources, sha512, exact pins, known install scripts)
+        run: npm run check:lockfile
+
+      - name: Install dependencies (no install scripts, .npmrc)
+        run: npm ci
+
+      - name: Verify registry signatures and provenance attestations
+        run: npm audit signatures
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build (bundles, and the licence check of bundled code)
+        run: npm run build
+
+      - name: Unit tests
+        run: npm test

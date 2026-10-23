@@ -9,8 +9,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const require = createRequire(join(root, 'packages/app/package.json'));
-const electron = require('electron'); // path to the binary when required from Node
+const require = createRequire(import.meta.url);
+// The binary `npm run install:electron` installed; exits with that instruction when it is missing (no download).
+const electron = require('./electron-binary.cjs').electronBinaryOrExit();
 const appDir = join(root, 'packages/app');
 const extra = process.argv.slice(2);
 

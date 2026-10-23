@@ -11,6 +11,10 @@
 //   packages/cli/dist/blueline.cjs        the `blueline` command (cli + core)
 //   packages/cli/dist/blueline, blueline.cmd  the shims that run it with Node 22+ (6.1; packages/cli/src/shim)
 //   packages/cli/dist/blueline-editor.cjs editor + MCP SDK, loaded only for `mcp` and `export` (later phases)
+//   packages/app/dist/THIRD-PARTY-NOTICES.txt, packages/cli/dist/THIRD-PARTY-NOTICES.txt
+//                                         the licence text of every package bundled into them (scripts/third-party.mjs)
+//   out/esbuild-meta.json                 esbuild's metafile of every bundle: the third-party code that ships
+//                                         (npm run bundled; the SBOM, npm run sbom; docs/DEPENDENCIES.md)
 //
 // Flags:
 //   --reader-only  build without packages/editor; fails if any app/cli code resolves into it (D11, 9.6)
@@ -21,6 +25,7 @@ import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, readdir
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { writeNotices } from './third-party.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = new Set(process.argv.slice(2));
@@ -63,11 +68,15 @@ const alias = {
 };
 
 const common = {
+  absWorkingDir: root, // metafile paths are relative to the repo root
   bundle: true,
   sourcemap: 'linked',
   charset: 'ascii', // SPEC 9.6: ASCII-only output
   logLevel: 'info',
-  legalComments: 'none',
+  // Licence comments of bundled code (/*! */, @license, @preserve) stay, at the end of each bundle; the full
+  // licence texts are in THIRD-PARTY-NOTICES.txt next to the bundles (writeMeta).
+  legalComments: 'eof',
+  metafile: true,
   define: { 'process.env.BLUELINE_READER_ONLY': JSON.stringify(readerOnly ? '1' : '') },
 };
 
@@ -203,6 +212,21 @@ function copyStatic() {
   writeFileSync(join(cliDist, 'blueline.cmd'), readFileSync(join(shim, 'blueline.cmd'), 'utf8').replace(/\r?\n/g, '\r\n'));
 }
 
+/**
+ * Writes out/esbuild-meta.json (every bundle's metafile, merged) and the THIRD-PARTY-NOTICES.txt files. Fails the
+ * build when bundled third-party code is not the locked version or has a licence nobody reviewed (third-party.mjs).
+ */
+function writeMeta(results) {
+  const meta = { inputs: {}, outputs: {} };
+  for (const r of results) {
+    Object.assign(meta.inputs, r.metafile.inputs);
+    Object.assign(meta.outputs, r.metafile.outputs);
+  }
+  mkdirSync(join(root, 'out'), { recursive: true });
+  writeFileSync(join(root, 'out', 'esbuild-meta.json'), JSON.stringify(meta));
+  writeNotices(meta, root);
+}
+
 let child = null;
 function startApp() {
   if (child) child.kill();
@@ -212,12 +236,13 @@ function startApp() {
 if (watch) {
   const ctxs = await Promise.all(configs.map((c) => esbuild.context(c)));
   copyStatic();
-  await Promise.all(ctxs.map((c) => c.rebuild()));
+  writeMeta(await Promise.all(ctxs.map((c) => c.rebuild())));
   await Promise.all(ctxs.map((c) => c.watch()));
   if (run) startApp();
 } else {
-  await Promise.all(configs.map((c) => esbuild.build(c)));
+  const results = await Promise.all(configs.map((c) => esbuild.build(c)));
   copyStatic();
+  writeMeta(results);
   if (readerOnly && existsSync(join(appDist, 'editor.cjs'))) throw new Error('reader-only build produced editor.cjs');
   if (run) startApp();
 }

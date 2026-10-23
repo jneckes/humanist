@@ -42,6 +42,7 @@ import * as fs from 'node:fs';
 import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { electronBinary } from '../../scripts/electron-binary.cjs';
 import { SINK_IP } from './servers';
 
 export const ROOT = path.resolve(__dirname, '../..');
@@ -54,8 +55,8 @@ export const FIXTURES = path.join(ROOT, 'fixtures');
 export const EDIT_BUILD = fs.existsSync(path.join(APP_DIR, 'dist', 'editor.cjs'));
 
 const requireFromApp = createRequire(path.join(APP_DIR, 'package.json'));
-/** The Electron binary (require('electron') from Node returns its path). */
-export const ELECTRON_BIN: string = requireFromApp('electron') as string;
+/** The Electron binary `npm run install:electron` installed (never downloaded here: scripts/electron-binary.cjs). */
+export const ELECTRON_BIN: string = electronBinary(APP_DIR);
 /** Playwright's Electron loader: holds `ready` until Playwright is attached, and strips its own switches. */
 export const PLAYWRIGHT_LOADER = path.join(path.dirname(requireFromApp.resolve('playwright-core/package.json')), 'lib/server/electron/loader.js');
 

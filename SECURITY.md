@@ -25,6 +25,19 @@ public issue.
   WebRTC limited to proxied connections; storage cleared when the window closes.
 - Electron is upgraded within 14 days of each Electron security release (SPEC 9.6).
 
+## Supply chain
+
+How the code the app is built from is kept trustworthy; details and the review rules in
+[docs/DEPENDENCIES.md](docs/DEPENDENCIES.md).
+
+- The app ships no `node_modules`: every package it runs is bundled, app.asar holds only `package.json` and
+  `dist/`, and `npm run package:smoke` and the Mac build check the archive.
+- Dependencies are exact versions from the npm registry with sha512 integrity, installed with `npm ci` and no
+  install scripts (`.npmrc`); Electron's binary is the one explicit install step. `npm run check:lockfile` fails
+  on any other source and on any new install script, and CI verifies registry signatures and provenance.
+- Updates wait out a cooldown (7 days, 14 for a major release), except Electron's and security updates.
+- CI actions are pinned by commit SHA; the Mac build's dmg, zip and SBOM carry a build provenance attestation.
+
 ## What Phase 1 added (Reader)
 
 Every addition follows the rules above: nothing a deck sends is trusted, a deck view never gives main a path,

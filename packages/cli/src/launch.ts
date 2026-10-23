@@ -19,7 +19,7 @@ export interface LaunchContext {
   /** Folder of the running blueline.cjs. */
   cliDir: string;
   exists(p: string): boolean;
-  /** The Electron binary as `require('electron')` resolves it from `appDir`, or null. */
+  /** The Electron binary installed for `appDir` (node_modules/electron/dist, path.txt), or null. */
   resolveElectron(appDir: string): string | null;
   /** Full path of a program on PATH, or null. */
   which(cmd: string): string | null;
@@ -87,7 +87,7 @@ export function findApp(ctx: LaunchContext): Found<AppLocation> {
     }
     const electron = ctx.resolveElectron(appDir);
     if (!electron || !ctx.exists(electron)) {
-      return { ok: false, error: 'Electron is not installed. Run `npm install` in the Blueline repository first.' };
+      return { ok: false, error: 'Electron is not installed. Run `npm ci` and `npm run install:electron` in the Blueline repository first.' };
     }
     return { ok: true, value: { executable: electron, appDir } };
   }

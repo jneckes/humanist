@@ -6,11 +6,12 @@ settled.
 ## Setup
 
 ```sh
-npm install          # Node 22 or later
-npm run build        # esbuild bundles for main, preloads, shell, CLI and the editor
-npm test             # vitest unit and fuzz tests
-npm start            # run the app (under xvfb-run when there is no display)
-npm run test:e2e     # Playwright Electron tests
+npm ci                    # Node 22 or later; exactly package-lock.json, no install scripts (.npmrc)
+npm run install:electron  # Electron's binary, the one explicit install step
+npm run build             # esbuild bundles for main, preloads, shell, CLI and the editor
+npm test                  # vitest unit and fuzz tests
+npm start                 # run the app (under xvfb-run when there is no display)
+npm run test:e2e          # Playwright Electron tests
 npm run test:security
 npm run build:reader-only
 ```
@@ -23,6 +24,8 @@ npm run build:reader-only
 - Every stored offset is a UTF-16 index into the decoded file string, never a byte offset (8, 9.2).
 - A change that touches the mapper or matcher keeps each committed fixture's coverage within 1 point of
   `fixtures/expected/` (section 11).
+- Dependencies are exact versions from the npm registry, with no new install scripts (`npm run check:lockfile`),
+  and nothing ships from `node_modules`: code the app runs is bundled (docs/DEPENDENCIES.md).
 
 ## Licensing of contributions
 

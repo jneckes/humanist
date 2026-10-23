@@ -8,15 +8,15 @@
 import { expect, test } from '@playwright/test';
 import { spawn, spawnSync } from 'node:child_process';
 import * as fs from 'node:fs';
-import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { electronBinary } from '../../scripts/electron-binary.cjs';
 
 const ROOT = path.resolve(__dirname, '../..');
 const APP = path.join(ROOT, 'packages/app');
 const CLI = path.join(ROOT, 'packages/cli/dist/blueline.cjs');
 const FIXTURES = path.join(ROOT, 'fixtures');
-const ELECTRON: string = createRequire(path.join(APP, 'package.json'))('electron') as string;
+const ELECTRON: string = electronBinary(APP);
 
 test.skip(process.platform === 'linux' && !process.env.DISPLAY, 'needs a display: run through `npm run test:e2e` (its global setup starts Xvfb)');
 test.setTimeout(180_000);

@@ -24,10 +24,21 @@ describe('electron-builder config', () => {
     expect(typeof builder.appId).toBe('string');
   });
 
-  it('ships the CLI outside app.asar in Resources/cli (6.1)', () => {
+  it('ships the CLI outside app.asar in Resources/cli (6.1), with its bundles\' licence notices', () => {
     expect(builder.asar).toBe(true);
-    expect(builder.extraResources).toEqual([expect.objectContaining({ to: 'cli', filter: ['blueline.cjs', 'blueline-editor.cjs', 'blueline', 'blueline.cmd'] })]);
+    expect(builder.extraResources).toEqual([
+      expect.objectContaining({ to: 'cli', filter: ['blueline.cjs', 'blueline-editor.cjs', 'blueline', 'blueline.cmd', 'THIRD-PARTY-NOTICES.txt'] }),
+    ]);
     expect(builder.extraResources[0].from).toBe(path.join(repo, 'packages/cli/dist'));
+  });
+
+  it('ships no node_modules: packages/app has no runtime dependencies, and files excludes node_modules (supply chain)', () => {
+    // Every package the app uses is bundled by esbuild; electron-builder copies packages/app's production
+    // dependencies into app.asar, so there must be none (docs/DEPENDENCIES.md; package-smoke checks the archive).
+    const appPkg = JSON.parse(fs.readFileSync(path.join(repo, 'packages/app/package.json'), 'utf8'));
+    expect(appPkg.dependencies ?? {}).toEqual({});
+    expect(appPkg.optionalDependencies ?? {}).toEqual({});
+    expect(builder.files).toContain('!node_modules/**');
   });
 
   it('ships the served folders (dist/shell, dist/assets) unpacked, outside app.asar (9.10; app-paths.ts)', () => {

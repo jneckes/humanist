@@ -6,6 +6,13 @@
 # It also runs what the Linux container cannot: the packaged app's automatic Diagnostics on a real Mac
 # (npm run package:smoke: layout, `blueline check --auto` with F3, F4 and F5). Their results are uploaded but do
 # not block the build artifact.
+#
+# Supply chain (docs/DEPENDENCIES.md): every action is pinned by commit SHA (the tag in a comment, which
+# Dependabot updates with it); the lockfile is checked before anything is installed; npm ci runs no install
+# scripts (.npmrc) and Electron's binary is the one explicit install step; registry signatures and provenance
+# are verified; app.asar must hold no node_modules; the artifact carries an SBOM of what ships; and a separate job,
+# the only one that can mint an OIDC token, attests the build provenance of the dmg, the zip and the SBOM
+# (`gh attestation verify <file> --repo jneckes/humanist`).
 name: Mac build
 
 on:
@@ -25,16 +32,32 @@ jobs:
   mac:
     runs-on: macos-15
     timeout-minutes: 60
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
 
-      - name: Install dependencies
+      - name: Check the lockfile (registry sources, sha512, exact pins, known install scripts)
+        # Reads only package-lock.json and the package.json files, so it runs before anything is downloaded.
+        run: npm run check:lockfile
+
+      - name: Install dependencies (no install scripts, .npmrc)
         run: npm ci
+
+      - name: Verify registry signatures and provenance attestations
+        run: npm audit signatures
+
+      - name: Install Electron's binary (the one explicit install step)
+        # electron's install.js checks the zip against electron's checksums.json, which the lockfile's integrity
+        # covers. package:smoke packs with this local Electron.
+        run: npm run install:electron
 
       - name: Build the Swift helper (default app, quarantine)
         run: native/macos/build.sh
@@ -43,13 +66,21 @@ jobs:
         # electron-builder publishes implicitly on CI; this job only uploads an artifact.
         run: npm run dist -- --publish never
 
+      - name: Check what ships (app.asar holds no node_modules)
+        run: node scripts/asar-contents.mjs release/mac-arm64/Blueline.app/Contents/Resources/app.asar
+
+      - name: SBOM of what ships (CycloneDX)
+        # The third-party packages esbuild bundled (out/esbuild-meta.json from this build) and Electron's zip.
+        run: npm run sbom -- release/Blueline-sbom.cdx.json --platform darwin --arch arm64
+
       - name: Upload the app
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Blueline-mac-arm64
           path: |
             release/*.dmg
             release/*.zip
+            release/Blueline-sbom.cdx.json
           if-no-files-found: error
           retention-days: 30
 
@@ -59,16 +90,38 @@ jobs:
         run: |
           mkdir -p smoke
           set -o pipefail
-          # package:smoke packs with the local Electron (node_modules/electron/dist); npm ci on the runner does not
-          # always leave it in place, so fetch it explicitly (electron's own install script).
-          node node_modules/electron/install.js
           npm run package:smoke -- --out "$RUNNER_TEMP/smoke-pack" 2>&1 | tee smoke/package-smoke.log
 
       - name: Upload the smoke test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: mac-smoke-results
           path: smoke/
           if-no-files-found: ignore
           retention-days: 30
+
+  attest:
+    # Signs the provenance of what the mac job built. It runs no project code (no checkout, no npm), so the
+    # OIDC token it can mint never reaches a dependency.
+    needs: mac
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the app
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: Blueline-mac-arm64
+          path: release
+
+      - name: Attest build provenance (dmg, zip, SBOM)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release/*.dmg
+            release/*.zip
+            release/Blueline-sbom.cdx.json

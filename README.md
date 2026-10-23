@@ -97,15 +97,23 @@ Never install or run Blueline through `npx blueline` (SPEC 9.5): that npm name b
 
 ## Build
 
-Needs Node 22 or later. Dependencies, Electron 44.7.2 included, come from the workspace install.
+Needs Node 22 or later. Dependencies, Electron 44.7.2 included, come from the workspace install. Install scripts
+are off (`.npmrc`), so Electron's binary is a separate step; see [docs/DEPENDENCIES.md](docs/DEPENDENCIES.md) for
+why, and for the rules on adding and updating dependencies.
 
 ```sh
-npm install
+npm ci                     # exactly package-lock.json; no install scripts run
+npm run install:electron   # Electron's binary (for npm start, the tests and package:smoke; npm run dist fetches its own)
+npm run check:lockfile     # registry sources, sha512, exact pins, known install scripts (CI runs it)
 npm run build              # every bundle, into packages/app/dist and packages/cli/dist
 npm run build:reader-only  # Read and Review only: no packages/editor, no dist/editor.cjs (D11)
 npm run typecheck          # tsc, strict, whole repo
 npm run dist               # package the app into release/ (on a Mac: see Dogfooding on a Mac)
+npm run bundled            # the third-party packages in the bundles (all the third-party code that ships)
 ```
+
+The app ships no `node_modules`: app.asar holds only the bundles, and each bundle folder has a
+`THIRD-PARTY-NOTICES.txt` with the licences of the code bundled into it.
 
 The reader-only build removes `dist/editor.cjs`; run `npm run build` again to get Edit back. The app finds
 the Edit capability at startup by loading `dist/editor.cjs`, and nothing else imports `packages/editor`.
@@ -196,12 +204,16 @@ click **Open Anyway** next to Blueline (or run `xattr -dr com.apple.quarantine /
 The same job compiles the Swift helper into the app and runs `npm run package:smoke` on the packaged app on that
 Mac (its layout, `blueline check --auto` with F3, F4 and F5, `blueline pdf`, the shell and the Protected-view trust
 bar); the log is the `mac-smoke-results` artifact. First run, 2026-10-23 (run 39971521973): 17 of 17 PASS.
+The artifact also holds `Blueline-sbom.cdx.json`, the SBOM of what ships, and the build's provenance is attested:
+`gh attestation verify Blueline-0.0.0-arm64.dmg --repo jneckes/humanist` checks that a downloaded dmg is the one
+that workflow built (docs/DEPENDENCIES.md).
 
 On the Mac (Apple silicon, Node 22+, Xcode command line tools for the helper):
 
 ```sh
 git clone <repo> blueline && cd blueline
 npm ci
+npm run install:electron     # Electron's binary, for first-paint, parity and the tests (not needed by dist)
 native/macos/build.sh        # the Swift helper: default app and quarantine (optional, but without it the
                              # welcome window cannot make Blueline the default app)
 npm run dist                 # → release/Blueline-0.0.0-arm64.dmg and release/mac-arm64/Blueline.app

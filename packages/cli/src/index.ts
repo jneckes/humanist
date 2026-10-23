@@ -79,9 +79,10 @@ function context(): LaunchContext {
     exists: (p) => fs.existsSync(p),
     resolveElectron: (appDir) => {
       try {
-        // electron's package main exports the path of its binary when required from Node.
-        const r: unknown = createRequire(path.join(appDir, 'package.json'))('electron');
-        return typeof r === 'string' ? r : null;
+        // The binary electron's install.js put in node_modules/electron/dist, as path.txt names it. Not
+        // require('electron'): it downloads a missing binary (install scripts are off, docs/DEPENDENCIES.md).
+        const dir = path.dirname(createRequire(path.join(appDir, 'package.json')).resolve('electron/package.json'));
+        return path.join(dir, 'dist', fs.readFileSync(path.join(dir, 'path.txt'), 'utf8').trim());
       } catch {
         return null;
       }

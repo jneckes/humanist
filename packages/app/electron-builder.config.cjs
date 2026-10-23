@@ -2,7 +2,11 @@
 // is absolute (from this file's folder). `npm run package:smoke` (scripts/package-smoke.mjs) packs an unpacked
 // test build with it and checks the shell, the trust bar and `blueline check --auto` on the packaged app.
 //
-// - The app ships its esbuild bundles (dist/) in app.asar. dist/shell and dist/assets (the shell UI and the
+// - The app ships its esbuild bundles (dist/) in app.asar, and nothing else: no node_modules. Every package the app
+//   uses is bundled, so packages/app has no "dependencies" for electron-builder to copy, and '!node_modules/**'
+//   keeps one out if it ever gets one (supply chain, docs/DEPENDENCIES.md; scripts/package-smoke.mjs checks it).
+//   dist/THIRD-PARTY-NOTICES.txt holds the licence text of every package in the bundles (scripts/third-party.mjs).
+// - dist/shell and dist/assets (the shell UI and the
 //   bundled decks) ship unpacked, in app.asar.unpacked: main serves them through the confined protocol
 //   handlers (resolveConfined, 9.9), which refuse every file inside an archive (Electron's fs gives lstat
 //   synthetic stats there), so main resolves them to the unpacked copy when packaged (src/main/app-paths.ts).
@@ -51,15 +55,16 @@ module.exports = {
     output: path.join(root, 'release'),
     buildResources,
   },
-  files: ['package.json', 'dist/**/*', '!dist/**/*.map', '!dist/assets/build/**'],
+  files: ['package.json', 'dist/**/*', '!dist/**/*.map', '!dist/assets/build/**', '!node_modules/**'],
   asarUnpack: ['dist/shell/**', 'dist/assets/**'],
   extraResources: [
     {
       from: path.join(root, 'packages', 'cli', 'dist'),
       to: 'cli',
       // The shims (the POSIX script and blueline.cmd) find Node 22+ and run blueline.cjs; Help › Install Command
-      // Line Tool links to Resources/cli/blueline (6.1; cli-install.ts shippedCommand).
-      filter: ['blueline.cjs', 'blueline-editor.cjs', 'blueline', 'blueline.cmd'],
+      // Line Tool links to Resources/cli/blueline (6.1; cli-install.ts shippedCommand). THIRD-PARTY-NOTICES.txt: the
+      // licences of the packages bundled into these files (scripts/third-party.mjs).
+      filter: ['blueline.cjs', 'blueline-editor.cjs', 'blueline', 'blueline.cmd', 'THIRD-PARTY-NOTICES.txt'],
     },
   ],
   asar: true,

@@ -7,7 +7,9 @@
 // repo's electron-builder config (unpacked dir target, the local Electron, so nothing is downloaded) into a
 // scratch folder, then:
 //   1. checks the layout: dist/shell and dist/assets in app.asar.unpacked, the CLI and its shims in
-//      resources/cli, the sample deck and the Settings and welcome pages (Phase 1);
+//      resources/cli, the sample deck and the Settings and welcome pages (Phase 1); and what ships (supply chain,
+//      docs/DEPENDENCIES.md): app.asar holds no node_modules (only package.json and dist/, read with
+//      @electron/asar), resources/cli holds only the bundled files, the shims and their licence notices;
 //   2. runs the packaged `blueline check --auto` through the packaged CLI (exit 0: every automatic check passed),
 //      and the packaged `blueline pdf` on a fixture (one page per slide);
 //   3. launches the packaged app with Playwright on a fixture deck with --protected and asserts the shell
@@ -23,6 +25,7 @@ import { createRequire } from 'node:module';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { asarContents } from './asar-contents.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(path.join(root, 'package.json'));
@@ -49,6 +52,8 @@ const step = (name, ok, detail = '') => {
 // ------------------------------------------------------------------------------------------- pack
 
 const base = require('./packages/app/electron-builder.config.cjs');
+// The local Electron (npm run install:electron); exits with that instruction when it is missing.
+require('./scripts/electron-binary.cjs').electronBinaryOrExit();
 const electronDir = path.join(path.dirname(require.resolve('electron/package.json')));
 const { build, Platform } = require('electron-builder');
 process.env.BLUELINE_TEST_BUILD = '1';
@@ -93,6 +98,27 @@ if (process.platform !== 'win32') step('the POSIX shim is executable', fs.exists
 step('the sample deck is unpacked', fs.existsSync(path.join(unpacked, 'assets', 'sample', 'blueline-tour.html')));
 step('the Settings and welcome pages are unpacked', ['settings.html', 'settings.js', 'welcome.html', 'welcome.js'].every((f) => fs.existsSync(path.join(unpacked, 'shell', f))));
 step('the executable exists', fs.existsSync(exe), exe);
+
+// What ships (supply chain): the bundles carry all third-party code, so the archive holds no node_modules and
+// the command's folder holds only what the build made for it (electron-builder.config.cjs files, extraResources).
+let asarEntries = [];
+let nodeModules = [];
+let strays = [];
+try {
+  ({ entries: asarEntries, nodeModules, strays } = asarContents(path.join(resources, 'app.asar')));
+} catch (e) {
+  step('app.asar can be listed (@electron/asar)', false, e instanceof Error ? e.message : String(e));
+}
+step('app.asar holds no node_modules', asarEntries.length > 0 && nodeModules.length === 0, nodeModules.length ? `${nodeModules.length} entries, e.g. ${nodeModules.slice(0, 3).join(', ')}` : `${asarEntries.length} entries`);
+step('app.asar holds only package.json and dist/', asarEntries.length > 0 && strays.length === 0, strays.slice(0, 5).join(', '));
+step('app.asar ships the bundles\' licence notices', asarEntries.includes('/dist/THIRD-PARTY-NOTICES.txt'));
+const cliBuilt = new Set(['blueline.cjs', 'blueline-editor.cjs', 'blueline', 'blueline.cmd', 'THIRD-PARTY-NOTICES.txt'].filter((f) => fs.existsSync(path.join(root, 'packages', 'cli', 'dist', f))));
+const cliShipped = fs.existsSync(path.join(resources, 'cli')) ? fs.readdirSync(path.join(resources, 'cli')).sort() : [];
+step(
+  'resources/cli holds only the bundled files, the shims and their notices',
+  cliShipped.join(' ') === [...cliBuilt].sort().join(' ') && ['blueline.cjs', 'blueline', 'blueline.cmd', 'THIRD-PARTY-NOTICES.txt'].every((f) => cliShipped.includes(f)),
+  cliShipped.join(', '),
+);
 
 // ------------------------------------------------------------------------------------------- 2. check --auto
 

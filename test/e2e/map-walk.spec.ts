@@ -24,6 +24,7 @@ import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { electronBinary } from '../../scripts/electron-binary.cjs';
 
 const ROOT = path.resolve(__dirname, '../..');
 const CLI = path.join(ROOT, 'packages/cli/dist/blueline.cjs');
@@ -55,7 +56,7 @@ function sha256(p: string): string {
 function appEnv(): Record<string, string> {
   const dir = process.env.BL_E2E_APP_DIR;
   if (!dir) return {};
-  const electron = spawnSync(process.execPath, ['-e', "process.stdout.write(require('electron'))"], { cwd: path.join(ROOT, 'packages/app'), encoding: 'utf8' }).stdout;
+  const electron = electronBinary(path.join(ROOT, 'packages/app'));
   return { BLUELINE_APP_DIR: dir, BLUELINE_ELECTRON: electron };
 }
 
