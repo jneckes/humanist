@@ -120,6 +120,12 @@ step(
   cliShipped.join(', '),
 );
 
+// Electron's and Chromium's licence notices: next to the executable on Linux and Windows (electron-builder), in
+// Contents/Resources on macOS (scripts/electron-notices.cjs, as electron-builder deletes them there).
+const noticesDir = process.platform === 'darwin' ? resources : path.dirname(exe);
+const electronNotices = ['LICENSE.electron.txt', 'LICENSES.chromium.html'].filter((f) => !(fs.existsSync(path.join(noticesDir, f)) && fs.statSync(path.join(noticesDir, f)).size > 0));
+step('Electron\'s and Chromium\'s licence notices ship', electronNotices.length === 0, electronNotices.length ? `missing in ${noticesDir}: ${electronNotices.join(', ')}` : noticesDir);
+
 // ------------------------------------------------------------------------------------------- 2. check --auto
 
 const ud = fs.mkdtempSync(path.join(os.tmpdir(), 'blueline-smoke-ud-'));

@@ -20,6 +20,9 @@
 // - macOS: hardened runtime with entitlements; the microphone entitlement is in both entitlements files,
 //   because Electron's helper processes take the inherited set (9.10).
 // - afterPack flips the Electron fuses (scripts/fuses.cjs, 9.9).
+// - afterExtract keeps Electron's and Chromium's licence notices (LICENSE.electron.txt, LICENSES.chromium.html) in
+//   the Mac app's Contents/Resources: electron-builder deletes them on macOS (scripts/electron-notices.cjs). On
+//   Linux and Windows it keeps them next to the executable itself.
 // - The macOS native helper (native/macos, 6.1, 9.9) ships outside app.asar in Resources/helper, signed and
 //   notarized with the app, only when native/macos/build.sh has built it, so this config still works on
 //   Linux and in CI without it (main then falls back to /usr/bin/xattr and cannot set the default app).
@@ -107,5 +110,6 @@ module.exports = {
   },
   // Phase 6: electron-updater on GitHub Releases, stable channel, never allowDowngrade (9.10).
   publish: null,
+  afterExtract: path.join(root, 'scripts', 'electron-notices.cjs'),
   afterPack: path.join(root, 'scripts', 'fuses.cjs'),
 };

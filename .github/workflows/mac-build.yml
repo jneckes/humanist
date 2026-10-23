@@ -66,8 +66,13 @@ jobs:
         # electron-builder publishes implicitly on CI; this job only uploads an artifact.
         run: npm run dist -- --publish never
 
-      - name: Check what ships (app.asar holds no node_modules)
-        run: node scripts/asar-contents.mjs release/mac-arm64/Blueline.app/Contents/Resources/app.asar
+      - name: Check what ships (app.asar holds no node_modules; the licence notices are there)
+        run: |
+          resources=release/mac-arm64/Blueline.app/Contents/Resources
+          node scripts/asar-contents.mjs "$resources/app.asar"
+          for f in LICENSE.electron.txt LICENSES.chromium.html cli/THIRD-PARTY-NOTICES.txt; do
+            test -s "$resources/$f" || { echo "missing: $resources/$f"; exit 1; }
+          done
 
       - name: SBOM of what ships (CycloneDX)
         # The third-party packages esbuild bundled (out/esbuild-meta.json from this build) and Electron's zip.

@@ -32,7 +32,10 @@ and CI (`.github/workflows/checks.yml`, `.github/workflows/mac-build.yml`).
 - **Licences.** Each bundled package's licence text is in `THIRD-PARTY-NOTICES.txt`, which the build writes next
   to the bundles (`dist/` in app.asar, and `resources/cli`); the bundles also keep their `/*! */` licence comments
   (esbuild `legalComments: 'eof'`). A package whose licence is not in `PERMISSIVE` (`scripts/third-party.mjs`),
-  or that has no licence file, fails the build until someone reviews it.
+  or that has no licence file, fails the build until someone reviews it. Electron's and Chromium's notices ship as
+  `LICENSE.electron.txt` and `LICENSES.chromium.html`: electron-builder keeps them next to the executable on Linux
+  and Windows but deletes them on macOS, so `scripts/electron-notices.cjs` (afterExtract) puts them in
+  `Blueline.app/Contents/Resources`; `package:smoke` and the Mac build check they are there.
 - **SBOM.** `npm run sbom -- <file>` writes a CycloneDX 1.6 JSON SBOM of what ships: the bundled packages, with
   version, licence, sha512 (from `package-lock.json`) and bundles, and Electron with the SHA-256 of its release
   zip. The Mac build uploads it with the app (`Blueline-sbom.cdx.json`).

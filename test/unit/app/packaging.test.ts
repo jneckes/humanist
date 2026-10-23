@@ -93,6 +93,50 @@ describe('electron-builder config', () => {
     await expect(validateConfiguration(JSON.parse(JSON.stringify(release)), new DebugLogger(false))).resolves.toBeUndefined();
   });
 
+  it('afterExtract keeps Electron\'s and Chromium\'s licence notices in the Mac app (electron-builder deletes them there)', async () => {
+    expect(builder.afterExtract).toBe(path.join(repo, 'scripts/electron-notices.cjs'));
+    const afterExtract = req('./scripts/electron-notices.cjs');
+    fs.mkdirSync(path.join(repo, 'test-results'), { recursive: true });
+    const tmp = fs.mkdtempSync(path.join(repo, 'test-results', 'unit-electron-notices-'));
+    try {
+      const make = (dir: string, withNotices: boolean) => {
+        fs.mkdirSync(path.join(dir, 'Electron.app', 'Contents', 'Resources'), { recursive: true });
+        if (withNotices) {
+          fs.writeFileSync(path.join(dir, 'LICENSE'), 'MIT electron');
+          fs.writeFileSync(path.join(dir, 'LICENSES.chromium.html'), '<html>chromium</html>');
+        }
+      };
+      const context = (appOutDir: string, platform: string, electronDist?: string) => ({
+        appOutDir,
+        electronPlatformName: platform,
+        packager: { info: { framework: { distMacOsAppName: 'Electron.app' } }, config: { electronDist }, projectDir: repo },
+      });
+      const res = (dir: string) => path.join(dir, 'Electron.app', 'Contents', 'Resources');
+      // The release zip: the notices next to Electron.app.
+      const zip = path.join(tmp, 'zip');
+      make(zip, true);
+      await afterExtract(context(zip, 'darwin'));
+      expect(fs.readFileSync(path.join(res(zip), 'LICENSE.electron.txt'), 'utf8')).toBe('MIT electron');
+      expect(fs.readFileSync(path.join(res(zip), 'LICENSES.chromium.html'), 'utf8')).toContain('chromium');
+      // An unpacked electronDist: electron-builder copies only Electron.app, so they come from that folder.
+      const out = path.join(tmp, 'out');
+      const dist = path.join(tmp, 'dist');
+      make(out, false);
+      make(dist, true);
+      await afterExtract(context(out, 'darwin', dist));
+      expect(fs.existsSync(path.join(res(out), 'LICENSES.chromium.html'))).toBe(true);
+      // Nowhere to be found: the build fails rather than ship without them.
+      const bare = path.join(tmp, 'bare');
+      make(bare, false);
+      await expect(afterExtract(context(bare, 'darwin'))).rejects.toThrow(/LICENSE was not found/);
+      // Linux and Windows: electron-builder keeps them itself.
+      await afterExtract(context(bare, 'linux'));
+      expect(fs.readdirSync(res(bare))).toEqual([]);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('afterPack is the fuses script', () => {
     expect(builder.afterPack).toBe(path.join(repo, 'scripts/fuses.cjs'));
     expect(typeof fuses).toBe('function');
