@@ -1,0 +1,70 @@
+# Builds the macOS app for dogfooding (SPEC 10 Phase 1, Builds: "local unsigned builds") on a GitHub-hosted
+# Apple silicon runner, so the app can be downloaded without a local toolchain. The app is signed ad hoc
+# (scripts/mac-signing.cjs): no Developer ID, no notarization (Phase 6), so macOS asks once before it opens it
+# (README.md, Dogfooding on a Mac). The Swift helper (native/macos) is compiled here too.
+#
+# It also runs what the Linux container cannot: the packaged app's automatic Diagnostics on a real Mac
+# (npm run package:smoke: layout, `blueline check --auto` with F3, F4 and F5). Their results are uploaded but do
+# not block the build artifact.
+name: Mac build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/admiring-edison-1lohc0]
+    paths-ignore: ['docs/**', '**/*.md', 'fixtures/**', 'test/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the Swift helper (default app, quarantine)
+        run: native/macos/build.sh
+
+      - name: Build the app (ad-hoc signed dmg and zip)
+        run: npm run dist
+
+      - name: Upload the app
+        uses: actions/upload-artifact@v4
+        with:
+          name: Blueline-mac-arm64
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Smoke test the packaged app on macOS (Diagnostics F3, F4, F5)
+        id: smoke
+        continue-on-error: true
+        run: |
+          mkdir -p smoke
+          set -o pipefail
+          npm run package:smoke -- --out "$RUNNER_TEMP/smoke-pack" 2>&1 | tee smoke/package-smoke.log
+
+      - name: Upload the smoke test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mac-smoke-results
+          path: smoke/
+          if-no-files-found: ignore
+          retention-days: 30
