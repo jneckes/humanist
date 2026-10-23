@@ -39,7 +39,7 @@
     "@electron/asar": "3.4.1",
     "@playwright/test": "1.64.1",
     "@types/diff-match-patch": "1.0.36",
-    "@types/node": "24.19.2",
+    "@types/node": "26.6.4",
     "esbuild": "0.28.2",
     "typescript": "7.0.2",
     "vitest": "5.0.5"
