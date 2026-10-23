@@ -188,6 +188,15 @@ builds are unsigned for distribution purposes: `npm run dist` without signing cr
 (Apple silicon runs no unsigned code), without the hardened runtime, and does not notarize it
 (`scripts/mac-signing.cjs`, used by `packages/app/electron-builder.config.cjs`). Developer ID signing and notarization are Phase 6.
 
+**Without building it yourself:** every push to this branch builds the app on a GitHub-hosted Apple silicon Mac
+(`.github/workflows/mac-build.yml`): the repo's Actions tab › "Mac build" › the newest run › Artifacts ›
+`Blueline-mac-arm64` (a zip holding `Blueline-0.0.0-arm64.dmg`). Open the dmg and drag Blueline to Applications.
+Because the app is signed ad hoc, macOS refuses it the first time: open System Settings › Privacy & Security and
+click **Open Anyway** next to Blueline (or run `xattr -dr com.apple.quarantine /Applications/Blueline.app` once).
+The same job compiles the Swift helper into the app and runs `npm run package:smoke` on the packaged app on that
+Mac (its layout, `blueline check --auto` with F3, F4 and F5, `blueline pdf`, the shell and the Protected-view trust
+bar); the log is the `mac-smoke-results` artifact. First run, 2026-10-23 (run 39971521973): 17 of 17 PASS.
+
 On the Mac (Apple silicon, Node 22+, Xcode command line tools for the helper):
 
 ```sh
