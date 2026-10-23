@@ -8,11 +8,15 @@
 # not block the build artifact.
 #
 # Supply chain (docs/DEPENDENCIES.md): every action is pinned by commit SHA (the tag in a comment, which
-# Dependabot updates with it); the lockfile is checked before anything is installed; npm ci runs no install
-# scripts (.npmrc) and Electron's binary is the one explicit install step; registry signatures and provenance
-# are verified; app.asar must hold no node_modules; the artifact carries an SBOM of what ships; and a separate job,
-# the only one that can mint an OIDC token, attests the build provenance of the dmg, the zip and the SBOM
-# (`gh attestation verify <file> --repo jneckes/humanist`).
+# Dependabot updates with it); the lockfile is checked before anything is installed, and against the registry's
+# signatures; npm ci runs no install scripts and no git (set in the job's environment, which no npmrc overrides),
+# what it installed is checked, and Electron's binary is the one explicit install step; registry signatures and
+# provenance are verified; app.asar must hold no node_modules; the artifact carries an SBOM of what ships; and a
+# separate job, the only one that can mint an OIDC token, attests the build provenance of the dmg, the zip and the
+# SBOM. To check a download (docs/DEPENDENCIES.md, Build provenance):
+#   gh attestation verify <file> --repo jneckes/humanist \
+#     --signer-workflow jneckes/humanist/.github/workflows/mac-build.yml \
+#     --source-ref refs/heads/claude/admiring-edison-1lohc0 --deny-self-hosted-runners
 name: Mac build
 
 on:
@@ -34,6 +38,13 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
+    env:
+      # Supply chain (docs/DEPENDENCIES.md): npm settings from the environment take precedence over any npmrc, the
+      # project's included, so a pull request that edits .npmrc cannot turn install scripts or git back on, or send
+      # installs to another registry, in this job. (check:lockfile also fails on such an .npmrc.)
+      npm_config_ignore_scripts: 'true'
+      npm_config_git: 'false'
+      npm_config_registry: https://registry.npmjs.org/
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -44,12 +55,19 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Check the lockfile (registry sources, sha512, exact pins, known install scripts)
-        # Reads only package-lock.json and the package.json files, so it runs before anything is downloaded.
+      - name: Check the lockfile (registry sources, no shrinkwrap, no orphans, exact pins, known install scripts, .npmrc)
+        # Reads only package-lock.json, the package.json files and npm's configuration, so it runs before anything
+        # is downloaded.
         run: npm run check:lockfile
 
-      - name: Install dependencies (no install scripts, .npmrc)
+      - name: Check the lockfile against the registry's signatures (each integrity is the one the registry signed)
+        run: npm run check:registry
+
+      - name: Install dependencies (no install scripts, no git)
         run: npm ci
+
+      - name: Check what was installed (the locked tarballs, install scripts, commands)
+        run: npm run check:installed
 
       - name: Verify registry signatures and provenance attestations
         run: npm audit signatures
@@ -66,10 +84,11 @@ jobs:
         # electron-builder publishes implicitly on CI; this job only uploads an artifact.
         run: npm run dist -- --publish never
 
-      - name: Check what ships (app.asar holds no node_modules; the licence notices are there)
+      - name: Check what ships (app.asar holds no node_modules; the vendored files are the reviewed ones; the licence notices are there)
         run: |
           resources=release/mac-arm64/Blueline.app/Contents/Resources
           node scripts/asar-contents.mjs "$resources/app.asar"
+          node scripts/third-party.mjs --shipped "$resources"
           for f in LICENSE.electron.txt LICENSES.chromium.html cli/THIRD-PARTY-NOTICES.txt; do
             test -s "$resources/$f" || { echo "missing: $resources/$f"; exit 1; }
           done

@@ -6,7 +6,8 @@ settled.
 ## Setup
 
 ```sh
-npm ci                    # Node 22 or later; exactly package-lock.json, no install scripts (.npmrc)
+npm run check:lockfile    # first, on a branch you did not write: what npm ci would install (docs/DEPENDENCIES.md)
+npm ci                    # Node 22 or later; exactly package-lock.json, no install scripts, no git (.npmrc)
 npm run install:electron  # Electron's binary, the one explicit install step
 npm run build             # esbuild bundles for main, preloads, shell, CLI and the editor
 npm test                  # vitest unit and fuzz tests
@@ -24,8 +25,10 @@ npm run build:reader-only
 - Every stored offset is a UTF-16 index into the decoded file string, never a byte offset (8, 9.2).
 - A change that touches the mapper or matcher keeps each committed fixture's coverage within 1 point of
   `fixtures/expected/` (section 11).
-- Dependencies are exact versions from the npm registry, with no new install scripts (`npm run check:lockfile`),
-  and nothing ships from `node_modules`: code the app runs is bundled (docs/DEPENDENCIES.md).
+- Dependencies are exact versions from the npm registry, with no new install scripts, sources, orphans or
+  commands (`npm run check:lockfile`), each the one the registry signed (`npm run check:registry`) and installed as
+  locked (`npm run check:installed`), and nothing ships from `node_modules`: code the app runs is bundled, and a
+  file shipped as it is (reveal.js) is listed with its SHA-256 in `scripts/vendored.json` (docs/DEPENDENCIES.md).
 
 ## Licensing of contributions
 

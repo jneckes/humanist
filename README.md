@@ -102,14 +102,17 @@ are off (`.npmrc`), so Electron's binary is a separate step; see [docs/DEPENDENC
 why, and for the rules on adding and updating dependencies.
 
 ```sh
-npm ci                     # exactly package-lock.json; no install scripts run
+npm run check:lockfile     # before installing a branch you did not write: sources, no shrinkwrap or orphans, pins,
+                           # install scripts, commands, .npmrc (CI runs it)
+npm run check:registry     # each locked integrity is the one the registry signed (CI runs it)
+npm ci                     # exactly package-lock.json; no install scripts run, no git (.npmrc)
+npm run check:installed    # what npm ci installed is the locked tarballs (CI and package:smoke run it)
 npm run install:electron   # Electron's binary (for npm start, the tests and package:smoke; npm run dist fetches its own)
-npm run check:lockfile     # registry sources, sha512, exact pins, known install scripts (CI runs it)
 npm run build              # every bundle, into packages/app/dist and packages/cli/dist
 npm run build:reader-only  # Read and Review only: no packages/editor, no dist/editor.cjs (D11)
 npm run typecheck          # tsc, strict, whole repo
 npm run dist               # package the app into release/ (on a Mac: see Dogfooding on a Mac)
-npm run bundled            # the third-party packages in the bundles (all the third-party code that ships)
+npm run bundled            # the third-party code that ships: the packages in the bundles, and vendored reveal.js
 ```
 
 The app ships no `node_modules`: app.asar holds only the bundles, and each bundle folder has a
@@ -204,9 +207,15 @@ click **Open Anyway** next to Blueline (or run `xattr -dr com.apple.quarantine /
 The same job compiles the Swift helper into the app and runs `npm run package:smoke` on the packaged app on that
 Mac (its layout, `blueline check --auto` with F3, F4 and F5, `blueline pdf`, the shell and the Protected-view trust
 bar); the log is the `mac-smoke-results` artifact. First run, 2026-10-23 (run 39971521973): 17 of 17 PASS.
-The artifact also holds `Blueline-sbom.cdx.json`, the SBOM of what ships, and the build's provenance is attested:
-`gh attestation verify Blueline-0.0.0-arm64.dmg --repo jneckes/humanist` checks that a downloaded dmg is the one
-that workflow built (docs/DEPENDENCIES.md).
+The artifact also holds `Blueline-sbom.cdx.json`, the SBOM of what ships, and the build's provenance is attested.
+To check that a downloaded dmg was built by the Mac build workflow from this branch on a GitHub-hosted runner
+(docs/DEPENDENCIES.md, Build provenance; `--repo` alone would accept any workflow of the repository on any branch):
+
+```sh
+gh attestation verify Blueline-0.0.0-arm64.dmg --repo jneckes/humanist \
+  --signer-workflow jneckes/humanist/.github/workflows/mac-build.yml \
+  --source-ref refs/heads/claude/admiring-edison-1lohc0 --deny-self-hosted-runners
+```
 
 On the Mac (Apple silicon, Node 22+, Xcode command line tools for the helper):
 

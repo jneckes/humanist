@@ -32,11 +32,20 @@ How the code the app is built from is kept trustworthy; details and the review r
 
 - The app ships no `node_modules`: every package it runs is bundled, app.asar holds only `package.json` and
   `dist/`, and `npm run package:smoke` and the Mac build check the archive.
-- Dependencies are exact versions from the npm registry with sha512 integrity, installed with `npm ci` and no
-  install scripts (`.npmrc`); Electron's binary is the one explicit install step. `npm run check:lockfile` fails
-  on any other source and on any new install script, and CI verifies registry signatures and provenance.
+- Dependencies are exact versions from the npm registry with sha512 integrity, installed with `npm ci`, no
+  install scripts and no git (`.npmrc`, and in CI the job environment, which no npmrc overrides; npm runs a git
+  dependency's `prepare` script even with install scripts off); Electron's binary is the one explicit install
+  step. `npm run check:lockfile` fails on any other source, an `npm-shrinkwrap.json`, an entry nothing depends on,
+  a colliding command, a non-exact pin or override, any new install script and any other `.npmrc` setting;
+  `npm run check:registry` fails unless each locked integrity is the one the registry signed; after `npm ci`,
+  `npm run check:installed` fails unless what was installed is exactly the locked tarballs, with no install
+  script outside the known ones. CI also verifies registry signatures and provenance.
+- The app's third-party code is listed in its notices and SBOM: the bundled packages, and reveal.js, which ships as
+  files whose SHA-256 the build checks (`scripts/vendored.json`).
 - Updates wait out a cooldown (7 days, 14 for a major release), except Electron's and security updates.
-- CI actions are pinned by commit SHA; the Mac build's dmg, zip and SBOM carry a build provenance attestation.
+- CI actions are pinned by commit SHA; the Mac build's dmg, zip and SBOM carry a build provenance attestation,
+  verified pinned to the Mac build workflow, the branch and GitHub-hosted runners (docs/DEPENDENCIES.md, Build
+  provenance).
 
 ## What Phase 1 added (Reader)
 

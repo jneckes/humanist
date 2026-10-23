@@ -7,12 +7,14 @@
 //   packages/app/dist/preload-settings.cjs  the Settings window's preload (contextBridge API, core/ipc-trust.ts)
 //   packages/app/dist/preload-welcome.cjs   the welcome window's preload (contextBridge API, core/ipc-files.ts)
 //   packages/app/dist/shell/              shell UI (HTML, CSS, JS)
-//   packages/app/dist/assets/             bundled decks (diagnostics, sample)
+//   packages/app/dist/assets/             bundled decks (diagnostics, sample); the Diagnostics deck's vendored reveal.js
+//                                         is checked against scripts/vendored.json (SHA-256 of every file)
 //   packages/cli/dist/blueline.cjs        the `blueline` command (cli + core)
 //   packages/cli/dist/blueline, blueline.cmd  the shims that run it with Node 22+ (6.1; packages/cli/src/shim)
 //   packages/cli/dist/blueline-editor.cjs editor + MCP SDK, loaded only for `mcp` and `export` (later phases)
 //   packages/app/dist/THIRD-PARTY-NOTICES.txt, packages/cli/dist/THIRD-PARTY-NOTICES.txt
-//                                         the licence text of every package bundled into them (scripts/third-party.mjs)
+//                                         the licence text of every package bundled into them, and of the vendored
+//                                         files (scripts/third-party.mjs)
 //   out/esbuild-meta.json                 esbuild's metafile of every bundle: the third-party code that ships
 //                                         (npm run bundled; the SBOM, npm run sbom; docs/DEPENDENCIES.md)
 //
@@ -202,6 +204,9 @@ function copyStatic() {
   // The diagnostics deck is the committed reveal.js fixture (SPEC 10, Diagnostics window).
   const reveal = join(root, 'fixtures/decks/reveal-hash');
   if (existsSync(reveal) && statSync(reveal).isDirectory()) {
+    // Replaced, not merged: its vendor/ folder must hold exactly the files scripts/vendored.json lists (checked by
+    // writeNotices below), so a file removed from the fixture must not linger from an earlier build.
+    rmSync(join(appDist, 'assets/diagnostics-deck'), { recursive: true, force: true });
     cpSync(reveal, join(appDist, 'assets/diagnostics-deck'), { recursive: true });
   }
   // The `blueline` shims go next to blueline.cjs (6.1; Install Command Line Tool links to dist's or Resources/cli's

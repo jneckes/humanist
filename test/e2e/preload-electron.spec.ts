@@ -14,6 +14,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSyn
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
+import { electronBinary } from '../../scripts/electron-binary.cjs';
 
 const ROOT = resolve(__dirname, '../..');
 const DECKS = join(ROOT, 'fixtures/decks');
@@ -244,7 +245,9 @@ test.beforeAll(async () => {
   });
   const args = [join(scratch, 'main.cjs')];
   if (process.platform === 'linux' && process.getuid?.() === 0) args.unshift('--no-sandbox');
-  app = await electron.launch({ args, cwd: ROOT, env: { ...process.env, BL_E2E_PRELOAD: join(scratch, 'preload-deck.cjs') } as Record<string, string> });
+  // executablePath: without it Playwright requires electron's index.js, which downloads a missing binary
+  // (supply chain, scripts/electron-binary.cjs).
+  app = await electron.launch({ executablePath: electronBinary(), args, cwd: ROOT, env: { ...process.env, BL_E2E_PRELOAD: join(scratch, 'preload-deck.cjs') } as Record<string, string> });
   await app.evaluate(async () => {
     for (let i = 0; i < 100 && !(globalThis as { h?: unknown }).h; i++) await new Promise((r) => setTimeout(r, 50));
   });

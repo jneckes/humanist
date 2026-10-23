@@ -32,6 +32,8 @@
     "package:smoke": "node scripts/build.mjs && node scripts/package-smoke.mjs",
     "install:electron": "node node_modules/electron/install.js",
     "check:lockfile": "node scripts/check-lockfile.mjs",
+    "check:registry": "node scripts/check-registry.mjs",
+    "check:installed": "node scripts/check-installed.mjs",
     "bundled": "node scripts/third-party.mjs",
     "sbom": "node scripts/third-party.mjs --sbom"
   },

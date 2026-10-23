@@ -6,10 +6,14 @@
 // no trust bar) and the Diagnostics deck without reveal.js. This script packs the current build with the
 // repo's electron-builder config (unpacked dir target, the local Electron, so nothing is downloaded) into a
 // scratch folder, then:
+//   0. before packing (supply chain, docs/DEPENDENCIES.md): what npm installed is what package-lock.json locks
+//      (scripts/check-installed.mjs: node_modules/.package-lock.json against package-lock.json, install scripts,
+//      commands), since the bundles about to be packed were built from it;
 //   1. checks the layout: dist/shell and dist/assets in app.asar.unpacked, the CLI and its shims in
 //      resources/cli, the sample deck and the Settings and welcome pages (Phase 1); and what ships (supply chain,
 //      docs/DEPENDENCIES.md): app.asar holds no node_modules (only package.json and dist/, read with
-//      @electron/asar), resources/cli holds only the bundled files, the shims and their licence notices;
+//      @electron/asar), resources/cli holds only the bundled files, the shims and their licence notices, and the
+//      vendored files (scripts/vendored.json: reveal.js) ship unchanged and are in the notices;
 //   2. runs the packaged `blueline check --auto` through the packaged CLI (exit 0: every automatic check passed),
 //      and the packaged `blueline pdf` on a fixture (one page per slide);
 //   3. launches the packaged app with Playwright on a fixture deck with --protected and asserts the shell
@@ -26,6 +30,8 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { asarContents } from './asar-contents.mjs';
+import { checkInstalled } from './check-installed.mjs';
+import { vendoredPackages, vendoredProblems } from './third-party.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(path.join(root, 'package.json'));
@@ -48,6 +54,11 @@ const step = (name, ok, detail = '') => {
   console.log(`${ok ? 'PASS' : 'FAIL'} ${name}${detail ? `: ${detail}` : ''}`);
   if (!ok) failures.push(name);
 };
+
+// ------------------------------------------------------------------------------------------- 0. installed
+
+const installed = checkInstalled(root);
+step('the installed packages are the ones package-lock.json locks (check:installed)', installed.errors.length === 0, installed.errors.slice(0, 5).join('; '));
 
 // ------------------------------------------------------------------------------------------- pack
 
@@ -112,6 +123,24 @@ try {
 step('app.asar holds no node_modules', asarEntries.length > 0 && nodeModules.length === 0, nodeModules.length ? `${nodeModules.length} entries, e.g. ${nodeModules.slice(0, 3).join(', ')}` : `${asarEntries.length} entries`);
 step('app.asar holds only package.json and dist/', asarEntries.length > 0 && strays.length === 0, strays.slice(0, 5).join(', '));
 step('app.asar ships the bundles\' licence notices', asarEntries.includes('/dist/THIRD-PARTY-NOTICES.txt'));
+// The vendored files (reveal.js for the Diagnostics deck) ship byte for byte as reviewed, and the notices name them.
+let vendored = [];
+try {
+  vendored = vendoredPackages(root);
+} catch (e) {
+  step('the vendored files are the reviewed ones (scripts/vendored.json)', false, e instanceof Error ? e.message : String(e));
+}
+for (const v of vendored) {
+  const shipped = path.join(resources, 'app.asar.unpacked', path.relative('packages/app', v.shipped));
+  const problems = vendoredProblems(v, shipped);
+  step(`${v.name} ${v.version} ships unchanged (${path.relative(resources, shipped)})`, problems.length === 0, problems.slice(0, 3).join('; '));
+  let notices = '';
+  try {
+    notices = require('@electron/asar').extractFile(path.join(resources, 'app.asar'), 'dist/THIRD-PARTY-NOTICES.txt').toString('utf8');
+  } catch {}
+  const named = [v.name, ...(v.includes ?? []).map((i) => i.name)].filter((n) => !notices.includes(`${n} `) && !notices.includes(`${n}\n`));
+  step(`the app's notices hold ${v.name}'s licence`, notices.length > 0 && named.length === 0, named.length ? `missing: ${named.join(', ')}` : '');
+}
 const cliBuilt = new Set(['blueline.cjs', 'blueline-editor.cjs', 'blueline', 'blueline.cmd', 'THIRD-PARTY-NOTICES.txt'].filter((f) => fs.existsSync(path.join(root, 'packages', 'cli', 'dist', f))));
 const cliShipped = fs.existsSync(path.join(resources, 'cli')) ? fs.readdirSync(path.join(resources, 'cli')).sort() : [];
 step(

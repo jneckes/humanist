@@ -1,5 +1,6 @@
-# Fast checks on every push, on Linux (supply chain, docs/DEPENDENCIES.md): a bad lockfile, an unsigned package,
-# a type error or a failing unit test fails here in a few minutes, long before the Mac build would.
+# Fast checks on every push, on Linux (supply chain, docs/DEPENDENCIES.md): a bad lockfile, a package that is not
+# the one the registry signed, an unexpected install, a type error or a failing unit test fails here in a few
+# minutes, long before the Mac build would.
 name: Checks
 
 on:
@@ -19,6 +20,13 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      # Supply chain (docs/DEPENDENCIES.md): npm settings from the environment take precedence over any npmrc, the
+      # project's included, so a pull request that edits .npmrc cannot turn install scripts or git back on, or send
+      # installs to another registry, in this job. (check:lockfile also fails on such an .npmrc.)
+      npm_config_ignore_scripts: 'true'
+      npm_config_git: 'false'
+      npm_config_registry: https://registry.npmjs.org/
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -29,11 +37,17 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Check the lockfile (registry sources, sha512, exact pins, known install scripts)
+      - name: Check the lockfile (registry sources, no shrinkwrap, no orphans, exact pins, known install scripts, .npmrc)
         run: npm run check:lockfile
 
-      - name: Install dependencies (no install scripts, .npmrc)
+      - name: Check the lockfile against the registry's signatures (each integrity is the one the registry signed)
+        run: npm run check:registry
+
+      - name: Install dependencies (no install scripts, no git)
         run: npm ci
+
+      - name: Check what was installed (the locked tarballs, install scripts, commands)
+        run: npm run check:installed
 
       - name: Verify registry signatures and provenance attestations
         run: npm audit signatures
